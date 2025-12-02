@@ -5,8 +5,9 @@ L'IA répond en texte ET en voix simultanément !
 Le TTS se déclenche phrase par phrase pour une latence minimale.
 
 Usage:
-    python main.py           # Mode texte uniquement
-    python main.py --voice   # Mode texte + voix
+    python main.py                    # Mode texte uniquement
+    python main.py --voice            # Mode texte + voix (Kokoro par défaut)
+    python main.py --voice --tts edge # Mode texte + voix Edge TTS
 """
 
 import asyncio
@@ -19,7 +20,8 @@ from pathlib import Path
 
 from src.llm import OllamaLLM
 from src.llm.base import Message
-from src.tts import EdgeTTSProvider
+from src.tts import EdgeTTSProvider, KokoroProvider
+from src.tts.base import BaseTTS
 
 
 def load_config() -> dict:
@@ -33,13 +35,14 @@ def play_audio(audio_path: Path) -> subprocess.Popen:
     """
     Joue un fichier audio en arrière-plan.
     
+    Supporte WAV (Kokoro) et MP3 (Edge TTS).
     Utilise mpv, ffplay ou aplay selon ce qui est disponible.
     Retourne le processus pour pouvoir l'arrêter si besoin.
     """
     players = [
-        ["mpv", "--no-terminal", "--no-video", str(audio_path)],
         ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(audio_path)],
-        ["aplay", str(audio_path)],
+        ["mpv", "--no-terminal", "--no-video", str(audio_path)],
+        ["aplay", str(audio_path)],  # WAV uniquement
     ]
     
     for player_cmd in players:
@@ -54,8 +57,31 @@ def play_audio(audio_path: Path) -> subprocess.Popen:
         except FileNotFoundError:
             continue
     
-    print("\n⚠️  Aucun lecteur audio trouvé (mpv, ffplay, aplay)")
+    print("\n⚠️  Aucun lecteur audio trouvé (ffplay, mpv, aplay)")
     return None
+
+
+def create_tts(provider: str, tts_config: dict) -> BaseTTS:
+    """
+    Crée le provider TTS approprié.
+    
+    Args:
+        provider: "kokoro" ou "edge"
+        tts_config: Configuration TTS depuis config.yaml
+        
+    Returns:
+        Instance du provider TTS
+    """
+    if provider == "kokoro":
+        # Kokoro - TTS local haute qualité
+        voice = tts_config.get("kokoro_voice", "ff_siwis")
+        return KokoroProvider(voice=voice)
+    else:
+        # Edge TTS - Cloud Microsoft (fallback)
+        voice = tts_config.get("voice", "fr-FR-DeniseNeural")
+        rate = tts_config.get("rate", "+20%")
+        pitch = tts_config.get("pitch", "+0Hz")
+        return EdgeTTSProvider(voice=voice, rate=rate, pitch=pitch)
 
 
 def split_into_sentences(text: str) -> list[str]:
@@ -69,7 +95,7 @@ def split_into_sentences(text: str) -> list[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 
-async def speak_text(tts: EdgeTTSProvider, text: str, temp_dir: Path) -> subprocess.Popen | None:
+async def speak_text(tts: BaseTTS, text: str, temp_dir: Path) -> subprocess.Popen | None:
     """
     Synthétise et joue le texte.
     
@@ -79,8 +105,11 @@ async def speak_text(tts: EdgeTTSProvider, text: str, temp_dir: Path) -> subproc
     if not text.strip():
         return None
     
+    # Extension selon le type de TTS
+    ext = ".wav" if isinstance(tts, KokoroProvider) else ".mp3"
+    
     # Générer un fichier temporaire unique
-    audio_file = temp_dir / f"speech_{hash(text) % 10000}.mp3"
+    audio_file = temp_dir / f"speech_{hash(text) % 10000}{ext}"
     
     # Synthétiser
     await tts.synthesize(text, audio_file)
@@ -97,8 +126,9 @@ async def main():
     parser = argparse.ArgumentParser(description="Local AI Companion")
     parser.add_argument("--voice", "-v", action="store_true", 
                        help="Activer la synthèse vocale")
-    parser.add_argument("--voice-id", type=str, default=None,
-                       help="ID de la voix (ex: fr-FR-DeniseNeural)")
+    parser.add_argument("--tts", type=str, default="kokoro",
+                       choices=["kokoro", "edge"],
+                       help="Provider TTS: kokoro (local) ou edge (cloud)")
     args = parser.parse_args()
     
     # Charger la configuration
@@ -112,7 +142,8 @@ async def main():
     print("=" * 50)
     
     if args.voice:
-        print("🔊 Mode vocal ACTIVÉ")
+        tts_name = "Kokoro (local)" if args.tts == "kokoro" else "Edge TTS (cloud)"
+        print(f"🔊 Mode vocal ACTIVÉ - {tts_name}")
     else:
         print("🔇 Mode texte (utilise --voice pour activer la voix)")
     
@@ -127,12 +158,15 @@ async def main():
     
     # Créer le TTS si mode vocal
     tts = None
+    tts_provider = args.tts
     temp_dir = None
+    
     if args.voice:
-        voice_id = args.voice_id or tts_config.get("voice", "fr-FR-DeniseNeural")
-        tts = EdgeTTSProvider(voice=voice_id)
+        tts = create_tts(tts_provider, tts_config)
         temp_dir = Path(tempfile.mkdtemp(prefix="ai_companion_"))
-        print(f"🎤 Voix: {voice_id}\n")
+        
+        voice_info = tts.voice if hasattr(tts, 'voice') else "default"
+        print(f"🎤 Voix: {voice_info}\n")
     
     # Historique de la conversation
     messages: list[Message] = [
@@ -166,8 +200,7 @@ async def main():
                 continue
             if user_input.lower() == "voice on":
                 if not tts:
-                    voice_id = tts_config.get("voice", "fr-FR-DeniseNeural")
-                    tts = EdgeTTSProvider(voice=voice_id)
+                    tts = create_tts(tts_provider, tts_config)
                     temp_dir = Path(tempfile.mkdtemp(prefix="ai_companion_"))
                 print("🔊 Mode vocal activé !")
                 continue

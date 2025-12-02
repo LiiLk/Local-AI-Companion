@@ -28,18 +28,22 @@ character:
 
 # === TTS (Voix) ===
 tts:
-  # Provider TTS : "edge" (gratuit, cloud) ou "kokoro" (local, naturel)
-  provider: "edge"
+  # Provider TTS par défaut : "kokoro" (local, naturel) ou "edge" (cloud, gratuit)
+  provider: "kokoro"
   
-  # Voix par défaut (française)
+  # --- Kokoro TTS (100% local, haute qualité) ---
+  # Voix disponibles: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
+  kokoro_voice: "ff_siwis"
+  
+  # --- Edge TTS (cloud Microsoft, fallback) ---
   voice: "fr-FR-DeniseNeural"
-  # Autres voix disponibles:
+  # Autres voix Edge:
   # - fr-FR-HenriNeural (homme français)
   # - en-US-JennyNeural (femme américaine)  
   # - ja-JP-NanamiNeural (femme japonaise)
   
-  rate: "+20%"   # Vitesse (-50% à +100%) - +20% pour un débit plus naturel
-  pitch: "+0Hz"  # Hauteur (-50Hz à +50Hz)
+  rate: "+20%"   # Vitesse Edge TTS (-50% à +100%)
+  pitch: "+0Hz"  # Hauteur Edge TTS (-50Hz à +50Hz)
 
 # === ASR (Reconnaissance vocale) - Pour plus tard ===
 # asr:
