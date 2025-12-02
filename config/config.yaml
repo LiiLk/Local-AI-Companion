@@ -18,17 +18,28 @@ llm:
 
 # === Personnalité de l'assistant ===
 character:
-  name: "Assistant"
+  name: "Aria"
   # Le "system prompt" définit la personnalité de l'IA
   system_prompt: |
-    Tu es un assistant IA amical et serviable.
-    Tu réponds de manière concise et claire.
-    Tu es enthousiaste et positif.
+    Tu es Aria, une assistante IA amicale et serviable.
+    Tu réponds de manière concise et claire en français.
+    Tu es enthousiaste et positive.
+    Tu aides l'utilisateur dans ses tâches quotidiennes.
 
-# === TTS (Voix) - Pour plus tard ===
-# tts:
-#   provider: "edge_tts"
-#   voice: "fr-FR-DeniseNeural"
+# === TTS (Voix) ===
+tts:
+  # Provider TTS : "edge" (gratuit, cloud) ou "kokoro" (local, naturel)
+  provider: "edge"
+  
+  # Voix par défaut (française)
+  voice: "fr-FR-DeniseNeural"
+  # Autres voix disponibles:
+  # - fr-FR-HenriNeural (homme français)
+  # - en-US-JennyNeural (femme américaine)  
+  # - ja-JP-NanamiNeural (femme japonaise)
+  
+  rate: "+20%"   # Vitesse (-50% à +100%) - +20% pour un débit plus naturel
+  pitch: "+0Hz"  # Hauteur (-50Hz à +50Hz)
 
 # === ASR (Reconnaissance vocale) - Pour plus tard ===
 # asr:

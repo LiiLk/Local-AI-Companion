@@ -6,6 +6,9 @@ httpx>=0.25.0
 # Gestion de configuration YAML
 pyyaml>=6.0
 
+# Text-to-Speech (Microsoft Edge TTS)
+edge-tts>=6.1.0
+
 # Pour le futur : serveur web
 # fastapi>=0.104.0
 # uvicorn>=0.24.0

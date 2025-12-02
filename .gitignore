@@ -45,8 +45,9 @@ models/
 logs/
 *.log
 
-# Claude instructions (local only)
-CLAUDE.md
+# Test files
+test_*.py
+test_*.mp3
 
 # Secrets (never commit these!)
 .env
