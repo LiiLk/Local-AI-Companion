@@ -1,0 +1,36 @@
+# Configuration de l'Assistant IA
+# Tu peux modifier ce fichier sans toucher au code !
+
+# === LLM (Cerveau) ===
+llm:
+  # Quel type de LLM utiliser : "ollama", "openai", "groq"
+  provider: "ollama"
+  
+  # Configuration Ollama
+  ollama:
+    model: "llama3.2:3b"      # Modèle à utiliser
+    base_url: "http://localhost:11434"
+  
+  # Configuration OpenAI (pour plus tard)
+  # openai:
+  #   model: "gpt-4"
+  #   api_key: "sk-..."  # Ou utiliser variable d'environnement
+
+# === Personnalité de l'assistant ===
+character:
+  name: "Assistant"
+  # Le "system prompt" définit la personnalité de l'IA
+  system_prompt: |
+    Tu es un assistant IA amical et serviable.
+    Tu réponds de manière concise et claire.
+    Tu es enthousiaste et positif.
+
+# === TTS (Voix) - Pour plus tard ===
+# tts:
+#   provider: "edge_tts"
+#   voice: "fr-FR-DeniseNeural"
+
+# === ASR (Reconnaissance vocale) - Pour plus tard ===
+# asr:
+#   provider: "whisper"
+#   model: "base"

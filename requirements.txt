@@ -1,0 +1,12 @@
+# LLM Assistant Waifu - Dependencies
+
+# HTTP client async (pour communiquer avec Ollama)
+httpx>=0.25.0
+
+# Gestion de configuration YAML
+pyyaml>=6.0
+
+# Pour le futur : serveur web
+# fastapi>=0.104.0
+# uvicorn>=0.24.0
+# websockets>=12.0
