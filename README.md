@@ -52,8 +52,12 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
   - 🔊 **Kokoro TTS** (local, 82M params, high quality) - *Recommended*
   - 🌐 **Edge TTS** (cloud fallback, Microsoft voices)
 
+- [x] **Speech-to-Text (ASR)** - Voice recognition with:
+  - 🎤 **Faster-Whisper** (local, multiple model sizes)
+  - 🎙️ **Real-time microphone** input support
+- [x] **Full Voice Conversation** - Speak to the AI, hear its response!
+
 ### In Development 🚧
-- [ ] **Speech-to-Text (ASR)** - Voice recognition with Whisper
 - [ ] **Voice Cloning** - Clone any voice with XTTS v2 (planned)
 - [ ] **Web Interface** - Frontend with WebSocket
 - [ ] **Live2D Avatar** - Animation synchronized with voice
@@ -108,7 +112,9 @@ Local-AI-Companion/
 │   │   ├── base.py          # Abstract interface BaseTTS
 │   │   ├── edge_provider.py # Edge TTS (cloud)
 │   │   └── kokoro_provider.py # Kokoro TTS (local)
-│   ├── asr/                 # Speech Recognition module (coming)
+│   ├── asr/                 # Speech Recognition module
+│   │   ├── base.py          # Abstract interface BaseASR
+│   │   └── whisper_provider.py # Whisper ASR (local)
 │   └── core/                # Core logic
 ├── config/
 │   └── config.yaml          # Configuration (model, personality)
@@ -158,6 +164,12 @@ python main.py --voice
 
 # Run with Edge TTS (cloud)
 python main.py --voice --tts edge
+
+# Full voice conversation (speak + hear) 🎤🔊
+python main.py --listen
+
+# Voice conversation with larger Whisper model
+python main.py --listen --asr-model small
 ```
 
 ---
@@ -169,7 +181,7 @@ python main.py --voice --tts edge
 | **Language** | Python 3.12 |
 | **LLM** | Ollama (Llama, Mistral, Gemma...) - 100% local |
 | **TTS** | Kokoro (local, 82M params) + Edge TTS (cloud fallback) |
-| **ASR** | Faster-Whisper (planned) |
+| **ASR** | Faster-Whisper (local, multiple model sizes) |
 | **Backend** | FastAPI + WebSockets (planned) |
 | **Frontend** | HTML/CSS/JS + PixiJS for Live2D (planned) |
 | **HTTP Client** | httpx (async) |
@@ -202,12 +214,12 @@ This project allowed me to deepen my knowledge in:
 ## 📈 Roadmap
 
 ```
-Phase 1: Foundations         ████████████░░ 75%
+Phase 1: Foundations         ████████████████ 100% ✅
 ├── ✅ Modular architecture
 ├── ✅ LLM Module (Ollama)
 ├── ✅ CLI Chatbot
 ├── ✅ TTS Module (Kokoro + Edge)
-└── 🔄 ASR Module (Whisper)
+└── ✅ ASR Module (Whisper)
 
 Phase 2: Interface           ░░░░░░░░░░░░░░ 0%
 ├── ⬜ WebSocket Server
@@ -228,6 +240,7 @@ Phase 3: Advanced Features   ░░░░░░░░░░░░░░ 0%
 - [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) - Main architecture inspiration
 - [Ollama](https://ollama.com/) - Easy-to-use local LLM
 - [Kokoro TTS](https://github.com/hexgrad/kokoro) - High-quality local TTS (82M params)
+- [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) - Fast local ASR (4x faster than original)
 - [Edge TTS](https://github.com/rany2/edge-tts) - Free cloud TTS fallback
 
 ---

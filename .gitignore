@@ -53,3 +53,6 @@ test_*.mp3
 .env
 secrets.yaml
 **/api_keys*
+
+# Internal documentation (not for public repo)
+CLAUDE.md
