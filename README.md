@@ -48,10 +48,13 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 - [x] **Response streaming** - Real-time display of generation
 - [x] **YAML configuration** - Personality and settings without touching code
 - [x] **CLI Chatbot** - Functional command-line interface
+- [x] **Text-to-Speech (TTS)** - Voice synthesis with:
+  - 🔊 **Kokoro TTS** (local, 82M params, high quality) - *Recommended*
+  - 🌐 **Edge TTS** (cloud fallback, Microsoft voices)
 
 ### In Development 🚧
-- [ ] **Text-to-Speech (TTS)** - Voice synthesis with Edge TTS
 - [ ] **Speech-to-Text (ASR)** - Voice recognition with Whisper
+- [ ] **Voice Cloning** - Clone any voice with XTTS v2 (planned)
 - [ ] **Web Interface** - Frontend with WebSocket
 - [ ] **Live2D Avatar** - Animation synchronized with voice
 
@@ -76,7 +79,7 @@ flowchart TB
     subgraph Backend["⚙️ BACKEND (FastAPI)"]
         ASR["🎤 ASR<br/>Whisper<br/>Voice → Text"]
         LLM["🧠 LLM<br/>Ollama<br/>Brain"]
-        TTS["🔊 TTS<br/>Edge TTS<br/>Text → Voice"]
+        TTS["🔊 TTS<br/>Kokoro/Edge<br/>Text → Voice"]
     end
     
     Frontend <-->|WebSocket| Backend
@@ -101,7 +104,10 @@ Local-AI-Companion/
 │   ├── llm/                 # Large Language Model module
 │   │   ├── base.py          # Abstract interface BaseLLM
 │   │   └── ollama_llm.py    # Ollama implementation
-│   ├── tts/                 # Text-to-Speech module (coming)
+│   ├── tts/                 # Text-to-Speech module
+│   │   ├── base.py          # Abstract interface BaseTTS
+│   │   ├── edge_provider.py # Edge TTS (cloud)
+│   │   └── kokoro_provider.py # Kokoro TTS (local)
 │   ├── asr/                 # Speech Recognition module (coming)
 │   └── core/                # Core logic
 ├── config/
@@ -144,8 +150,14 @@ ollama pull llama3.2:3b
 ### Usage
 
 ```bash
-# Run the CLI chatbot
+# Run the CLI chatbot (text only)
 python main.py
+
+# Run with voice output (Kokoro TTS - local)
+python main.py --voice
+
+# Run with Edge TTS (cloud)
+python main.py --voice --tts edge
 ```
 
 ---
@@ -156,7 +168,7 @@ python main.py
 |----------|--------------|
 | **Language** | Python 3.12 |
 | **LLM** | Ollama (Llama, Mistral, Gemma...) - 100% local |
-| **TTS** | Edge TTS (planned) |
+| **TTS** | Kokoro (local, 82M params) + Edge TTS (cloud fallback) |
 | **ASR** | Faster-Whisper (planned) |
 | **Backend** | FastAPI + WebSockets (planned) |
 | **Frontend** | HTML/CSS/JS + PixiJS for Live2D (planned) |
@@ -190,19 +202,20 @@ This project allowed me to deepen my knowledge in:
 ## 📈 Roadmap
 
 ```
-Phase 1: Foundations         ████████░░░░ 60%
+Phase 1: Foundations         ████████████░░ 75%
 ├── ✅ Modular architecture
 ├── ✅ LLM Module (Ollama)
 ├── ✅ CLI Chatbot
-├── 🔄 TTS Module
-└── ⬜ ASR Module
+├── ✅ TTS Module (Kokoro + Edge)
+└── 🔄 ASR Module (Whisper)
 
-Phase 2: Interface           ░░░░░░░░░░░░ 0%
+Phase 2: Interface           ░░░░░░░░░░░░░░ 0%
 ├── ⬜ WebSocket Server
 ├── ⬜ Web Frontend
 └── ⬜ Live2D Avatar
 
-Phase 3: Advanced Features   ░░░░░░░░░░░░ 0%
+Phase 3: Advanced Features   ░░░░░░░░░░░░░░ 0%
+├── ⬜ Voice Cloning (XTTS v2)
 ├── ⬜ Vision (screen/camera)
 ├── ⬜ Persistent Memory
 └── ⬜ PC Control
@@ -214,7 +227,8 @@ Phase 3: Advanced Features   ░░░░░░░░░░░░ 0%
 
 - [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) - Main architecture inspiration
 - [Ollama](https://ollama.com/) - Easy-to-use local LLM
-- [Edge TTS](https://github.com/rany2/edge-tts) - Free and quality TTS
+- [Kokoro TTS](https://github.com/hexgrad/kokoro) - High-quality local TTS (82M params)
+- [Edge TTS](https://github.com/rany2/edge-tts) - Free cloud TTS fallback
 
 ---
 
