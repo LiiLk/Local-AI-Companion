@@ -1,7 +1,7 @@
-# 🤖 Waifu Assistant - AI Companion
+# 🤖 Local AI Companion
 
 <p align="center">
-  <img src="assets/cortana.jpg" alt="Waifu Assistant Banner" width="600">
+  <img src="assets/cortana.jpg" alt="Local AI Companion Banner" width="600">
 </p>
 
 <p align="center">
@@ -64,41 +64,37 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        FRONTEND                             │
-│              (Web UI / Desktop with Live2D)                 │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ WebSocket
-┌─────────────────────────▼───────────────────────────────────┐
-│                        BACKEND                              │
-│                       (FastAPI)                             │
-│                                                             │
-│   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐       │
-│   │     ASR     │   │     LLM     │   │     TTS     │       │
-│   │  (Whisper)  │ → │  (Ollama)   │ → │ (Edge TTS)  │       │
-│   │             │   │             │   │             │       │
-│   │ Voice→Text  │   │    Brain    │   │ Text→Voice  │       │
-│   └─────────────┘   └─────────────┘   └─────────────┘       │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Frontend["🖥️ FRONTEND"]
+        UI["Web UI / Desktop"]
+        Live2D["Live2D Avatar"]
+    end
+    
+    subgraph Backend["⚙️ BACKEND (FastAPI)"]
+        ASR["🎤 ASR<br/>Whisper<br/>Voice → Text"]
+        LLM["🧠 LLM<br/>Ollama<br/>Brain"]
+        TTS["🔊 TTS<br/>Edge TTS<br/>Text → Voice"]
+    end
+    
+    Frontend <-->|WebSocket| Backend
+    ASR --> LLM --> TTS
 ```
 
 ### Design Principles
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-| Principle           | Description                                                    |
-|---------------------|----------------------------------------------------------------|
-| **Abstraction**     | Each module (LLM, TTS, ASR) implements an abstract interface   |
-| **Modularity**      | Switch providers (Ollama → OpenAI) without modifying core code |
-| **Async-first**     | Using `async/await` for performance and streaming              |
-| **External config** | YAML to separate code from configuration                       |
-└──────────────────────────────────────────────────────────────────────────────────────┘
+
+| Principle | Description |
+|-----------|-------------|
+| **Abstraction** | Each module (LLM, TTS, ASR) implements an abstract interface |
+| **Modularity** | Switch providers (Ollama → OpenAI) without modifying core code |
+| **Async-first** | Using `async/await` for performance and streaming |
+| **External config** | YAML to separate code from configuration |
 ---
 
 ## 📁 Project Structure
 
 ```
-waifu-assistant/
+Local-AI-Companion/
 ├── src/
 │   ├── llm/                 # Large Language Model module
 │   │   ├── base.py          # Abstract interface BaseLLM
@@ -127,8 +123,8 @@ waifu-assistant/
 
 ```bash
 # Clone the repository
-git clone https://github.com/LiiLk/waifu-assistant.git
-cd waifu-assistant
+git clone https://github.com/LiiLk/Local-AI-Companion.git
+cd Local-AI-Companion
 
 # Create virtual environment
 python3 -m venv venv
