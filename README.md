@@ -20,7 +20,8 @@
 
 ## 🎯 About
 
-This project is a **personal AI assistant** capable of:
+This project is a **100% local and private AI assistant** capable of:
+- 🔒 **Fully offline** - No cloud, no data sent anywhere
 - 💬 Real-time conversation (text and voice)
 - 🎤 Understanding your voice (Speech-to-Text)
 - 🔊 Responding vocally (Text-to-Speech)
@@ -30,8 +31,9 @@ This project is a **personal AI assistant** capable of:
 ### 🎓 Why this project?
 
 Instead of forking an existing project, I chose to **rebuild from scratch** to:
+- **Keep everything local** - No cloud APIs, your data stays on YOUR machine
 - **Deeply understand** the architecture of an AI assistant
-- **Master the concepts**: async Python, WebSockets, LLM APIs, TTS, ASR, Vision AI
+- **Master the concepts**: async Python, WebSockets, local LLMs, TTS, ASR
 - **Demonstrate my skills** in software development and AI Engineering
 
 > 💡 Inspired by [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber), but entirely rewritten for learning purposes.
@@ -41,8 +43,8 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 ## ✨ Features
 
 ### Implemented ✅
-- [x] **Modular LLM module** - Ollama support (local), extensible for OpenAI/Groq
-- [x] **Abstract architecture** - Interfaces allowing easy provider switching
+- [x] **Local LLM module** - Ollama support (runs 100% on your machine)
+- [x] **Privacy-first** - Your conversations never leave your computer
 - [x] **Response streaming** - Real-time display of generation
 - [x] **YAML configuration** - Personality and settings without touching code
 - [x] **CLI Chatbot** - Functional command-line interface
@@ -86,7 +88,7 @@ flowchart TB
 | Principle | Description |
 |-----------|-------------|
 | **Abstraction** | Each module (LLM, TTS, ASR) implements an abstract interface |
-| **Modularity** | Switch providers (Ollama → OpenAI) without modifying core code |
+| **Modularity** | Easily switch between different local models |
 | **Async-first** | Using `async/await` for performance and streaming |
 | **External config** | YAML to separate code from configuration |
 ---
@@ -153,7 +155,7 @@ python main.py
 | Category | Technologies |
 |----------|--------------|
 | **Language** | Python 3.12 |
-| **LLM** | Ollama (Llama 3.2), extensible to OpenAI/Groq |
+| **LLM** | Ollama (Llama, Mistral, Gemma...) - 100% local |
 | **TTS** | Edge TTS (planned) |
 | **ASR** | Faster-Whisper (planned) |
 | **Backend** | FastAPI + WebSockets (planned) |
