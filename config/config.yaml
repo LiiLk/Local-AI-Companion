@@ -45,7 +45,19 @@ tts:
   rate: "+20%"   # Vitesse Edge TTS (-50% à +100%)
   pitch: "+0Hz"  # Hauteur Edge TTS (-50Hz à +50Hz)
 
-# === ASR (Reconnaissance vocale) - Pour plus tard ===
-# asr:
-#   provider: "whisper"
-#   model: "base"
+# === ASR (Reconnaissance vocale) ===
+asr:
+  # Provider ASR : "whisper" (local, privé)
+  provider: "whisper"
+  
+  # Taille du modèle Whisper
+  # - tiny   : 39M params, ultra rapide, qualité basique
+  # - base   : 74M params, rapide, bonne qualité (recommandé)
+  # - small  : 244M params, moyen, très bonne qualité
+  # - medium : 769M params, lent, excellente qualité
+  # - large-v3: 1.5B params, très lent, qualité maximale
+  model_size: "base"
+  
+  # Device: "cpu" ou "cuda" (GPU)
+  # Note: Si problèmes cuDNN, utiliser "cpu"
+  device: "cpu"

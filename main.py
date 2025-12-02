@@ -8,6 +8,7 @@ Usage:
     python main.py                    # Mode texte uniquement
     python main.py --voice            # Mode texte + voix (Kokoro par défaut)
     python main.py --voice --tts edge # Mode texte + voix Edge TTS
+    python main.py --voice --listen   # Mode conversation vocale complète
 """
 
 import asyncio
@@ -22,6 +23,8 @@ from src.llm import OllamaLLM
 from src.llm.base import Message
 from src.tts import EdgeTTSProvider, KokoroProvider
 from src.tts.base import BaseTTS
+from src.asr import RealtimeWhisperProvider
+from src.asr.base import BaseASR
 
 
 def load_config() -> dict:
@@ -84,6 +87,25 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
         return EdgeTTSProvider(voice=voice, rate=rate, pitch=pitch)
 
 
+def create_asr(asr_config: dict) -> RealtimeWhisperProvider:
+    """
+    Crée le provider ASR (Speech-to-Text).
+    
+    Args:
+        asr_config: Configuration ASR depuis config.yaml
+        
+    Returns:
+        Instance du provider ASR
+    """
+    model_size = asr_config.get("model_size", "base")
+    device = asr_config.get("device", "cpu")  # CPU par défaut (cuDNN issues)
+    
+    return RealtimeWhisperProvider(
+        model_size=model_size,
+        device=device
+    )
+
+
 def split_into_sentences(text: str) -> list[str]:
     """
     Découpe le texte en phrases pour le TTS.
@@ -129,25 +151,41 @@ async def main():
     parser.add_argument("--tts", type=str, default="kokoro",
                        choices=["kokoro", "edge"],
                        help="Provider TTS: kokoro (local) ou edge (cloud)")
+    parser.add_argument("--listen", "-l", action="store_true",
+                       help="Activer l'écoute vocale (microphone)")
+    parser.add_argument("--asr-model", type=str, default="base",
+                       choices=["tiny", "base", "small", "medium", "large-v3"],
+                       help="Taille du modèle Whisper pour l'ASR")
     args = parser.parse_args()
+    
+    # Si --listen est activé, activer aussi --voice automatiquement
+    if args.listen:
+        args.voice = True
     
     # Charger la configuration
     config = load_config()
     llm_config = config["llm"]["ollama"]
     character = config["character"]
     tts_config = config.get("tts", {})
+    asr_config = config.get("asr", {})
+    
+    # Surcharger avec les arguments CLI
+    asr_config["model_size"] = args.asr_model
     
     print("=" * 50)
     print(f"🤖 {character['name']} - Local AI Companion")
     print("=" * 50)
     
-    if args.voice:
+    if args.listen:
+        print("🎤 Mode CONVERSATION VOCALE activé")
+        print("   Parlez dans votre micro, l'IA vous répondra à voix haute !")
+    elif args.voice:
         tts_name = "Kokoro (local)" if args.tts == "kokoro" else "Edge TTS (cloud)"
         print(f"🔊 Mode vocal ACTIVÉ - {tts_name}")
     else:
-        print("🔇 Mode texte (utilise --voice pour activer la voix)")
+        print("🔇 Mode texte (utilise --voice ou --listen)")
     
-    print("\nCommandes: 'quit', 'clear', 'voice on', 'voice off'")
+    print("\nCommandes: 'quit', 'clear', 'voice on', 'voice off', 'listen on', 'listen off'")
     print()
     
     # Créer le client LLM
@@ -166,7 +204,17 @@ async def main():
         temp_dir = Path(tempfile.mkdtemp(prefix="ai_companion_"))
         
         voice_info = tts.voice if hasattr(tts, 'voice') else "default"
-        print(f"🎤 Voix: {voice_info}\n")
+        print(f"🔊 Voix TTS: {voice_info}")
+    
+    # Créer l'ASR si mode écoute
+    asr = None
+    listen_mode = args.listen
+    
+    if listen_mode:
+        asr = create_asr(asr_config)
+        print(f"🎤 ASR: Whisper {args.asr_model}")
+    
+    print()
     
     # Historique de la conversation
     messages: list[Message] = [
@@ -183,14 +231,45 @@ async def main():
                     proc.wait()
             audio_processes.clear()
             
-            # 1. Lire l'entrée utilisateur
-            try:
-                user_input = input("\n👤 Toi: ").strip()
-            except EOFError:
-                break
+            # 1. Obtenir l'entrée utilisateur (texte ou voix)
+            user_input = None
+            
+            if listen_mode and asr:
+                # Mode écoute vocale
+                print("\n🎤 [Parlez maintenant... ou tapez du texte]")
                 
+                # On utilise un système hybride: 
+                # - Soit l'utilisateur parle (ASR)
+                # - Soit il tape du texte (fallback)
+                try:
+                    # Essayer d'écouter pendant 10 secondes max
+                    result = await asr.listen_once(timeout=10.0)
+                    user_input = result.text.strip()
+                    
+                    if user_input:
+                        print(f"👤 Toi (voix): {user_input}")
+                    else:
+                        print("   (Pas de parole détectée, tapez votre message)")
+                        user_input = input("👤 Toi: ").strip()
+                        
+                except KeyboardInterrupt:
+                    # L'utilisateur a appuyé sur Ctrl+C pendant l'écoute
+                    print("\n   (Écoute annulée)")
+                    user_input = input("👤 Toi: ").strip()
+                except Exception as e:
+                    print(f"\n   ⚠️ Erreur ASR: {e}")
+                    user_input = input("👤 Toi: ").strip()
+            else:
+                # Mode texte classique
+                try:
+                    user_input = input("\n👤 Toi: ").strip()
+                except EOFError:
+                    break
+            
             if not user_input:
                 continue
+            
+            # Commandes spéciales
             if user_input.lower() == "quit":
                 print("\n👋 À bientôt !")
                 break
@@ -207,6 +286,16 @@ async def main():
             if user_input.lower() == "voice off":
                 tts = None
                 print("🔇 Mode vocal désactivé !")
+                continue
+            if user_input.lower() == "listen on":
+                if not asr:
+                    asr = create_asr(asr_config)
+                listen_mode = True
+                print("🎤 Mode écoute activé !")
+                continue
+            if user_input.lower() == "listen off":
+                listen_mode = False
+                print("⌨️  Mode écoute désactivé (texte uniquement)")
                 continue
             
             # 2. Ajouter le message utilisateur à l'historique

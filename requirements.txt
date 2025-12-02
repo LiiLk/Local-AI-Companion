@@ -11,6 +11,10 @@ edge-tts>=6.1.0      # Edge TTS (cloud Microsoft, fallback)
 kokoro>=0.9.4        # Kokoro TTS (local, haute qualité)
 soundfile>=0.12.0    # Pour sauvegarder les fichiers WAV
 
+# Speech-to-Text (ASR)
+faster-whisper>=1.0.0  # Whisper optimisé (4x plus rapide)
+sounddevice>=0.4.0     # Capture audio microphone
+
 # Pour le futur : serveur web
 # fastapi>=0.104.0
 # uvicorn>=0.24.0
