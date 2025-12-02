@@ -107,6 +107,13 @@ class WebSocketManager {
         });
     }
     
+    sendPreloadModels() {
+        // Request server to preload VAD, ASR, TTS models
+        return this.send({
+            type: 'preload_models'
+        });
+    }
+    
     ping() {
         return this.send({
             type: 'ping'
@@ -190,6 +197,20 @@ class WebSocketManager {
                     
                 case 'cleared':
                     console.log('Conversation cleared');
+                    break;
+                    
+                case 'models_loading':
+                    console.log('🔄 Models loading...');
+                    if (this.onModelsLoading) {
+                        this.onModelsLoading(message.message);
+                    }
+                    break;
+                    
+                case 'models_ready':
+                    console.log('✅ Models ready!');
+                    if (this.onModelsReady) {
+                        this.onModelsReady(message.message);
+                    }
                     break;
                     
                 default:

@@ -22,11 +22,17 @@ from .base import BaseASR, BaseRealtimeASR, ASRResult, ASRSegment
 
 # Model size configurations
 MODEL_SIZES = {
-    "tiny": {"params": "39M", "vram": "~1GB", "speed": "fastest"},
-    "base": {"params": "74M", "vram": "~1GB", "speed": "fast"},
-    "small": {"params": "244M", "vram": "~2GB", "speed": "medium"},
-    "medium": {"params": "769M", "vram": "~5GB", "speed": "slow"},
-    "large-v3": {"params": "1.5B", "vram": "~10GB", "speed": "slowest"},
+    "tiny": {"params": "39M", "vram": "~1GB", "speed": "fastest", "quality": "low"},
+    "base": {"params": "74M", "vram": "~1GB", "speed": "fast", "quality": "medium"},
+    "small": {"params": "244M", "vram": "~2GB", "speed": "medium", "quality": "good"},
+    "medium": {"params": "769M", "vram": "~5GB", "speed": "slow", "quality": "very good"},
+    "large-v2": {"params": "1.5B", "vram": "~10GB", "speed": "slowest", "quality": "excellent"},
+    "large-v3": {"params": "1.5B", "vram": "~10GB", "speed": "slowest", "quality": "best"},
+    # Turbo: pruned large-v3 (4 decoder layers instead of 32) - 6x faster!
+    "turbo": {"params": "809M", "vram": "~6GB", "speed": "fast", "quality": "excellent"},
+    "large-v3-turbo": {"params": "809M", "vram": "~6GB", "speed": "fast", "quality": "excellent"},
+    # Distil models (English only - not recommended for French)
+    "distil-large-v3": {"params": "756M", "vram": "~4GB", "speed": "fastest", "quality": "good (EN only)"},
 }
 
 # Whisper supported languages (subset of most common)
@@ -166,6 +172,11 @@ class WhisperProvider(BaseASR):
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         
+        # Log audio file info for debugging
+        import os
+        file_size = os.path.getsize(audio_path)
+        print(f"🎤 Transcription de {audio_path.name} ({file_size/1024:.1f} KB)")
+        
         # Normalize language setting
         # Empty string or "auto" means auto-detection
         effective_language = language if language and language.lower() != "auto" else None
@@ -179,10 +190,18 @@ class WhisperProvider(BaseASR):
             language=effective_language,
             beam_size=self.BEAM_SIZE,
             word_timestamps=True,
-            vad_filter=True,  # Filter out silence
-            # Key settings from Open-LLM-VTuber:
-            condition_on_previous_text=False,  # Prevents hallucinations
+            vad_filter=True,  # Filter out silence using Silero VAD
+            vad_parameters=dict(
+                min_silence_duration_ms=500,  # Minimum silence to split
+                speech_pad_ms=400,  # Padding around speech
+            ),
+            # Anti-hallucination settings:
+            condition_on_previous_text=False,  # Prevents repeated hallucinations
             initial_prompt=effective_prompt,  # Guides language detection
+            no_speech_threshold=0.6,  # Higher = more strict (default 0.6)
+            log_prob_threshold=-1.0,  # Filter low confidence (default -1.0)
+            compression_ratio_threshold=2.4,  # Filter repetitive text (default 2.4)
+            temperature=0.0,  # Deterministic output (no sampling)
         )
         
         # Collect all segments
@@ -190,12 +209,24 @@ class WhisperProvider(BaseASR):
         full_text_parts = []
         
         for segment in segments:
+            # Log each segment for debugging
+            avg_logprob = getattr(segment, 'avg_logprob', 0)
+            no_speech_prob = getattr(segment, 'no_speech_prob', 0)
+            print(f"   📝 [{segment.start:.1f}s-{segment.end:.1f}s] "
+                  f"'{segment.text.strip()}' "
+                  f"(logprob={avg_logprob:.2f}, no_speech={no_speech_prob:.2f})")
+            
+            # Filter out low-confidence segments
+            if avg_logprob < -1.0 or no_speech_prob > 0.5:
+                print(f"   ⚠️ Segment filtré (faible confiance)")
+                continue
+                
             full_text_parts.append(segment.text)
             all_segments.append({
                 "text": segment.text.strip(),
                 "start": segment.start,
                 "end": segment.end,
-                "confidence": getattr(segment, 'avg_logprob', None)
+                "confidence": avg_logprob
             })
         
         full_text = " ".join(full_text_parts).strip()

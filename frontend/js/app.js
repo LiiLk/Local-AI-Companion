@@ -12,6 +12,7 @@ class App {
         // State
         this.isStreaming = false;
         this.currentStreamContent = '';
+        this._modelsPreloaded = false;
         
         // DOM Elements
         this.elements = {
@@ -42,6 +43,8 @@ class App {
         this.ws.onTranscribing = () => this._showTranscribingIndicator();
         this.ws.onVadStart = () => this._handleVadStart();
         this.ws.onVadEnd = () => this._handleVadEnd();
+        this.ws.onModelsLoading = (msg) => this._showModelsLoading(msg);
+        this.ws.onModelsReady = (msg) => this._showModelsReady(msg);
         this.ws.onError = (error) => this._handleError(error);
         
         // Audio callbacks
@@ -80,6 +83,12 @@ class App {
         // Microphone button
         this.elements.micBtn.addEventListener('click', async () => {
             try {
+                // Preload models on first mic click
+                if (!this._modelsPreloaded) {
+                    this.ws.sendPreloadModels();
+                    this._modelsPreloaded = true;
+                }
+                
                 await this.audio.toggleRecording();
                 this.elements.micBtn.classList.toggle('recording', this.audio.isRecording);
             } catch (error) {
@@ -164,6 +173,26 @@ class App {
     _handleError(error) {
         console.error('Error:', error);
         this._showError(error.message || 'An error occurred');
+    }
+    
+    _showModelsLoading(message) {
+        // Show loading indicator
+        this.elements.recordingIndicator.classList.remove('hidden');
+        this.elements.recordingIndicator.querySelector('span:last-child').textContent = '🔄 ' + message;
+        this.elements.micBtn.classList.add('loading');
+    }
+    
+    _showModelsReady(message) {
+        // Update indicator briefly then hide if not recording
+        this.elements.recordingIndicator.querySelector('span:last-child').textContent = '✅ ' + message;
+        this.elements.micBtn.classList.remove('loading');
+        
+        // Hide after 1 second if not actively recording
+        setTimeout(() => {
+            if (!this.audio.isRecording) {
+                this.elements.recordingIndicator.classList.add('hidden');
+            }
+        }, 1000);
     }
     
     _addMessage(role, content, isStreaming = false) {

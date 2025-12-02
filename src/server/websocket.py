@@ -122,6 +122,7 @@ class WebSocketManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.states: Dict[str, ConversationState] = {}
+        self._preloading: Dict[str, bool] = {}  # Track preloading state per client
     
     async def connect(self, websocket: WebSocket, client_id: str):
         """Accept a new WebSocket connection."""
@@ -345,6 +346,20 @@ class WebSocketManager:
             audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
             audio_float = audio_int16.astype(np.float32) / 32767.0
             
+            # Calculate audio duration
+            duration_sec = len(audio_int16) / 16000
+            print(f"🎤 Audio reçu: {len(audio_bytes)} bytes, {duration_sec:.2f}s, {len(audio_int16)} samples")
+            
+            # Check if audio is too short (< 0.5s often causes hallucinations)
+            if duration_sec < 0.5:
+                print("⚠️ Audio trop court (< 0.5s), ignoré")
+                await self.send_json(client_id, {
+                    "type": "transcription",
+                    "text": "",
+                    "message": "Audio too short"
+                })
+                return
+            
             # Save to temp WAV file
             import wave
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -398,6 +413,68 @@ class WebSocketManager:
             "type": "cleared",
             "message": "Conversation history cleared"
         })
+    
+    async def preload_models(self, client_id: str):
+        """
+        Preload all models in parallel when user clicks mic.
+        This ensures smooth conversation without loading delays.
+        """
+        # Avoid duplicate preloading
+        if self._preloading.get(client_id, False):
+            return
+        
+        state = self.states.get(client_id)
+        if not state:
+            return
+        
+        # Check if already loaded
+        if state.vad and state.asr and state.tts:
+            await self.send_json(client_id, {
+                "type": "models_ready",
+                "message": "Models already loaded"
+            })
+            return
+        
+        self._preloading[client_id] = True
+        
+        await self.send_json(client_id, {
+            "type": "models_loading",
+            "message": "Loading voice models..."
+        })
+        
+        try:
+            # Load models in parallel using asyncio
+            loop = asyncio.get_event_loop()
+            
+            # These are blocking calls, run in thread pool
+            async def load_vad():
+                if not state.vad:
+                    await loop.run_in_executor(None, state.get_vad)
+                    
+            async def load_asr():
+                if not state.asr:
+                    await loop.run_in_executor(None, state.get_asr)
+                    
+            async def load_tts():
+                if not state.tts:
+                    await loop.run_in_executor(None, state.get_tts)
+            
+            # Run all in parallel
+            await asyncio.gather(load_vad(), load_asr(), load_tts())
+            
+            await self.send_json(client_id, {
+                "type": "models_ready",
+                "message": "Voice models loaded!"
+            })
+            
+        except Exception as e:
+            print(f"❌ Model preloading error: {e}")
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": f"Failed to load models: {str(e)}"
+            })
+        finally:
+            self._preloading[client_id] = False
 
 
 # Global manager instance
@@ -451,6 +528,10 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 
             elif msg_type == "ping":
                 await manager.send_json(client_id, {"type": "pong"})
+                
+            elif msg_type == "preload_models":
+                # Preload models in background when user clicks mic
+                await manager.preload_models(client_id)
                 
     except WebSocketDisconnect:
         await manager.disconnect(client_id)

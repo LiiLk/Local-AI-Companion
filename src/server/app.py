@@ -89,3 +89,15 @@ def create_app() -> FastAPI:
 
 # Create app instance for uvicorn
 app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    config = load_config()
+    server_config = config.get("server", {})
+    uvicorn.run(
+        "src.server.app:app",
+        host=server_config.get("host", "0.0.0.0"),
+        port=server_config.get("port", 8000),
+        reload=True,
+    )
