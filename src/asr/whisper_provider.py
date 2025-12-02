@@ -46,19 +46,25 @@ class WhisperProvider(BaseASR):
         model_size: Size of the Whisper model (tiny, base, small, medium, large-v3)
         device: Device to run on ("cuda", "cpu", or "auto")
         compute_type: Precision ("float16", "int8", "float32")
+        initial_prompt: Prompt to guide language detection and transcription style.
+                       Should be in the expected language of the audio.
         
     Example:
-        >>> asr = WhisperProvider(model_size="small")
+        >>> asr = WhisperProvider(model_size="small", initial_prompt="Transcription en français.")
         >>> result = asr.transcribe("audio.wav")
         >>> print(result.text)
         "Bonjour, comment ça va ?"
     """
     
+    # Beam search provides better accuracy at slight speed cost
+    BEAM_SIZE = 5
+    
     def __init__(
         self,
         model_size: str = "base",
         device: str = "auto",
-        compute_type: str = "float16"
+        compute_type: str = "float16",
+        initial_prompt: Optional[str] = None
     ):
         if model_size not in MODEL_SIZES:
             raise ValueError(
@@ -69,6 +75,9 @@ class WhisperProvider(BaseASR):
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        # initial_prompt helps Whisper detect the correct language
+        # Should be in the expected language (e.g. French for French audio)
+        self.initial_prompt = initial_prompt
         
         # Lazy loading - model loaded on first use
         self._model = None
@@ -136,14 +145,17 @@ class WhisperProvider(BaseASR):
     def transcribe(
         self,
         audio_path: str | Path,
-        language: Optional[str] = None
+        language: Optional[str] = None,
+        initial_prompt: Optional[str] = None
     ) -> ASRResult:
         """
         Transcribe an audio file to text.
         
         Args:
             audio_path: Path to audio file (WAV, MP3, FLAC, etc.)
-            language: Language code (e.g., "fr"). None for auto-detection.
+            language: Language code (e.g., "fr"). None or "" or "auto" for auto-detection.
+            initial_prompt: Override instance prompt for this transcription.
+                           Helps with language detection and style.
             
         Returns:
             ASRResult with transcribed text and metadata
@@ -154,13 +166,23 @@ class WhisperProvider(BaseASR):
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         
-        # Transcribe with faster-whisper
+        # Normalize language setting
+        # Empty string or "auto" means auto-detection
+        effective_language = language if language and language.lower() != "auto" else None
+        
+        # Use provided prompt or instance default
+        effective_prompt = initial_prompt or self.initial_prompt
+        
+        # Transcribe with faster-whisper (same approach as Open-LLM-VTuber)
         segments, info = model.transcribe(
             str(audio_path),
-            language=language,
-            beam_size=5,
+            language=effective_language,
+            beam_size=self.BEAM_SIZE,
             word_timestamps=True,
             vad_filter=True,  # Filter out silence
+            # Key settings from Open-LLM-VTuber:
+            condition_on_previous_text=False,  # Prevents hallucinations
+            initial_prompt=effective_prompt,  # Guides language detection
         )
         
         # Collect all segments

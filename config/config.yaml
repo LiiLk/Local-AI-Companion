@@ -52,11 +52,22 @@ asr:
   
   # Taille du modèle Whisper
   # - tiny   : 39M params, ultra rapide, qualité basique
-  # - base   : 74M params, rapide, bonne qualité (recommandé)
-  # - small  : 244M params, moyen, très bonne qualité
+  # - base   : 74M params, rapide, bonne qualité
+  # - small  : 244M params, moyen, très bonne qualité (meilleure précision)
   # - medium : 769M params, lent, excellente qualité
-  # - large-v3: 1.5B params, très lent, qualité maximale
-  model_size: "base"
+  # - large-v3-turbo: plus rapide que large-v3, très bonne qualité
+  model_size: "small"
+  
+  # Langue: "fr", "en", "auto" ou vide "" pour auto-détection
+  # IMPORTANT: L'auto-détection de Whisper est mauvaise sur l'audio court.
+  # Elle hallucine souvent du russe/anglais au lieu du français.
+  # => Forcer "fr" si tu parles toujours français.
+  # => Utiliser "small" ou plus gros pour une meilleure auto-détection.
+  language: "fr"
+  
+  # Prompt pour guider la transcription (aide même avec langue forcée)
+  # Donne du contexte sur le style de conversation attendu.
+  prompt: "Conversation en français avec une assistante IA."
   
   # Device: "cpu" ou "cuda" (GPU)
   # Note: Si problèmes cuDNN, utiliser "cpu"
