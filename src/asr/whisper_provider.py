@@ -7,17 +7,24 @@ which is up to 4x faster than the original with the same accuracy.
 Features:
 - Local processing (100% private)
 - Multiple model sizes (tiny to large-v3)
+- French-optimized distilled models from bofenghuang
 - Automatic language detection
 - Word-level timestamps
 - GPU acceleration with CUDA
 """
 
 import asyncio
+import os
+import numpy as np
 from pathlib import Path
-from typing import Optional, List, AsyncGenerator
+from typing import Optional, List, AsyncGenerator, Union
 from dataclasses import dataclass
 
 from .base import BaseASR, BaseRealtimeASR, ASRResult, ASRSegment
+
+
+# Directory for locally cached models
+MODELS_DIR = Path(__file__).parent.parent.parent / "models"
 
 
 # Model size configurations
@@ -33,6 +40,21 @@ MODEL_SIZES = {
     "large-v3-turbo": {"params": "809M", "vram": "~6GB", "speed": "fast", "quality": "excellent"},
     # Distil models (English only - not recommended for French)
     "distil-large-v3": {"params": "756M", "vram": "~4GB", "speed": "fastest", "quality": "good (EN only)"},
+    # ============================================================
+    # 🇫🇷 FRENCH-OPTIMIZED MODELS (from bofenghuang)
+    # Fine-tuned on 2500+ hours of French data, much better than base Whisper!
+    # Uses CTranslate2 format for Faster-Whisper compatibility.
+    # ============================================================
+    "french-distil-dec4": {
+        "params": "0.8B", "vram": "~3GB", "speed": "fast", "quality": "excellent (FR)",
+        "hf_repo": "bofenghuang/whisper-large-v3-french-distil-dec4",
+        "local_path": "whisper-french-distil-dec4",
+    },
+    "french-distil-dec2": {
+        "params": "0.8B", "vram": "~3GB", "speed": "fastest", "quality": "very good (FR)",
+        "hf_repo": "bofenghuang/whisper-large-v3-french-distil-dec2",
+        "local_path": "whisper-french-distil-dec2",
+    },
 }
 
 # Whisper supported languages (subset of most common)
@@ -63,7 +85,8 @@ class WhisperProvider(BaseASR):
     """
     
     # Beam search provides better accuracy at slight speed cost
-    BEAM_SIZE = 5
+    # Set to 1 for fastest speed (greedy decoding)
+    BEAM_SIZE = 1
     
     def __init__(
         self,
@@ -88,11 +111,52 @@ class WhisperProvider(BaseASR):
         # Lazy loading - model loaded on first use
         self._model = None
         
+    def _download_french_model(self, model_config: dict) -> Path:
+        """
+        Download French-optimized model from HuggingFace to local cache.
+        
+        Only downloads the CTranslate2 format files needed for faster-whisper.
+        """
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            raise ImportError(
+                "huggingface_hub is not installed. "
+                "Install it with: pip install huggingface_hub"
+            )
+        
+        hf_repo = model_config["hf_repo"]
+        local_path = MODELS_DIR / model_config["local_path"]
+        ctranslate2_path = local_path / "ctranslate2"
+        
+        # Check if already downloaded
+        if ctranslate2_path.exists() and (ctranslate2_path / "model.bin").exists():
+            print(f"✅ Modèle français déjà en cache: {local_path}")
+            return ctranslate2_path
+        
+        print(f"📥 Téléchargement du modèle français depuis {hf_repo}...")
+        print(f"   (Ceci ne sera fait qu'une seule fois)")
+        
+        # Create models directory
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Download only CTranslate2 files (smaller than full model)
+        snapshot_download(
+            repo_id=hf_repo,
+            local_dir=str(local_path),
+            allow_patterns="ctranslate2/*",
+            local_dir_use_symlinks=False,
+        )
+        
+        print(f"✅ Modèle téléchargé: {local_path}")
+        return ctranslate2_path
+    
     def _get_model(self):
         """
         Lazy load the Whisper model.
         
         Only loads the model on first use to save memory and startup time.
+        For French models, downloads from HuggingFace if not cached locally.
         """
         if self._model is None:
             try:
@@ -103,7 +167,13 @@ class WhisperProvider(BaseASR):
                     "Install it with: pip install faster-whisper"
                 )
             
-            print(f"🔄 Chargement de Whisper ({self.model_size})...")
+            model_config = MODEL_SIZES.get(self.model_size, {})
+            is_french_model = "hf_repo" in model_config
+            
+            if is_french_model:
+                print(f"🔄 Chargement du modèle français ({self.model_size})...")
+            else:
+                print(f"🔄 Chargement de Whisper ({self.model_size})...")
             
             # Determine device
             if self.device == "auto":
@@ -124,12 +194,19 @@ class WhisperProvider(BaseASR):
             if device == "cpu":
                 compute_type = "int8"  # float16 not supported on CPU
             
+            # Get model path (download French model if needed)
+            if is_french_model:
+                model_path = str(self._download_french_model(model_config))
+            else:
+                model_path = self.model_size
+            
             # Try CUDA first, fallback to CPU if cuDNN issues
             try:
                 self._model = WhisperModel(
-                    self.model_size,
+                    model_path,
                     device=device,
-                    compute_type=compute_type
+                    compute_type=compute_type,
+                    cpu_threads=4  # Optimize for CPU
                 )
             except Exception as e:
                 if "cudnn" in str(e).lower() or device == "cuda":
@@ -137,28 +214,30 @@ class WhisperProvider(BaseASR):
                     device = "cpu"
                     compute_type = "int8"
                     self._model = WhisperModel(
-                        self.model_size,
+                        model_path,
                         device=device,
-                        compute_type=compute_type
+                        compute_type=compute_type,
+                        cpu_threads=4  # Optimize for CPU
                     )
                 else:
                     raise
             
-            print(f"✅ Whisper chargé ! (device={device}, compute={compute_type})")
+            model_name = self.model_size if not is_french_model else f"{self.model_size} 🇫🇷"
+            print(f"✅ {model_name} chargé ! (device={device}, compute={compute_type})")
             
         return self._model
     
     def transcribe(
         self,
-        audio_path: str | Path,
+        audio_input: Union[str, Path, np.ndarray],
         language: Optional[str] = None,
         initial_prompt: Optional[str] = None
     ) -> ASRResult:
         """
-        Transcribe an audio file to text.
+        Transcribe an audio file or numpy array to text.
         
         Args:
-            audio_path: Path to audio file (WAV, MP3, FLAC, etc.)
+            audio_input: Path to audio file or numpy array of samples
             language: Language code (e.g., "fr"). None or "" or "auto" for auto-detection.
             initial_prompt: Override instance prompt for this transcription.
                            Helps with language detection and style.
@@ -167,15 +246,22 @@ class WhisperProvider(BaseASR):
             ASRResult with transcribed text and metadata
         """
         model = self._get_model()
-        audio_path = Path(audio_path)
         
-        if not audio_path.exists():
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-        
-        # Log audio file info for debugging
-        import os
-        file_size = os.path.getsize(audio_path)
-        print(f"🎤 Transcription de {audio_path.name} ({file_size/1024:.1f} KB)")
+        # Handle input type
+        if isinstance(audio_input, (str, Path)):
+            audio_path = Path(audio_input)
+            if not audio_path.exists():
+                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            
+            # Log audio file info for debugging
+            import os
+            file_size = os.path.getsize(audio_path)
+            print(f"🎤 Transcription de {audio_path.name} ({file_size/1024:.1f} KB)")
+            transcribe_input = str(audio_path)
+        else:
+            # Numpy array
+            print(f"🎤 Transcription de buffer audio ({len(audio_input)} samples)")
+            transcribe_input = audio_input
         
         # Normalize language setting
         # Empty string or "auto" means auto-detection
@@ -186,7 +272,7 @@ class WhisperProvider(BaseASR):
         
         # Transcribe with faster-whisper (same approach as Open-LLM-VTuber)
         segments, info = model.transcribe(
-            str(audio_path),
+            transcribe_input,
             language=effective_language,
             beam_size=self.BEAM_SIZE,
             word_timestamps=True,

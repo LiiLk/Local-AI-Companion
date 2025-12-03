@@ -47,31 +47,64 @@ tts:
 
 # === ASR (Reconnaissance vocale) ===
 asr:
-  # Provider ASR : "whisper" (local, privé)
-  provider: "whisper"
+  # Provider ASR disponibles :
+  # - "whisper"  : Local, compatible CPU/GPU, bon pour le français avec modèles distillés
+  # - "canary"   : NVIDIA Canary 1B v2, meilleur pour longs audios (6GB+ VRAM requis)
+  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, rapide et précis (2GB VRAM) ⭐ RECOMMANDÉ
+  provider: "parakeet"
   
-  # Taille du modèle Whisper
-  # - tiny   : 39M params, ultra rapide, qualité basique
-  # Modèles disponibles (du plus petit au plus gros):
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🦜 PARAKEET TDT 0.6B V3 (NVIDIA) - Rapide et précis ⭐ RECOMMANDÉ
+  # ─────────────────────────────────────────────────────────────────────────
+  # - 600M params, ~2GB VRAM (léger!)
+  # - Token-and-Duration Transducer (TDT) architecture
+  # - Excellent sur audios courts ET longs
+  # - 25 langues supportées (dont français, anglais, espagnol...)
+  # - Détection automatique de la langue
+  # - Plus rapide que Canary et Whisper large
+  # - REQUIERT un GPU NVIDIA
+  # ─────────────────────────────────────────────────────────────────────────
+  
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🐤 CANARY 1B V2 (NVIDIA) - State-of-the-art ASR
+  # ─────────────────────────────────────────────────────────────────────────
+  # - Meilleure précision que Whisper (WER ~5% pour le français)
+  # - 25 langues européennes supportées
+  # - Ponctuation et majuscules automatiques
+  # - REQUIERT un GPU NVIDIA avec 6GB+ VRAM
+  # - Plus rapide que Whisper sur GPU
+  # ⚠️ Moins bon sur les phrases courtes conversationnelles
+  # ─────────────────────────────────────────────────────────────────────────
+  
+  # Modèles Whisper disponibles (si provider: "whisper"):
+  # ─────────────────────────────────────────────────────────────────────────
+  # MODÈLES STANDARD (téléchargement auto depuis OpenAI):
   # - tiny   : 39M params, très rapide, faible qualité
   # - base   : 74M params, rapide, qualité moyenne
-  # - small  : 244M params, moyen, bonne qualité
+  # - small  : 244M params, BON COMPROMIS! Léger + bonne qualité
   # - medium : 769M params, lent, très bonne qualité
   # - large-v3: 1.5B params, très lent, meilleure qualité
-  # - turbo  : 809M params, RECOMMANDÉ! 6x plus rapide que large-v3, excellente qualité
-  # - distil-large-v3: 756M params, le plus rapide mais ANGLAIS SEULEMENT
-  model_size: "turbo"  # Meilleur compromis vitesse/qualité pour le français
+  # - turbo  : 809M params, 6x plus rapide que large-v3 (mais hallucine parfois)
+  # - distil-large-v3: 756M params, rapide mais ANGLAIS SEULEMENT
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🇫🇷 MODÈLES FRANÇAIS OPTIMISÉS (téléchargés dans models/, gitignored):
+  # - french-distil-dec4 : 0.8B params, Excellente qualité FR, ~500MB download
+  # - french-distil-dec2 : 0.8B params, Plus rapide, très bonne qualité FR
+  # Ces modèles sont fine-tunés sur 2500+ heures de français par bofenghuang.
+  # WER: 8.37% (bien meilleur que Whisper standard pour le français)
+  # ─────────────────────────────────────────────────────────────────────────
+  model_size: "french-distil-dec2"  # Modèle français optimisé - rapide et précis
   
   # Langue: "fr", "en", "auto" ou vide "" pour auto-détection
-  # IMPORTANT: L'auto-détection de Whisper est mauvaise sur l'audio court.
-  # Elle hallucine souvent du russe/anglais au lieu du français.
-  # => Forcer "fr" si tu parles toujours français.
+  # Pour les modèles français, laisser "fr" pour de meilleurs résultats.
   language: "fr"
   
   # Prompt pour guider la transcription (aide même avec langue forcée)
   # Donne du contexte sur le style de conversation attendu.
+  # Note: Utilisé uniquement par Whisper, Canary n'utilise pas de prompt.
   prompt: "Transcription d'une conversation en français avec une assistante IA."
   
   # Device: "cpu" ou "cuda" (GPU)
-  # Note: Si problèmes cuDNN, utiliser "cpu"
-  device: "cpu"
+  # Pour Canary: "cuda" FORTEMENT recommandé (6x plus rapide)
+  # Pour Whisper: "cpu" fonctionne bien, "cuda" pour plus de vitesse
+  device: "cuda"

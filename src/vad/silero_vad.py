@@ -28,7 +28,7 @@ class VADConfig:
     prob_threshold: float = 0.5      # Probability threshold for speech
     db_threshold: float = -50        # dB threshold (more sensitive)
     required_hits: int = 3           # Consecutive frames to confirm speech start (~100ms)
-    required_misses: int = 24        # Consecutive frames to confirm speech end (~800ms)
+    required_misses: int = 30        # Consecutive frames to confirm speech end (~1.0s)
     smoothing_window: int = 5        # Smoothing window for probability
 
 

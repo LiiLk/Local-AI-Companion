@@ -14,6 +14,7 @@ soundfile>=0.12.0    # Pour sauvegarder les fichiers WAV
 # Speech-to-Text (ASR)
 faster-whisper>=1.0.0  # Whisper optimisé (4x plus rapide)
 sounddevice>=0.4.0     # Capture audio microphone
+huggingface_hub>=0.20.0  # Pour télécharger les modèles français optimisés
 
 # Web Server
 fastapi>=0.104.0       # Framework web async

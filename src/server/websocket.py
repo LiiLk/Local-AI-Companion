@@ -22,7 +22,7 @@ import yaml
 from src.llm import OllamaLLM
 from src.llm.base import Message
 from src.tts import KokoroProvider, EdgeTTSProvider
-from src.asr import WhisperProvider
+from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
 
 websocket_router = APIRouter()
@@ -88,15 +88,25 @@ class ConversationState:
         """Get or create ASR provider (lazy loading)."""
         if self.asr is None:
             asr_config = self.config.get("asr", {})
-            model_size = asr_config.get("model_size", "base")
+            provider = asr_config.get("provider", "whisper")
             device = asr_config.get("device", "cpu")
-            # Prompt helps Whisper detect the correct language without forcing it
-            initial_prompt = asr_config.get("prompt", None)
-            self.asr = WhisperProvider(
-                model_size=model_size, 
-                device=device,
-                initial_prompt=initial_prompt
-            )
+            
+            if provider == "canary":
+                # NVIDIA Canary 1B v2 - state-of-the-art ASR (heavy)
+                self.asr = CanaryProvider(device=device)
+            elif provider == "parakeet":
+                # NVIDIA Parakeet TDT 0.6B v3 - fast and accurate
+                self.asr = ParakeetProvider(device=device)
+            else:
+                # Whisper (default) - best for conversational audio
+                model_size = asr_config.get("model_size", "base")
+                initial_prompt = asr_config.get("prompt", None)
+                self.asr = WhisperProvider(
+                    model_size=model_size, 
+                    device=device,
+                    initial_prompt=initial_prompt
+                )
+            
             # Store language preference (empty or "auto" = auto-detection)
             self.asr_language = asr_config.get("language", "")
             
@@ -144,32 +154,107 @@ class WebSocketManager:
     async def send_json(self, client_id: str, data: dict):
         """Send JSON message to a client."""
         if client_id in self.active_connections:
-            await self.active_connections[client_id].send_json(data)
+            try:
+                await self.active_connections[client_id].send_json(data)
+            except Exception as e:
+                print(f"⚠️ Failed to send to {client_id}: {e}")
     
+    def _get_state(self, client_id: str) -> Optional[ConversationState]:
+        """Safely get client state, returns None if client disconnected."""
+        return self.states.get(client_id)
+    
+    async def _process_tts_chunk(self, client_id: str, text: str):
+        """Generate and send audio for a text chunk."""
+        if not text.strip():
+            return
+        
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
+        tts = state.get_tts()
+        
+        try:
+            # Generate audio to temp file
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                temp_path = Path(f.name)
+            
+            # Run TTS (in executor if blocking)
+            if asyncio.iscoroutinefunction(tts.synthesize):
+                await tts.synthesize(text, temp_path)
+            else:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, tts.synthesize, text, temp_path)
+            
+            # Read and encode audio
+            with open(temp_path, "rb") as f:
+                audio_data = f.read()
+            
+            # Send as base64
+            audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+            await self.send_json(client_id, {
+                "type": "audio_data",
+                "data": audio_base64,
+                "format": "wav"
+            })
+            
+            # Cleanup
+            temp_path.unlink(missing_ok=True)
+            
+        except Exception as e:
+            print(f"❌ TTS chunk error: {e}")
+
     async def handle_text_message(self, client_id: str, content: str):
         """
         Handle a text message from the client.
         
         1. Add user message to history
         2. Stream LLM response
-        3. Generate and stream TTS audio
+        3. Generate and stream TTS audio (sentence by sentence)
         """
-        state = self.states[client_id]
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
         
         # Add user message
         state.messages.append(Message(role="user", content=content))
         
         # Notify start of response
         await self.send_json(client_id, {"type": "text_start"})
+        await self.send_json(client_id, {"type": "audio_start"})
         
         # Stream LLM response
         full_response = ""
+        current_sentence = ""
+        
         async for chunk in state.llm.chat_stream(state.messages):
             full_response += chunk
+            current_sentence += chunk
+            
             await self.send_json(client_id, {
                 "type": "text_chunk",
                 "content": chunk
             })
+            
+            # Check for sentence delimiters
+            if any(punct in chunk for punct in ".!?\n"):
+                # Simple split by delimiters
+                import re
+                # Split keeping delimiters
+                parts = re.split(r'([.!?\n]+)', current_sentence)
+                
+                if len(parts) > 1:
+                    # Process all complete sentences
+                    for i in range(0, len(parts) - 1, 2):
+                        sentence = parts[i] + parts[i+1]
+                        if sentence.strip():
+                            await self._process_tts_chunk(client_id, sentence)
+                    
+                    # Keep the remainder
+                    current_sentence = parts[-1]
+        
+        # Process remaining text
+        if current_sentence.strip():
+            await self._process_tts_chunk(client_id, current_sentence)
         
         # Add assistant message to history
         state.messages.append(Message(role="assistant", content=full_response))
@@ -180,15 +265,18 @@ class WebSocketManager:
             "full_text": full_response
         })
         
-        # Generate TTS audio
-        await self.generate_and_send_audio(client_id, full_response)
+        # Notify audio end
+        await self.send_json(client_id, {"type": "audio_end"})
     
     async def generate_and_send_audio(self, client_id: str, text: str):
         """Generate TTS audio and send to client."""
         if not text.strip():
             return
-            
-        state = self.states[client_id]
+        
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
+        
         tts = state.get_tts()
         
         # Notify audio start
@@ -234,7 +322,10 @@ class WebSocketManager:
         3. Transcribe with ASR
         4. Process as text message
         """
-        state = self.states[client_id]
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
+        
         asr = state.get_asr()
         
         try:
@@ -309,7 +400,10 @@ class WebSocketManager:
         The frontend sends raw PCM samples (float32, 16kHz).
         VAD detects speech end and triggers transcription.
         """
-        state = self.states[client_id]
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
+        
         vad = state.get_vad()
         
         try:
@@ -338,7 +432,10 @@ class WebSocketManager:
     
     async def _transcribe_and_respond(self, client_id: str, audio_bytes: bytes):
         """Transcribe audio bytes and generate response."""
-        state = self.states[client_id]
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
+        
         asr = state.get_asr()
         
         try:
@@ -360,24 +457,16 @@ class WebSocketManager:
                 })
                 return
             
-            # Save to temp WAV file
-            import wave
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                wav_path = Path(f.name)
-            
-            with wave.open(str(wav_path), 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 16-bit
-                wf.setframerate(16000)
-                wf.writeframes(audio_bytes)
-            
-            # Transcribe (with forced language)
+            # Transcribe (pass numpy array directly to avoid disk I/O)
             await self.send_json(client_id, {"type": "transcribing"})
             language = getattr(state, 'asr_language', 'fr')
-            result = asr.transcribe(wav_path, language=language)
             
-            # Cleanup
-            wav_path.unlink(missing_ok=True)
+            # Run in thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, 
+                lambda: asr.transcribe(audio_float, language=language)
+            )
             
             if result.text.strip():
                 await self.send_json(client_id, {
@@ -404,7 +493,10 @@ class WebSocketManager:
     
     async def handle_clear(self, client_id: str):
         """Clear conversation history."""
-        state = self.states[client_id]
+        state = self._get_state(client_id)
+        if not state:
+            return  # Client disconnected
+        
         character = state.config.get("character", {})
         system_prompt = character.get("system_prompt", "You are a helpful assistant.")
         state.messages = [Message(role="system", content=system_prompt)]
@@ -536,5 +628,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     except WebSocketDisconnect:
         await manager.disconnect(client_id)
     except Exception as e:
-        print(f"❌ WebSocket error: {e}")
+        import traceback
+        print(f"❌ WebSocket error for {client_id}: {type(e).__name__}: {e}")
+        traceback.print_exc()
         await manager.disconnect(client_id)
