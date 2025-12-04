@@ -14,8 +14,10 @@ soundfile>=0.12.0    # Pour sauvegarder les fichiers WAV
 # Speech-to-Text (ASR)
 faster-whisper>=1.0.0  # Whisper optimisé (4x plus rapide)
 sounddevice>=0.4.0     # Capture audio microphone
+huggingface_hub>=0.20.0  # Pour télécharger les modèles français optimisés
 
-# Pour le futur : serveur web
-# fastapi>=0.104.0
-# uvicorn>=0.24.0
-# websockets>=12.0
+# Web Server
+fastapi>=0.104.0       # Framework web async
+uvicorn>=0.24.0        # ASGI server
+websockets>=12.0       # WebSocket support
+python-multipart>=0.0.6  # Pour upload de fichiers

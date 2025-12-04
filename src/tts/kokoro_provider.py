@@ -163,7 +163,10 @@ class KokoroProvider(BaseTTS):
             from kokoro import KPipeline
             
             print(f"🔄 Chargement de Kokoro (lang={self.lang_code})...")
-            self._pipeline = KPipeline(lang_code=self.lang_code)
+            self._pipeline = KPipeline(
+                lang_code=self.lang_code,
+                repo_id="hexgrad/Kokoro-82M"  # Explicit to suppress warning
+            )
             print("✅ Kokoro chargé !")
         
         return self._pipeline
