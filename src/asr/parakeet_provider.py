@@ -72,6 +72,7 @@ class ParakeetProvider(BaseASR):
             logging.getLogger("nemo_logger").setLevel(logging.ERROR)
             
             try:
+                import torch
                 import nemo.collections.asr as nemo_asr
             except ImportError:
                 raise ImportError(
@@ -79,25 +80,42 @@ class ParakeetProvider(BaseASR):
                     "Install it with: pip install nemo_toolkit[asr]"
                 )
             
-            print(f"🔄 Chargement de Parakeet TDT 0.6B v3...")
+            print(f"🔄 Chargement de Parakeet TDT 0.6B v3 sur {self.device.upper()}...")
             
-            # Load model from HuggingFace
-            self._model = nemo_asr.models.ASRModel.from_pretrained(
-                model_name=self.model_name
-            )
-            
-            # Move to appropriate device
-            if self.device == "cuda":
-                import torch
+            # Force CPU loading if requested to avoid CUDA OOM
+            if self.device == "cpu":
+                # Disable CUDA before loading to prevent NeMo from using GPU
+                original_cuda_visible = None
+                import os
+                if "CUDA_VISIBLE_DEVICES" in os.environ:
+                    original_cuda_visible = os.environ["CUDA_VISIBLE_DEVICES"]
+                os.environ["CUDA_VISIBLE_DEVICES"] = ""
+                
+                try:
+                    # Load model - will go to CPU since CUDA is "hidden"
+                    self._model = nemo_asr.models.ASRModel.from_pretrained(
+                        model_name=self.model_name,
+                        map_location=torch.device('cpu')
+                    )
+                    self._model = self._model.cpu()
+                    print(f"✅ Parakeet chargé sur CPU")
+                finally:
+                    # Restore CUDA visibility for other components (like LLM)
+                    if original_cuda_visible is not None:
+                        os.environ["CUDA_VISIBLE_DEVICES"] = original_cuda_visible
+                    elif "CUDA_VISIBLE_DEVICES" in os.environ:
+                        del os.environ["CUDA_VISIBLE_DEVICES"]
+            else:
+                # Load on GPU
+                self._model = nemo_asr.models.ASRModel.from_pretrained(
+                    model_name=self.model_name
+                )
                 if torch.cuda.is_available():
                     self._model = self._model.cuda()
                     print(f"✅ Parakeet chargé sur GPU!")
                 else:
-                    print("⚠️ CUDA non disponible, utilisation du CPU (lent)")
+                    print("⚠️ CUDA non disponible, utilisation du CPU")
                     self._model = self._model.cpu()
-            else:
-                self._model = self._model.cpu()
-                print(f"✅ Parakeet chargé sur CPU (lent)")
             
             # Set to evaluation mode
             self._model.eval()

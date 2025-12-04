@@ -72,7 +72,8 @@ asr:
   # Provider ASR disponibles :
   # - "whisper"  : Local, compatible CPU/GPU, bon pour le français avec modèles distillés
   # - "canary"   : NVIDIA Canary 1B v2, meilleur pour longs audios (6GB+ VRAM requis)
-  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, rapide et précis (2GB VRAM) ⭐ RECOMMANDÉ
+  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, rapide et précis (peut tourner sur CPU)
+  # ⚠️ Avec Jan-v2-VL (~7GB VRAM), utiliser ASR sur CPU pour éviter OOM
   provider: "parakeet"
   
   # ─────────────────────────────────────────────────────────────────────────
@@ -127,6 +128,6 @@ asr:
   prompt: "Transcription d'une conversation en français avec une assistante IA."
   
   # Device: "cpu" ou "cuda" (GPU)
-  # Pour Canary: "cuda" FORTEMENT recommandé (6x plus rapide)
-  # Pour Whisper: "cpu" fonctionne bien, "cuda" pour plus de vitesse
-  device: "cuda"
+  # ⚠️ Avec Jan-v2-VL sur GPU, utiliser "cpu" pour Whisper afin d'éviter OOM
+  # Whisper french-distil-dec2 sur CPU est assez rapide (~1-2s par phrase)
+  device: "cpu"
