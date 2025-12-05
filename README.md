@@ -51,7 +51,8 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 - [x] **YAML configuration** - Personality and settings without touching code
 - [x] **CLI Chatbot** - Functional command-line interface
 - [x] **Text-to-Speech (TTS)** - Voice synthesis with:
-  - 🔊 **Kokoro TTS** (local, 82M params, high quality) - *Recommended*
+  - 🎤 **OpenAudio S1-mini** (local, 0.5B params, #1 TTS-Arena2, voice cloning) - *Best quality*
+  - 🔊 **Kokoro TTS** (local, 82M params, high quality, fast) - *Recommended*
   - 🌐 **Edge TTS** (cloud fallback, Microsoft voices)
 
 - [x] **Speech-to-Text (ASR)** - Voice recognition with:
@@ -66,7 +67,6 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 - [ ] **Live2D Avatar** - Animation synchronized with voice
 
 ### Planned 📋
-- [ ] **Voice Cloning** - Clone any voice with XTTS v2
 - [ ] **Vision** - Screen capture, camera input for visual understanding
 - [ ] **Document RAG** - Query and understand your local documents
 - [ ] **Persistent memory** - Long-term conversation history
@@ -182,13 +182,46 @@ ollama pull llama3.2:3b
 # Update config/config.yaml to use provider: "ollama"
 ```
 
+### OpenAudio S1-mini Setup (Optional - for voice cloning)
+
+OpenAudio S1-mini is the #1 rated TTS model on TTS-Arena2, offering:
+- Voice cloning with 10-30 seconds of reference audio
+- Emotion markers: `(excited)`, `(whispering)`, `(sad)`, `(laughing)`
+- Native multilingual support (French, English, Japanese, etc.)
+
+```bash
+# 1. Install Fish Speech
+git clone https://github.com/fishaudio/fish-speech.git ~/tools/fish-speech
+cd ~/tools/fish-speech
+pip install -e .[cpu]  # or pip install -e . for GPU
+
+# 2. Download the model (~3.5GB)
+mkdir -p ~/models/openaudio-s1-mini
+cd ~/models/openaudio-s1-mini
+huggingface-cli download fishaudio/openaudio-s1-mini --local-dir .
+
+# 3. Configure voice cloning (optional)
+# Record 10-30 seconds of clear speech and add to config.yaml:
+# tts:
+#   openaudio:
+#     speaker_wav: "~/voices/my_voice.wav"
+#     speaker_text: "Exact transcription of the reference audio..."
+```
+
+**Performance notes:**
+- GPU: ~2s generation for 2s audio (8.9x RTF), 4.9GB VRAM
+- CPU: ~50s generation for 2s audio (50x RTF) - not recommended for real-time
+
 ### Usage
 
 ```bash
 # Run the CLI chatbot (text only)
 python main.py
 
-# Run with voice output (Kokoro TTS - local)
+# Run with OpenAudio TTS (best quality, voice cloning) - requires GPU
+python main.py --voice --tts openaudio
+
+# Run with Kokoro TTS (local, fast)
 python main.py --voice
 
 # Run with Edge TTS (cloud)
@@ -210,7 +243,7 @@ python -m src.server
 |----------|--------------|
 | **Language** | Python 3.12 |
 | **LLM** | Jan-v2-VL-high (8B, vision) via llama.cpp + Ollama fallback |
-| **TTS** | Kokoro (local, 82M params) + Edge TTS (cloud fallback) |
+| **TTS** | OpenAudio S1-mini (0.5B, voice cloning, #1 quality) + Kokoro (82M, fast) + Edge TTS |
 | **ASR** | NVIDIA Parakeet TDT (0.6B) + Faster-Whisper + Canary |
 | **VAD** | Silero VAD (voice activity detection) |
 | **Backend** | FastAPI + WebSockets |
@@ -274,6 +307,7 @@ Phase 3: Advanced Features   ░░░░░░░░░░░░░░░░ 0%
 - [Jan-v2-VL](https://huggingface.co/janhq/Jan-v2-VL-high-gguf) - Vision-language "thinking" model
 - [Ollama](https://ollama.com/) - Easy-to-use local LLM
 - [Kokoro TTS](https://github.com/hexgrad/kokoro) - High-quality local TTS (82M params)
+- [Fish Speech / OpenAudio](https://github.com/fishaudio/fish-speech) - #1 TTS-Arena2 with voice cloning
 - [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) - Fast local ASR (4x faster than original)
 - [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) - Canary and Parakeet ASR models
 - [Edge TTS](https://github.com/rany2/edge-tts) - Free cloud TTS fallback

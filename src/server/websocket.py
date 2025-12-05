@@ -21,7 +21,7 @@ import yaml
 
 from src.llm import OllamaLLM, LlamaCppProvider
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider
+from src.tts import KokoroProvider, EdgeTTSProvider, OpenAudioProvider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
 
@@ -92,7 +92,25 @@ class ConversationState:
             tts_config = self.config.get("tts", {})
             provider = tts_config.get("provider", "kokoro")
             
-            if provider == "kokoro":
+            if provider == "openaudio":
+                # OpenAudio S1-mini - #1 TTS-Arena2, voice cloning
+                openaudio_config = tts_config.get("openaudio", {})
+                checkpoint_path = openaudio_config.get("checkpoint_path", "~/models/openaudio-s1-mini")
+                checkpoint_path = str(Path(checkpoint_path).expanduser())
+                device = openaudio_config.get("device", "cpu")
+                speaker_wav = openaudio_config.get("speaker_wav")
+                speaker_text = openaudio_config.get("speaker_text")
+                
+                if speaker_wav:
+                    speaker_wav = str(Path(speaker_wav).expanduser())
+                
+                self.tts = OpenAudioProvider(
+                    checkpoint_path=checkpoint_path,
+                    device=device,
+                    speaker_wav=speaker_wav,
+                    speaker_text=speaker_text,
+                )
+            elif provider == "kokoro":
                 voice = tts_config.get("kokoro_voice", "ff_siwis")
                 self.tts = KokoroProvider(voice=voice)
             else:

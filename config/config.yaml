@@ -50,14 +50,46 @@ character:
 
 # === TTS (Voix) ===
 tts:
-  # Provider TTS par défaut : "kokoro" (local, naturel) ou "edge" (cloud, gratuit)
+  # Provider TTS par défaut :
+  # - "openaudio" : OpenAudio S1-mini (local, #1 TTS-Arena2, voice cloning)
+  # - "kokoro"    : Kokoro 82M (local, naturel, léger)
+  # - "edge"      : Edge TTS (cloud Microsoft, gratuit)
   provider: "kokoro"
   
-  # --- Kokoro TTS (100% local, haute qualité) ---
-  # Voix disponibles: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🎤 OPENAUDIO S1-MINI (Fish Speech) - #1 TTS-Arena2 ⭐ RECOMMANDÉ
+  # ─────────────────────────────────────────────────────────────────────────
+  # - 0.5B params, qualité #1 sur TTS-Arena2 (meilleur qu'ElevenLabs!)
+  # - Voice cloning avec 10-30s d'audio de référence
+  # - Support multilingue natif (FR, EN, JA, ZH, etc.)
+  # - Tags d'émotion: (excited), (whispering), (sad), (laughing)
+  # - ~3.5GB de modèle, ~4GB RAM sur CPU
+  # - Peut tourner sur CPU pendant que le LLM est sur GPU
+  # ─────────────────────────────────────────────────────────────────────────
+  openaudio:
+    # Chemin vers les checkpoints (téléchargés via huggingface-cli)
+    checkpoint_path: "~/models/openaudio-s1-mini"
+    # Device: "cpu" recommandé pour libérer GPU pour le LLM, "cuda" si GPU libre
+    device: "cpu"
+    # Voice cloning (optionnel): audio de référence et sa transcription
+    # speaker_wav: "~/voices/my_voice.wav"
+    # speaker_text: "Transcription exacte de l'audio de référence..."
+    # Paramètres de génération (valeurs par défaut)
+    temperature: 0.8
+    top_p: 0.8
+    repetition_penalty: 1.1
+  
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🎵 KOKORO TTS (100% local, léger)
+  # ─────────────────────────────────────────────────────────────────────────
+  # - 82M params, ~300MB, qualité naturelle
+  # - Voix: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
+  # ─────────────────────────────────────────────────────────────────────────
   kokoro_voice: "ff_siwis"
   
-  # --- Edge TTS (cloud Microsoft, fallback) ---
+  # ─────────────────────────────────────────────────────────────────────────
+  # ☁️ EDGE TTS (cloud Microsoft, fallback)
+  # ─────────────────────────────────────────────────────────────────────────
   voice: "fr-FR-DeniseNeural"
   # Autres voix Edge:
   # - fr-FR-HenriNeural (homme français)

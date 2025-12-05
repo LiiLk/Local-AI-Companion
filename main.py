@@ -21,7 +21,7 @@ from pathlib import Path
 
 from src.llm import OllamaLLM
 from src.llm.base import Message
-from src.tts import EdgeTTSProvider, KokoroProvider
+from src.tts import EdgeTTSProvider, KokoroProvider, OpenAudioProvider
 from src.tts.base import BaseTTS
 from src.asr import RealtimeWhisperProvider
 from src.asr.base import BaseASR
@@ -69,13 +69,36 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
     Crée le provider TTS approprié.
     
     Args:
-        provider: "kokoro" ou "edge"
+        provider: "openaudio", "kokoro" ou "edge"
         tts_config: Configuration TTS depuis config.yaml
         
     Returns:
         Instance du provider TTS
     """
-    if provider == "kokoro":
+    if provider == "openaudio":
+        # OpenAudio S1-mini - #1 TTS-Arena2, voice cloning
+        from pathlib import Path
+        openaudio_config = tts_config.get("openaudio", {})
+        checkpoint_path = openaudio_config.get("checkpoint_path", "~/models/openaudio-s1-mini")
+        # Expand ~ to home directory
+        checkpoint_path = str(Path(checkpoint_path).expanduser())
+        device = openaudio_config.get("device", "cpu")
+        speaker_wav = openaudio_config.get("speaker_wav")
+        speaker_text = openaudio_config.get("speaker_text")
+        
+        # Expand speaker_wav path if provided
+        if speaker_wav:
+            speaker_wav = str(Path(speaker_wav).expanduser())
+        
+        return OpenAudioProvider(
+            checkpoint_path=checkpoint_path,
+            device=device,
+            speaker_wav=speaker_wav,
+            speaker_text=speaker_text,
+            half_precision=openaudio_config.get("half_precision", False),
+            compile_model=openaudio_config.get("compile", False),
+        )
+    elif provider == "kokoro":
         # Kokoro - TTS local haute qualité
         voice = tts_config.get("kokoro_voice", "ff_siwis")
         return KokoroProvider(voice=voice)
@@ -128,7 +151,8 @@ async def speak_text(tts: BaseTTS, text: str, temp_dir: Path) -> subprocess.Pope
         return None
     
     # Extension selon le type de TTS
-    ext = ".wav" if isinstance(tts, KokoroProvider) else ".mp3"
+    # OpenAudio et Kokoro génèrent du WAV, Edge TTS génère du MP3
+    ext = ".wav" if isinstance(tts, (KokoroProvider, OpenAudioProvider)) else ".mp3"
     
     # Générer un fichier temporaire unique
     audio_file = temp_dir / f"speech_{hash(text) % 10000}{ext}"
@@ -149,8 +173,8 @@ async def main():
     parser.add_argument("--voice", "-v", action="store_true", 
                        help="Activer la synthèse vocale")
     parser.add_argument("--tts", type=str, default="kokoro",
-                       choices=["kokoro", "edge"],
-                       help="Provider TTS: kokoro (local) ou edge (cloud)")
+                       choices=["openaudio", "kokoro", "edge"],
+                       help="Provider TTS: openaudio (#1), kokoro (local) ou edge (cloud)")
     parser.add_argument("--listen", "-l", action="store_true",
                        help="Activer l'écoute vocale (microphone)")
     parser.add_argument("--asr-model", type=str, default="base",
@@ -180,7 +204,12 @@ async def main():
         print("🎤 Mode CONVERSATION VOCALE activé")
         print("   Parlez dans votre micro, l'IA vous répondra à voix haute !")
     elif args.voice:
-        tts_name = "Kokoro (local)" if args.tts == "kokoro" else "Edge TTS (cloud)"
+        tts_names = {
+            "openaudio": "OpenAudio S1-mini (#1 quality)",
+            "kokoro": "Kokoro (local)",
+            "edge": "Edge TTS (cloud)"
+        }
+        tts_name = tts_names.get(args.tts, args.tts)
         print(f"🔊 Mode vocal ACTIVÉ - {tts_name}")
     else:
         print("🔇 Mode texte (utilise --voice ou --listen)")
