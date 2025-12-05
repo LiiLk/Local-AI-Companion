@@ -3,18 +3,40 @@
 
 # === LLM (Cerveau) ===
 llm:
-  # Quel type de LLM utiliser : "ollama", "openai", "groq"
-  provider: "ollama"
+  # Quel type de LLM utiliser : "ollama" ou "llamacpp"
+  # - "ollama"   : Simple, modèles pré-packagés (llama3.2, mistral, etc.)
+  # - "llamacpp" : Flexible, supporte les modèles vision (Jan-v2-VL, LLaVA, etc.)
+  provider: "llamacpp"
   
-  # Configuration Ollama
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🦙 LLAMA.CPP SERVER (pour Jan-v2-VL et modèles vision)
+  # ─────────────────────────────────────────────────────────────────────────
+  # Jan-v2-VL-high est un modèle "thinking" (8B params) qui réfléchit avant
+  # de répondre. Il utilise Vulkan pour le GPU (pas besoin de CUDA Toolkit).
+  # 
+  # Lancer le serveur avant de démarrer l'assistant:
+  #   ./scripts/start_llm_server.sh
+  # ou manuellement:
+  #   cd ~/tools/llama-cpp && LD_LIBRARY_PATH="$PWD" ./llama-server \
+  #     --model ~/models/jan-v2-vl-high/Jan-v2-VL-high-Q4_K_M.gguf \
+  #     --mmproj ~/models/jan-v2-vl-high/mmproj-Jan-v2-VL-high.gguf \
+  #     --host 0.0.0.0 --port 8080 --ctx-size 8192 --n-gpu-layers 99 \
+  #     --jinja --no-context-shift
+  # ─────────────────────────────────────────────────────────────────────────
+  llamacpp:
+    base_url: "http://localhost:8080"
+    model_name: "jan-v2-vl-high"
+    # Paramètres recommandés pour Jan-v2-VL (modèle "thinking")
+    max_tokens: 2048        # Les modèles thinking ont besoin de plus de tokens
+    temperature: 1.0        # Recommandé par Jan pour ce modèle
+    top_p: 0.95             # Top-p sampling
+    top_k: 20               # Top-k sampling  
+    presence_penalty: 1.5   # Réduit les répétitions
+  
+  # Configuration Ollama (fallback)
   ollama:
     model: "llama3.2:3b"      # Modèle à utiliser
     base_url: "http://localhost:11434"
-  
-  # Configuration OpenAI (pour plus tard)
-  # openai:
-  #   model: "gpt-4"
-  #   api_key: "sk-..."  # Ou utiliser variable d'environnement
 
 # === Personnalité de l'assistant ===
 character:
@@ -50,7 +72,8 @@ asr:
   # Provider ASR disponibles :
   # - "whisper"  : Local, compatible CPU/GPU, bon pour le français avec modèles distillés
   # - "canary"   : NVIDIA Canary 1B v2, meilleur pour longs audios (6GB+ VRAM requis)
-  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, rapide et précis (2GB VRAM) ⭐ RECOMMANDÉ
+  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, rapide et précis (peut tourner sur CPU)
+  # ⚠️ Avec Jan-v2-VL (~7GB VRAM), utiliser ASR sur CPU pour éviter OOM
   provider: "parakeet"
   
   # ─────────────────────────────────────────────────────────────────────────
@@ -105,6 +128,6 @@ asr:
   prompt: "Transcription d'une conversation en français avec une assistante IA."
   
   # Device: "cpu" ou "cuda" (GPU)
-  # Pour Canary: "cuda" FORTEMENT recommandé (6x plus rapide)
-  # Pour Whisper: "cpu" fonctionne bien, "cuda" pour plus de vitesse
-  device: "cuda"
+  # ⚠️ Avec Jan-v2-VL sur GPU, utiliser "cpu" pour Whisper afin d'éviter OOM
+  # Whisper french-distil-dec2 sur CPU est assez rapide (~1-2s par phrase)
+  device: "cpu"

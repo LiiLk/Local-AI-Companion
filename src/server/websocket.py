@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import yaml
 
-from src.llm import OllamaLLM
+from src.llm import OllamaLLM, LlamaCppProvider
 from src.llm.base import Message
 from src.tts import KokoroProvider, EdgeTTSProvider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
@@ -57,11 +57,28 @@ class ConversationState:
     async def initialize(self):
         """Initialize models (lazy loading)."""
         if self.llm is None:
-            llm_config = self.config["llm"]["ollama"]
-            self.llm = OllamaLLM(
-                model=llm_config["model"],
-                base_url=llm_config["base_url"]
-            )
+            llm_config = self.config.get("llm", {})
+            provider = llm_config.get("provider", "ollama")
+            
+            if provider == "llamacpp":
+                # llama.cpp server (for Jan-v2-VL and other vision models)
+                llamacpp_config = llm_config.get("llamacpp", {})
+                self.llm = LlamaCppProvider(
+                    base_url=llamacpp_config.get("base_url", "http://localhost:8080"),
+                    model_name=llamacpp_config.get("model_name", "jan-v2-vl-high"),
+                    max_tokens=llamacpp_config.get("max_tokens", 2048),
+                    temperature=llamacpp_config.get("temperature", 1.0),
+                    top_p=llamacpp_config.get("top_p", 0.95),
+                    top_k=llamacpp_config.get("top_k", 20),
+                    presence_penalty=llamacpp_config.get("presence_penalty", 1.5)
+                )
+            else:
+                # Ollama (default)
+                ollama_config = llm_config.get("ollama", {})
+                self.llm = OllamaLLM(
+                    model=ollama_config.get("model", "llama3.2:3b"),
+                    base_url=ollama_config.get("base_url", "http://localhost:11434")
+                )
             
         # Initialize conversation with system prompt
         if not self.messages:

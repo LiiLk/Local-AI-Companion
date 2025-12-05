@@ -43,7 +43,9 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 ## ✨ Features
 
 ### Implemented ✅
-- [x] **Local LLM module** - Ollama support (runs 100% on your machine)
+- [x] **Local LLM module** - Multiple providers, runs 100% on your machine
+  - 🦙 **llama.cpp** (Jan-v2-VL-high) - 8B vision-language "thinking" model
+  - 🦣 **Ollama** - Easy-to-use with pre-packaged models
 - [x] **Privacy-first** - Your conversations never leave your computer
 - [x] **Response streaming** - Real-time display of generation
 - [x] **YAML configuration** - Personality and settings without touching code
@@ -53,16 +55,18 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
   - 🌐 **Edge TTS** (cloud fallback, Microsoft voices)
 
 - [x] **Speech-to-Text (ASR)** - Voice recognition with:
+  - 🦜 **NVIDIA Parakeet TDT** (0.6B, fast, 25 languages) - *Recommended*
   - 🎤 **Faster-Whisper** (local, multiple model sizes)
-  - 🎙️ **Real-time microphone** input support
+  - 🐤 **NVIDIA Canary** (1B, state-of-the-art accuracy)
 - [x] **Full Voice Conversation** - Speak to the AI, hear its response!
+- [x] **Web Interface** - Frontend with real-time WebSocket communication
+- [x] **Voice Activity Detection** - Silero VAD for automatic speech detection
 
 ### In Development 🚧
-- [ ] **Voice Cloning** - Clone any voice with XTTS v2 (planned)
-- [ ] **Web Interface** - Frontend with WebSocket
 - [ ] **Live2D Avatar** - Animation synchronized with voice
 
 ### Planned 📋
+- [ ] **Voice Cloning** - Clone any voice with XTTS v2
 - [ ] **Vision** - Screen capture, camera input for visual understanding
 - [ ] **Document RAG** - Query and understand your local documents
 - [ ] **Persistent memory** - Long-term conversation history
@@ -130,8 +134,8 @@ Local-AI-Companion/
 
 ### Prerequisites
 - Python 3.11+
-- [Ollama](https://ollama.com/) installed and running
-- GPU recommended (but works on CPU)
+- GPU recommended (NVIDIA RTX for best performance)
+- ~10GB disk space for models
 
 ### Setup
 
@@ -147,10 +151,35 @@ source venv/bin/activate  # Linux/Mac
 
 # Install dependencies
 pip install -r requirements.txt
+```
 
-# Download an Ollama model
-#Example
+### LLM Setup (Choose one)
+
+#### Option A: Jan-v2-VL-high (Recommended for vision tasks)
+```bash
+# 1. Download llama.cpp binaries
+mkdir -p ~/tools/llama-cpp && cd ~/tools/llama-cpp
+wget https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-b7274-bin-ubuntu-vulkan-x64.tar.gz
+tar -xzf llama-b7274-bin-ubuntu-vulkan-x64.tar.gz
+
+# 2. Download the model (~5.8 GB total)
+mkdir -p ~/models/jan-v2-vl-high && cd ~/models/jan-v2-vl-high
+wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/Jan-v2-VL-high-Q4_K_M.gguf
+wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/mmproj-Jan-v2-VL-high.gguf
+
+# 3. Start the LLM server
+./scripts/start_llm_server.sh --daemon
+```
+
+#### Option B: Ollama (Simpler setup)
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Download a model
 ollama pull llama3.2:3b
+
+# Update config/config.yaml to use provider: "ollama"
 ```
 
 ### Usage
@@ -168,8 +197,9 @@ python main.py --voice --tts edge
 # Full voice conversation (speak + hear) 🎤🔊
 python main.py --listen
 
-# Voice conversation with larger Whisper model
-python main.py --listen --asr-model small
+# Start the web server
+python -m src.server
+# Then open http://localhost:8000 in your browser
 ```
 
 ---
@@ -179,11 +209,12 @@ python main.py --listen --asr-model small
 | Category | Technologies |
 |----------|--------------|
 | **Language** | Python 3.12 |
-| **LLM** | Ollama (Llama, Mistral, Gemma...) - 100% local |
+| **LLM** | Jan-v2-VL-high (8B, vision) via llama.cpp + Ollama fallback |
 | **TTS** | Kokoro (local, 82M params) + Edge TTS (cloud fallback) |
-| **ASR** | Faster-Whisper (local, multiple model sizes) |
-| **Backend** | FastAPI + WebSockets (planned) |
-| **Frontend** | HTML/CSS/JS + PixiJS for Live2D (planned) |
+| **ASR** | NVIDIA Parakeet TDT (0.6B) + Faster-Whisper + Canary |
+| **VAD** | Silero VAD (voice activity detection) |
+| **Backend** | FastAPI + WebSockets |
+| **Frontend** | HTML/CSS/JS vanilla |
 | **HTTP Client** | httpx (async) |
 | **Configuration** | PyYAML |
 
@@ -216,17 +247,18 @@ This project allowed me to deepen my knowledge in:
 ```
 Phase 1: Foundations         ████████████████ 100% ✅
 ├── ✅ Modular architecture
-├── ✅ LLM Module (Ollama)
+├── ✅ LLM Module (Ollama + llama.cpp)
 ├── ✅ CLI Chatbot
 ├── ✅ TTS Module (Kokoro + Edge)
-└── ✅ ASR Module (Whisper)
+└── ✅ ASR Module (Whisper + Canary + Parakeet)
 
-Phase 2: Interface           ░░░░░░░░░░░░░░ 0%
-├── ⬜ WebSocket Server
-├── ⬜ Web Frontend
+Phase 2: Web Interface       ████████████░░░░ 80%
+├── ✅ WebSocket Server
+├── ✅ Web Frontend
+├── ✅ Voice Activity Detection (Silero VAD)
 └── ⬜ Live2D Avatar
 
-Phase 3: Advanced Features   ░░░░░░░░░░░░░░ 0%
+Phase 3: Advanced Features   ░░░░░░░░░░░░░░░░ 0%
 ├── ⬜ Voice Cloning (XTTS v2)
 ├── ⬜ Vision (screen/camera)
 ├── ⬜ Persistent Memory
@@ -238,9 +270,12 @@ Phase 3: Advanced Features   ░░░░░░░░░░░░░░ 0%
 ## 🙏 Acknowledgments & Inspirations
 
 - [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) - Main architecture inspiration
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) - Fast local inference with Vulkan/CUDA
+- [Jan-v2-VL](https://huggingface.co/janhq/Jan-v2-VL-high-gguf) - Vision-language "thinking" model
 - [Ollama](https://ollama.com/) - Easy-to-use local LLM
 - [Kokoro TTS](https://github.com/hexgrad/kokoro) - High-quality local TTS (82M params)
 - [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) - Fast local ASR (4x faster than original)
+- [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) - Canary and Parakeet ASR models
 - [Edge TTS](https://github.com/rany2/edge-tts) - Free cloud TTS fallback
 
 ---
