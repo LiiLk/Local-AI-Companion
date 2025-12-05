@@ -51,36 +51,43 @@ character:
 # === TTS (Voix) ===
 tts:
   # Provider TTS par défaut :
-  # - "openaudio" : OpenAudio S1-mini (local, #1 TTS-Arena2, voice cloning)
-  # - "kokoro"    : Kokoro 82M (local, naturel, léger)
-  # - "edge"      : Edge TTS (cloud Microsoft, gratuit)
-  provider: "kokoro"
+  # - "xtts"   : XTTS v2 (voice cloning, 17 langues, ~2.8GB VRAM) ⭐ RECOMMANDÉ
+  # - "kokoro" : Kokoro 82M (local, naturel, léger, pas de voice cloning)
+  # - "edge"   : Edge TTS (cloud Microsoft, gratuit)
+  provider: "xtts"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🎤 OPENAUDIO S1-MINI (Fish Speech) - #1 TTS-Arena2 ⭐ RECOMMANDÉ
+  # 🎤 XTTS v2 (Voice Cloning) - Meilleur choix multilingue ⭐ RECOMMANDÉ
   # ─────────────────────────────────────────────────────────────────────────
-  # - 0.5B params, qualité #1 sur TTS-Arena2 (meilleur qu'ElevenLabs!)
-  # - Voice cloning avec 10-30s d'audio de référence
-  # - Support multilingue natif (FR, EN, JA, ZH, etc.)
-  # - Tags d'émotion: (excited), (whispering), (sad), (laughing)
-  # - ~3.5GB de modèle, ~4GB RAM sur CPU
-  # - Peut tourner sur CPU pendant que le LLM est sur GPU
+  # - ~467M params, ~2.8GB VRAM (cohabite avec Jan-v2-VL ~7GB = ~10GB total ✅)
+  # - Voice cloning avec seulement 6 secondes d'audio !
+  # - 17 langues natives: FR, EN, ES, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO, HI
+  # - 58 speakers intégrés de haute qualité
+  # - Streaming avec latence < 200ms
+  # - Modèle téléchargé automatiquement (~1.9GB)
   # ─────────────────────────────────────────────────────────────────────────
-  openaudio:
-    # Chemin vers les checkpoints (téléchargés via huggingface-cli)
-    checkpoint_path: "~/models/openaudio-s1-mini"
-    # Device: "cpu" recommandé pour libérer GPU pour le LLM, "cuda" si GPU libre
-    device: "cpu"
-    # Voice cloning (optionnel): audio de référence et sa transcription
+  xtts:
+    # Langue par défaut
+    language: "fr"
+    
+    # Device: null = auto-detect (préfère CUDA si disponible)
+    device: null
+    
+    # Speaker intégré (utilisé si pas de voice cloning)
+    # Quelques voix recommandées:
+    # - "Claribel Dervla" : Voix féminine claire et naturelle
+    # - "Ana Florence" : Voix féminine douce
+    # - "Craig Gutsy" : Voix masculine énergique
+    # - "Zacharie Aimilios" : Voix masculine française
+    # - "Filip Traverse" : Voix masculine française
+    speaker: "Claribel Dervla"
+    
+    # 🎭 Voice Cloning (optionnel): décommenter pour cloner votre voix
+    # Il suffit de 6 secondes d'audio clair !
     # speaker_wav: "~/voices/my_voice.wav"
-    # speaker_text: "Transcription exacte de l'audio de référence..."
-    # Paramètres de génération (valeurs par défaut)
-    temperature: 0.8
-    top_p: 0.8
-    repetition_penalty: 1.1
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🎵 KOKORO TTS (100% local, léger)
+  # 🎵 KOKORO TTS (100% local, léger, pas de voice cloning)
   # ─────────────────────────────────────────────────────────────────────────
   # - 82M params, ~300MB, qualité naturelle
   # - Voix: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)

@@ -2,7 +2,7 @@
 from .base import BaseTTS, TTSResult, Voice
 from .edge_tts_provider import EdgeTTSProvider
 from .kokoro_provider import KokoroProvider
-from .openaudio_provider import OpenAudioProvider
+from .xtts_provider import XTTSProvider
 
 __all__ = [
     "BaseTTS", 
@@ -10,5 +10,5 @@ __all__ = [
     "Voice", 
     "EdgeTTSProvider", 
     "KokoroProvider",
-    "OpenAudioProvider",
+    "XTTSProvider",
 ]

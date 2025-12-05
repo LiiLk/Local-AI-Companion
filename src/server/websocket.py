@@ -21,7 +21,7 @@ import yaml
 
 from src.llm import OllamaLLM, LlamaCppProvider
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider, OpenAudioProvider
+from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
 
@@ -92,23 +92,19 @@ class ConversationState:
             tts_config = self.config.get("tts", {})
             provider = tts_config.get("provider", "kokoro")
             
-            if provider == "openaudio":
-                # OpenAudio S1-mini - #1 TTS-Arena2, voice cloning
-                openaudio_config = tts_config.get("openaudio", {})
-                checkpoint_path = openaudio_config.get("checkpoint_path", "~/models/openaudio-s1-mini")
-                checkpoint_path = str(Path(checkpoint_path).expanduser())
-                device = openaudio_config.get("device", "cpu")
-                speaker_wav = openaudio_config.get("speaker_wav")
-                speaker_text = openaudio_config.get("speaker_text")
+            if provider == "xtts":
+                # XTTS v2 - Voice cloning multilingue (~2.8GB VRAM)
+                xtts_config = tts_config.get("xtts", {})
+                speaker_wav = xtts_config.get("speaker_wav")
                 
                 if speaker_wav:
                     speaker_wav = str(Path(speaker_wav).expanduser())
                 
-                self.tts = OpenAudioProvider(
-                    checkpoint_path=checkpoint_path,
-                    device=device,
+                self.tts = XTTSProvider(
+                    language=xtts_config.get("language", "fr"),
+                    speaker=xtts_config.get("speaker", "Claribel Dervla"),
                     speaker_wav=speaker_wav,
-                    speaker_text=speaker_text,
+                    device=xtts_config.get("device"),
                 )
             elif provider == "kokoro":
                 voice = tts_config.get("kokoro_voice", "ff_siwis")
