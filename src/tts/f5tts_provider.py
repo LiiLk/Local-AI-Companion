@@ -1,30 +1,30 @@
 """
-Implémentation TTS utilisant F5-TTS - Voice Cloning léger et rapide.
+TTS implementation using F5-TTS - Lightweight and fast Voice Cloning.
 
-F5-TTS est un modèle TTS basé sur Flow Matching avec ~300M paramètres.
-Il offre le voice cloning avec seulement 10-30s d'audio de référence.
+F5-TTS is a Flow Matching based TTS model with ~300M parameters.
+It offers voice cloning with only 10-30s of reference audio.
 
-Avantages :
-- Léger (~2-3GB VRAM) - peut coexister avec un LLM 7B
-- Très rapide (RTF ~0.04x sur GPU = temps réel!)
-- Voice cloning avec 10-30s d'audio de référence
-- Support multilingue natif (FR, EN, ZH, JA, etc.)
-- Téléchargement automatique des modèles depuis HuggingFace
-- API Python simple et propre
+Advantages:
+- Lightweight (~2-3GB VRAM) - can coexist with a 7B LLM
+- Very fast (RTF ~0.04x on GPU = real-time!)
+- Voice cloning with 10-30s of reference audio
+- Native multilingual support (FR, EN, ZH, JA, etc.)
+- Automatic model download from HuggingFace
+- Simple and clean Python API
 
-Inconvénients :
-- Qualité légèrement inférieure à OpenAudio S1-mini
-- Licence CC-BY-NC (non commercial)
+Disadvantages:
+- Quality slightly lower than OpenAudio S1-mini
+- CC-BY-NC license (non-commercial)
 
-Usage :
-    # Sans voice cloning (voix par défaut)
+Usage:
+    # Without voice cloning (default voice)
     tts = F5TTSProvider()
-    result = await tts.synthesize("Bonjour le monde !")
+    result = await tts.synthesize("Hello world!")
     
-    # Avec voice cloning
+    # With voice cloning
     tts = F5TTSProvider(
         ref_audio="reference.wav",
-        ref_text="Transcription exacte de l'audio de référence."
+        ref_text="Exact transcription of the reference audio."
     )
 """
 
@@ -39,7 +39,7 @@ import soundfile as sf
 from .base import BaseTTS, TTSResult, Voice
 
 
-# Voix par défaut (sans voice cloning)
+# Default voices (without voice cloning)
 AVAILABLE_VOICES = [
     Voice(id="default", name="Default F5-TTS", language="multi", gender="Unknown"),
     Voice(id="cloned", name="Cloned Voice", language="multi", gender="Unknown"),
@@ -48,28 +48,27 @@ AVAILABLE_VOICES = [
 
 class F5TTSProvider(BaseTTS):
     """
-    Provider TTS utilisant F5-TTS - Voice Cloning léger.
+    TTS Provider using F5-TTS - Lightweight Voice Cloning.
     
-    F5-TTS utilise un système de voice cloning : vous fournissez
-    un échantillon audio de référence et sa transcription, et le modèle
-    génère de la parole dans cette voix.
+    F5-TTS uses a voice cloning system: you provide a reference audio
+    sample and its transcription, and the model generates speech in that voice.
     
-    Sans référence, le modèle utilise une voix par défaut.
+    Without a reference, the model uses a default voice.
     
     Attributes:
-        ref_audio: Chemin vers l'audio de référence pour voice cloning
-        ref_text: Transcription de l'audio de référence
-        _model: Instance F5TTS (chargée à la demande)
+        ref_audio: Path to reference audio for voice cloning
+        ref_text: Transcription of the reference audio
+        _model: F5TTS instance (loaded on demand)
     
     Example:
-        # Sans voice cloning
+        # Without voice cloning
         tts = F5TTSProvider()
-        result = await tts.synthesize("Bonjour le monde !")
+        result = await tts.synthesize("Hello world!")
         
-        # Avec voice cloning
+        # With voice cloning
         tts = F5TTSProvider(
             ref_audio=Path("reference.wav"),
-            ref_text="Bonjour, je suis la voix de référence."
+            ref_text="Hello, I am the reference voice."
         )
     """
     
@@ -85,42 +84,42 @@ class F5TTSProvider(BaseTTS):
         seed: int | None = None,
     ):
         """
-        Initialise le provider F5-TTS.
+        Initialize the F5-TTS provider.
         
         Args:
-            ref_audio: Chemin vers l'audio de référence (10-30s recommandé)
-            ref_text: Transcription exacte de l'audio de référence
-                      Si vide, F5-TTS utilisera un ASR pour transcrire (+ VRAM)
-            model: Modèle à utiliser ("F5TTS_v1_Base" ou "E2TTS_Base")
-            device: Device pour l'inférence (None = auto-détection cuda/cpu)
-            seed: Graine pour la reproductibilité (None = aléatoire)
+            ref_audio: Path to reference audio (10-30s recommended)
+            ref_text: Exact transcription of the reference audio
+                      If empty, F5-TTS will use ASR to transcribe (+ VRAM)
+            model: Model to use ("F5TTS_v1_Base" or "E2TTS_Base")
+            device: Device for inference (None = auto-detect cuda/cpu)
+            seed: Seed for reproducibility (None = random)
         """
-        # Configuration voice cloning
+        # Voice cloning configuration
         self.ref_audio = Path(ref_audio) if ref_audio else None
-        self.ref_text = ref_text or ""  # Vide = auto-transcription
+        self.ref_text = ref_text or ""  # Empty = auto-transcription
         
         if self.ref_audio and not self.ref_audio.exists():
             raise FileNotFoundError(f"Reference audio not found: {self.ref_audio}")
         
-        # Configuration modèle
+        # Model configuration
         self.model_name = model
         self.device = device
         self.seed = seed
         
-        # Modèle chargé à la demande (lazy loading)
+        # Model loaded on demand (lazy loading)
         self._model = None
     
     def _load_model(self):
         """
-        Charge le modèle F5-TTS (lazy loading).
+        Load the F5-TTS model (lazy loading).
         
-        Le modèle est téléchargé automatiquement depuis HuggingFace
-        au premier appel (~1.4GB).
+        The model is automatically downloaded from HuggingFace
+        on first call (~1.4GB).
         """
         if self._model is not None:
             return self._model
         
-        print(f"🔄 Chargement de F5-TTS ({self.model_name})...")
+        print(f"🔄 Loading F5-TTS ({self.model_name})...")
         
         from f5_tts.api import F5TTS
         
@@ -129,14 +128,14 @@ class F5TTSProvider(BaseTTS):
             device=self.device,
         )
         
-        print("✅ F5-TTS chargé !")
+        print("✅ F5-TTS loaded!")
         return self._model
     
     def _get_default_ref(self) -> tuple[str, str]:
         """
-        Retourne l'audio et texte de référence par défaut de F5-TTS.
+        Return the default reference audio and text from F5-TTS.
         
-        F5-TTS inclut un exemple de référence anglais par défaut.
+        F5-TTS includes a default English reference example.
         """
         from importlib.resources import files
         
@@ -151,16 +150,16 @@ class F5TTSProvider(BaseTTS):
         output_path: Path | None = None
     ) -> TTSResult:
         """
-        Convertit du texte en fichier audio WAV.
+        Convert text to WAV audio file.
         
         Args:
-            text: Texte à synthétiser
-            output_path: Chemin de sortie (défaut: temp file)
+            text: Text to synthesize
+            output_path: Output path (default: temp file)
             
         Returns:
-            TTSResult avec le chemin du fichier audio
+            TTSResult with the audio file path
         """
-        # L'inférence est synchrone, on l'exécute dans un thread
+        # Inference is synchronous, run it in a thread
         loop = asyncio.get_event_loop()
         wav, sr = await loop.run_in_executor(
             None, 
@@ -168,37 +167,37 @@ class F5TTSProvider(BaseTTS):
             text
         )
         
-        # Définir le chemin de sortie
+        # Define output path
         if output_path is None:
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             output_path = Path(tmp.name)
             tmp.close()
         
-        # Sauvegarder en WAV
+        # Save as WAV
         sf.write(str(output_path), wav, sr)
         
-        # Calculer la durée
+        # Calculate duration
         duration = len(wav) / sr
         
         return TTSResult(audio_path=output_path, duration=duration)
     
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
         """
-        Synthèse synchrone (appelée dans un thread).
+        Synchronous synthesis (called in a thread).
         
         Returns:
             Tuple (wav_array, sample_rate)
         """
         model = self._load_model()
         
-        # Déterminer la référence à utiliser
+        # Determine which reference to use
         if self.ref_audio:
             ref_file = str(self.ref_audio)
             ref_text = self.ref_text
         else:
             ref_file, ref_text = self._get_default_ref()
         
-        # Générer l'audio
+        # Generate audio
         wav, sr, _ = model.infer(
             ref_file=ref_file,
             ref_text=ref_text,
@@ -213,17 +212,17 @@ class F5TTSProvider(BaseTTS):
         text: str
     ) -> AsyncGenerator[bytes, None]:
         """
-        Génère l'audio en streaming.
+        Generate audio in streaming mode.
         
-        Note: F5-TTS supporte le chunk inference en interne,
-        mais l'API actuelle retourne l'audio complet.
-        On simule le streaming en découpant l'audio.
+        Note: F5-TTS supports chunk inference internally,
+        but the current API returns complete audio.
+        We simulate streaming by splitting the audio.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Yields:
-            Chunks audio en bytes (format WAV)
+            Audio chunks in bytes (WAV format)
         """
         import io
         
@@ -234,13 +233,13 @@ class F5TTSProvider(BaseTTS):
             text
         )
         
-        # Découper en chunks de ~0.5s
-        chunk_size = sr // 2  # 0.5 seconde
+        # Split into ~0.5s chunks
+        chunk_size = sr // 2  # 0.5 second
         
         for i in range(0, len(wav), chunk_size):
             chunk = wav[i:i + chunk_size]
             
-            # Convertir en WAV bytes
+            # Convert to WAV bytes
             buffer = io.BytesIO()
             sf.write(buffer, chunk, sr, format='WAV')
             buffer.seek(0)
@@ -248,13 +247,13 @@ class F5TTSProvider(BaseTTS):
     
     async def synthesize_to_bytes(self, text: str) -> bytes:
         """
-        Synthétise et retourne les bytes audio directement.
+        Synthesize and return audio bytes directly.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Returns:
-            Données audio en bytes (format WAV)
+            Audio data in bytes (WAV format)
         """
         import io
         
@@ -265,7 +264,7 @@ class F5TTSProvider(BaseTTS):
             text
         )
         
-        # Convertir en WAV bytes
+        # Convert to WAV bytes
         buffer = io.BytesIO()
         sf.write(buffer, wav, sr, format='WAV')
         buffer.seek(0)
@@ -273,20 +272,20 @@ class F5TTSProvider(BaseTTS):
     
     async def list_voices(self, language: str | None = None) -> list[Voice]:
         """
-        Liste les voix disponibles.
+        List available voices.
         
-        F5-TTS utilise le voice cloning, donc les "voix" sont
-        définies par l'audio de référence, pas par des presets.
+        F5-TTS uses voice cloning, so "voices" are defined
+        by the reference audio, not by presets.
         
         Args:
-            language: Ignoré (F5-TTS est multilingue)
+            language: Ignored (F5-TTS is multilingual)
             
         Returns:
-            Liste des voix disponibles
+            List of available voices
         """
         voices = AVAILABLE_VOICES.copy()
         
-        # Ajouter une voix personnalisée si configurée
+        # Add custom voice if configured
         if self.ref_audio:
             voices.append(Voice(
                 id="custom",
@@ -299,12 +298,12 @@ class F5TTSProvider(BaseTTS):
     
     def set_voice(self, voice_id: str) -> None:
         """
-        F5-TTS n'a pas de voix préréglées.
+        F5-TTS has no preset voices.
         
-        Pour changer de voix, utilisez set_reference() avec
-        un nouvel audio de référence.
+        To change voice, use set_reference() with
+        a new reference audio.
         """
-        pass  # No-op car F5-TTS utilise voice cloning
+        pass  # No-op as F5-TTS uses voice cloning
     
     def set_reference(
         self,
@@ -312,16 +311,16 @@ class F5TTSProvider(BaseTTS):
         ref_text: str = ""
     ) -> None:
         """
-        Configure la voix de référence pour le voice cloning.
+        Configure the reference voice for voice cloning.
         
         Args:
-            ref_audio: Chemin vers l'audio de référence (10-30s recommandé)
-            ref_text: Transcription exacte de l'audio (vide = auto-transcription)
+            ref_audio: Path to reference audio (10-30s recommended)
+            ref_text: Exact transcription of the audio (empty = auto-transcription)
             
         Example:
             tts.set_reference(
                 "reference.wav",
-                "Bonjour, je suis une voix de référence claire et naturelle."
+                "Hello, I am a clear and natural reference voice."
             )
         """
         ref_path = Path(ref_audio)
@@ -333,35 +332,35 @@ class F5TTSProvider(BaseTTS):
     
     def set_rate(self, rate: str) -> None:
         """
-        Change la vitesse de parole (non supporté directement).
+        Change speech rate (not directly supported).
         
-        F5-TTS ne supporte pas le changement de vitesse.
-        Cette méthode existe pour la compatibilité avec l'interface.
+        F5-TTS does not support rate changes.
+        This method exists for interface compatibility.
         
         Args:
-            rate: Ignoré
+            rate: Ignored
         """
-        pass  # F5-TTS ne supporte pas le rate
+        pass  # F5-TTS doesn't support rate
     
     def set_pitch(self, pitch: str) -> None:
         """
-        Change la hauteur de voix (non supporté).
+        Change voice pitch (not supported).
         
-        F5-TTS ne supporte pas le changement de pitch.
-        Cette méthode existe pour la compatibilité avec l'interface.
+        F5-TTS does not support pitch changes.
+        This method exists for interface compatibility.
         
         Args:
-            pitch: Ignoré
+            pitch: Ignored
         """
-        pass  # F5-TTS ne supporte pas le pitch
+        pass  # F5-TTS doesn't support pitch
     
     def set_seed(self, seed: int | None) -> None:
         """
-        Change la graine de génération.
+        Change the generation seed.
         
-        Une graine fixe permet des résultats reproductibles.
+        A fixed seed allows reproducible results.
         
         Args:
-            seed: Graine (None = aléatoire)
+            seed: Seed (None = random)
         """
         self.seed = seed

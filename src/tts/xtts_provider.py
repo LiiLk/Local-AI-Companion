@@ -1,15 +1,15 @@
 """
-XTTS v2 Provider - Voice Cloning TTS multilingue de Coqui.
+XTTS v2 Provider - Multilingual Voice Cloning TTS by Coqui.
 
-XTTS v2 est un modèle TTS état de l'art avec :
-- 17 langues supportées (dont français !)
-- Voice cloning avec seulement 6 secondes d'audio
-- Streaming avec latence < 200ms
-- Qualité naturelle et expressive
+XTTS v2 is a state-of-the-art TTS model with:
+- 17 supported languages (including French!)
+- Voice cloning with only 6 seconds of audio
+- Streaming with latency < 200ms
+- Natural and expressive quality
 
 Specs:
-- ~2.8GB VRAM sur GPU
-- 1.9GB de modèle (téléchargement auto)
+- ~2.8GB VRAM on GPU
+- 1.9GB model (auto-download)
 - Sample rate: 24kHz
 """
 
@@ -27,108 +27,108 @@ from .base import BaseTTS, TTSResult
 logger = logging.getLogger(__name__)
 
 
-# Langues supportées par XTTS v2
+# Languages supported by XTTS v2
 SUPPORTED_LANGUAGES = [
     "en", "es", "fr", "de", "it", "pt", "pl", "tr", 
     "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko", "hi"
 ]
 
-# Speakers intégrés (quelques exemples)
+# Built-in speakers (some examples)
 DEFAULT_SPEAKERS = [
-    "Claribel Dervla",      # Voix féminine claire
-    "Daisy Studious",       # Voix féminine studieuse
-    "Gracie Wise",          # Voix féminine sage
-    "Tammie Ema",           # Voix féminine énergique
-    "Alison Dietlinde",     # Voix féminine douce
-    "Ana Florence",         # Voix féminine naturelle
-    "Annmarie Nele",        # Voix féminine expressive
-    "Asya Anara",           # Voix féminine mystérieuse
-    "Brenda Stern",         # Voix féminine sérieuse
-    "Gitta Nikolina",       # Voix féminine européenne
-    "Henriette Usha",       # Voix féminine chaleureuse
-    "Sofia Hellen",         # Voix féminine élégante
-    "Tammy Grit",           # Voix féminine déterminée
-    "Tanja Adelina",        # Voix féminine moderne
-    "Vjollca Johnnie",      # Voix féminine unique
-    "Andrew Chipper",       # Voix masculine enjouée
-    "Badr Odhiambo",        # Voix masculine profonde
-    "Dionisio Schuyler",    # Voix masculine classique
-    "Royston Min",          # Voix masculine asiatique
-    "Viktor Eka",           # Voix masculine européenne
-    "Abrahan Mack",         # Voix masculine américaine
-    "Adde Michal",          # Voix masculine scandinave
-    "Baldur Sansen",        # Voix masculine nordique
-    "Craig Gutsy",          # Voix masculine énergique
-    "Damien Black",         # Voix masculine sombre
-    "Gilberto Mathias",     # Voix masculine latine
-    "Ilkin Urbano",         # Voix masculine méditerranéenne
-    "Kazuhiko Atallah",     # Voix masculine japonaise
-    "Ludvig Milivoj",       # Voix masculine slave
-    "Suad Qasim",           # Voix masculine arabe
-    "Torcull Diarmuid",     # Voix masculine celtique
-    "Viktor Menelaos",      # Voix masculine grecque
-    "Zacharie Aimilios",    # Voix masculine française
-    "Nova Hogarth",         # Voix non-binaire
-    "Maja Ruoho",           # Voix féminine finlandaise
-    "Uta Obando",           # Voix féminine allemande
-    "Lidiya Szekeres",      # Voix féminine hongroise
-    "Chandra MacFarland",   # Voix féminine indienne
-    "Szofi Granger",        # Voix féminine britannique
-    "Camilla Holmström",    # Voix féminine suédoise
-    "Lilya Stainthorpe",    # Voix féminine russe
-    "Zofija Kendrick",      # Voix féminine polonaise
-    "Narelle Moon",         # Voix féminine australienne
-    "Barbora MacLean",      # Voix féminine écossaise
-    "Alexandra Hisakawa",   # Voix féminine japonaise
-    "Alma María",           # Voix féminine espagnole
-    "Rosemary Okafor",      # Voix féminine africaine
-    "Ige Behringer",        # Voix féminine allemande
-    "Filip Traverse",       # Voix masculine française
-    "Damjan Chapman",       # Voix masculine britannique
-    "Wulf Carlevaro",       # Voix masculine italienne
-    "Aaron Dreschner",      # Voix masculine américaine
-    "Kumar Dahl",           # Voix masculine indienne
-    "Eugenio Matarese",     # Voix masculine italienne
-    "Ferran Sansen",        # Voix masculine catalane
-    "Xavier Hayasaka",      # Voix masculine japonaise
-    "Luis Moray",           # Voix masculine espagnole
-    "Marcos Rudaski",       # Voix masculine polonaise
+    "Claribel Dervla",      # Clear female voice
+    "Daisy Studious",       # Studious female voice
+    "Gracie Wise",          # Wise female voice
+    "Tammie Ema",           # Energetic female voice
+    "Alison Dietlinde",     # Soft female voice
+    "Ana Florence",         # Natural female voice
+    "Annmarie Nele",        # Expressive female voice
+    "Asya Anara",           # Mysterious female voice
+    "Brenda Stern",         # Serious female voice
+    "Gitta Nikolina",       # European female voice
+    "Henriette Usha",       # Warm female voice
+    "Sofia Hellen",         # Elegant female voice
+    "Tammy Grit",           # Determined female voice
+    "Tanja Adelina",        # Modern female voice
+    "Vjollca Johnnie",      # Unique female voice
+    "Andrew Chipper",       # Cheerful male voice
+    "Badr Odhiambo",        # Deep male voice
+    "Dionisio Schuyler",    # Classic male voice
+    "Royston Min",          # Asian male voice
+    "Viktor Eka",           # European male voice
+    "Abrahan Mack",         # American male voice
+    "Adde Michal",          # Scandinavian male voice
+    "Baldur Sansen",        # Nordic male voice
+    "Craig Gutsy",          # Energetic male voice
+    "Damien Black",         # Dark male voice
+    "Gilberto Mathias",     # Latin male voice
+    "Ilkin Urbano",         # Mediterranean male voice
+    "Kazuhiko Atallah",     # Japanese male voice
+    "Ludvig Milivoj",       # Slavic male voice
+    "Suad Qasim",           # Arabic male voice
+    "Torcull Diarmuid",     # Celtic male voice
+    "Viktor Menelaos",      # Greek male voice
+    "Zacharie Aimilios",    # French male voice
+    "Nova Hogarth",         # Non-binary voice
+    "Maja Ruoho",           # Finnish female voice
+    "Uta Obando",           # German female voice
+    "Lidiya Szekeres",      # Hungarian female voice
+    "Chandra MacFarland",   # Indian female voice
+    "Szofi Granger",        # British female voice
+    "Camilla Holmström",    # Swedish female voice
+    "Lilya Stainthorpe",    # Russian female voice
+    "Zofija Kendrick",      # Polish female voice
+    "Narelle Moon",         # Australian female voice
+    "Barbora MacLean",      # Scottish female voice
+    "Alexandra Hisakawa",   # Japanese female voice
+    "Alma María",           # Spanish female voice
+    "Rosemary Okafor",      # African female voice
+    "Ige Behringer",        # German female voice
+    "Filip Traverse",       # French male voice
+    "Damjan Chapman",       # British male voice
+    "Wulf Carlevaro",       # Italian male voice
+    "Aaron Dreschner",      # American male voice
+    "Kumar Dahl",           # Indian male voice
+    "Eugenio Matarese",     # Italian male voice
+    "Ferran Sansen",        # Catalan male voice
+    "Xavier Hayasaka",      # Japanese male voice
+    "Luis Moray",           # Spanish male voice
+    "Marcos Rudaski",       # Polish male voice
 ]
 
 
 @dataclass
 class XTTSConfig:
-    """Configuration pour XTTS v2."""
+    """Configuration for XTTS v2."""
     
-    # Langue par défaut
+    # Default language
     language: str = "fr"
     
-    # Speaker intégré (si pas de voice cloning)
+    # Built-in speaker (if no voice cloning)
     speaker: str = "Claribel Dervla"
     
-    # Voice cloning : audio de référence
+    # Voice cloning: reference audio
     speaker_wav: str | None = None
     
-    # Device : "cuda" ou "cpu"
+    # Device: "cuda" or "cpu"
     device: str | None = None  # None = auto-detect
 
 
 class XTTSProvider(BaseTTS):
     """
-    Provider TTS utilisant XTTS v2 de Coqui.
+    TTS Provider using XTTS v2 from Coqui.
     
-    XTTS v2 offre :
-    - 17 langues dont le français avec accent natif
-    - Voice cloning avec 6 secondes d'audio
-    - 58 speakers intégrés
-    - ~2.8GB VRAM, génération rapide (~1.7s pour une phrase)
+    XTTS v2 offers:
+    - 17 languages including French with native accent
+    - Voice cloning with 6 seconds of audio
+    - 58 built-in speakers
+    - ~2.8GB VRAM, fast generation (~1.7s per sentence)
     
     Example:
-        # Avec speaker intégré
+        # With built-in speaker
         tts = XTTSProvider(language="fr", speaker="Claribel Dervla")
         await tts.synthesize("Bonjour !", Path("output.wav"))
         
-        # Avec voice cloning
+        # With voice cloning
         tts = XTTSProvider(language="fr", speaker_wav="~/voices/my_voice.wav")
         await tts.synthesize("Bonjour !", Path("output.wav"))
     """
@@ -141,13 +141,13 @@ class XTTSProvider(BaseTTS):
         device: str | None = None,
     ):
         """
-        Initialise le provider XTTS v2.
+        Initialize the XTTS v2 provider.
         
         Args:
-            language: Code langue (fr, en, de, etc.)
-            speaker: Nom du speaker intégré (ignoré si speaker_wav fourni)
-            speaker_wav: Chemin vers audio de référence pour voice cloning
-            device: "cuda", "cpu" ou None (auto-detect)
+            language: Language code (fr, en, de, etc.)
+            speaker: Built-in speaker name (ignored if speaker_wav provided)
+            speaker_wav: Path to reference audio for voice cloning
+            device: "cuda", "cpu" or None (auto-detect)
         """
         self.language = language
         self.speaker = speaker
@@ -161,26 +161,26 @@ class XTTSProvider(BaseTTS):
         # Validation
         if language not in SUPPORTED_LANGUAGES:
             logger.warning(
-                f"Langue '{language}' non officiellement supportée. "
-                f"Langues supportées: {SUPPORTED_LANGUAGES}"
+                f"Language '{language}' not officially supported. "
+                f"Supported languages: {SUPPORTED_LANGUAGES}"
             )
     
     @property
     def model_name(self) -> str:
-        """Nom du modèle pour l'affichage."""
+        """Model name for display."""
         return "XTTS v2"
     
     def _load_model(self):
         """
-        Charge le modèle XTTS v2 (lazy loading).
+        Load the XTTS v2 model (lazy loading).
         
-        Le modèle est téléchargé automatiquement depuis HuggingFace
-        au premier appel (~1.9GB).
+        The model is automatically downloaded from HuggingFace
+        on first call (~1.9GB).
         """
         if self._model is not None:
             return self._model
         
-        logger.info(f"🔄 Chargement de {self.model_name}...")
+        logger.info(f"🔄 Loading {self.model_name}...")
         
         from TTS.api import TTS
         import torch
@@ -191,7 +191,7 @@ class XTTSProvider(BaseTTS):
         
         self._model = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(self.device)
         
-        logger.info(f"✅ {self.model_name} chargé sur {self.device} !")
+        logger.info(f"✅ {self.model_name} loaded on {self.device}!")
         return self._model
     
     async def synthesize(
@@ -200,26 +200,26 @@ class XTTSProvider(BaseTTS):
         output_path: Path | None = None
     ) -> TTSResult:
         """
-        Convertit du texte en fichier audio WAV.
+        Convert text to WAV audio file.
         
         Args:
-            text: Texte à synthétiser
-            output_path: Chemin de sortie (optionnel)
+            text: Text to synthesize
+            output_path: Output path (optional)
             
         Returns:
-            TTSResult avec le chemin du fichier audio
+            TTSResult with the audio file path
         """
         if not text.strip():
-            raise ValueError("Le texte ne peut pas être vide")
+            raise ValueError("Text cannot be empty")
         
-        # Créer un fichier temporaire si pas de chemin spécifié
+        # Create temp file if no path specified
         if output_path is None:
             import tempfile
             output_path = Path(tempfile.mktemp(suffix=".wav"))
         
         output_path = Path(output_path)
         
-        # Synthèse dans un thread pour ne pas bloquer l'event loop
+        # Synthesize in thread to not block the event loop
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
@@ -228,7 +228,7 @@ class XTTSProvider(BaseTTS):
             output_path
         )
         
-        # Calculer la durée
+        # Calculate duration
         info = sf.info(str(output_path))
         duration = info.duration
         
@@ -236,11 +236,11 @@ class XTTSProvider(BaseTTS):
     
     def _synthesize_sync(self, text: str, output_path: Path) -> None:
         """
-        Synthèse synchrone (appelée dans un thread).
+        Synchronous synthesis (called in a thread).
         """
         model = self._load_model()
         
-        # Voice cloning ou speaker intégré ?
+        # Voice cloning or built-in speaker?
         if self.speaker_wav and self.speaker_wav.exists():
             # Voice cloning
             model.tts_to_file(
@@ -250,7 +250,7 @@ class XTTSProvider(BaseTTS):
                 file_path=str(output_path)
             )
         else:
-            # Speaker intégré
+            # Built-in speaker
             model.tts_to_file(
                 text=text,
                 speaker=self.speaker,
@@ -263,25 +263,25 @@ class XTTSProvider(BaseTTS):
         text: str
     ) -> AsyncGenerator[bytes, None]:
         """
-        Génère l'audio en streaming.
+        Generate audio in streaming mode.
         
-        XTTS v2 supporte le streaming natif avec latence < 200ms.
-        Cette implémentation utilise le streaming interne de XTTS.
+        XTTS v2 supports native streaming with latency < 200ms.
+        This implementation uses XTTS internal streaming.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Yields:
-            Chunks audio en bytes (format WAV)
+            Audio chunks in bytes (WAV format)
         """
         import io
         import wave
         
-        # Pour le streaming, on génère l'audio complet puis on le découpe
-        # Une implémentation plus avancée utiliserait model.inference_stream()
+        # For streaming, we generate full audio then split it
+        # A more advanced implementation would use model.inference_stream()
         loop = asyncio.get_event_loop()
         
-        # Générer l'audio complet
+        # Generate full audio
         import tempfile
         temp_path = Path(tempfile.mktemp(suffix=".wav"))
         
@@ -292,30 +292,30 @@ class XTTSProvider(BaseTTS):
             temp_path
         )
         
-        # Lire et streamer par chunks
-        chunk_size = 4096  # ~85ms à 24kHz
+        # Read and stream by chunks
+        chunk_size = 4096  # ~85ms at 24kHz
         
         with open(temp_path, "rb") as f:
-            # Envoyer le header WAV d'abord
+            # Send WAV header first
             header = f.read(44)
             yield header
             
-            # Puis les données audio par chunks
+            # Then audio data by chunks
             while chunk := f.read(chunk_size):
                 yield chunk
         
-        # Nettoyer
+        # Cleanup
         temp_path.unlink(missing_ok=True)
     
     async def synthesize_to_bytes(self, text: str) -> bytes:
         """
-        Convertit du texte directement en bytes audio.
+        Convert text directly to audio bytes.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Returns:
-            Audio en bytes (format WAV)
+            Audio in bytes (WAV format)
         """
         import tempfile
         
@@ -331,17 +331,17 @@ class XTTSProvider(BaseTTS):
     
     async def list_voices(self, language: str | None = None) -> list:
         """
-        Liste les voix (speakers) disponibles.
+        List available voices (speakers).
         
-        Pour XTTS, les "voix" sont les speakers intégrés.
-        Le paramètre language est ignoré car tous les speakers
-        peuvent parler toutes les langues.
+        For XTTS, "voices" are the built-in speakers.
+        The language parameter is ignored as all speakers
+        can speak all languages.
         
         Args:
-            language: Ignoré pour XTTS (tous speakers sont multilingues)
+            language: Ignored for XTTS (all speakers are multilingual)
             
         Returns:
-            Liste de Voice objects
+            List of Voice objects
         """
         from .base import Voice
         
@@ -349,49 +349,49 @@ class XTTSProvider(BaseTTS):
         voices = []
         
         for speaker in speakers:
-            # XTTS speakers sont tous multilingues
+            # XTTS speakers are all multilingual
             voices.append(Voice(
                 id=speaker,
                 name=speaker,
                 language="multilingual",
-                gender="Unknown"  # XTTS ne spécifie pas le genre
+                gender="Unknown"  # XTTS doesn't specify gender
             ))
         
         return voices
     
     def set_voice(self, voice_id: str) -> None:
         """
-        Change le speaker utilisé.
+        Change the speaker used.
         
         Args:
-            voice_id: Nom du speaker (ex: "Claribel Dervla")
+            voice_id: Speaker name (e.g., "Claribel Dervla")
         """
         self.speaker = voice_id
     
     def set_rate(self, rate: str) -> None:
         """
-        Non supporté par XTTS v2.
+        Not supported by XTTS v2.
         
-        XTTS génère l'audio à vitesse naturelle.
-        Pour modifier la vitesse, utiliser un post-traitement audio.
+        XTTS generates audio at natural speed.
+        To modify speed, use audio post-processing.
         """
-        pass  # Non supporté
+        pass  # Not supported
     
     def set_pitch(self, pitch: str) -> None:
         """
-        Non supporté par XTTS v2.
+        Not supported by XTTS v2.
         
-        XTTS génère l'audio avec le pitch naturel du speaker.
-        Pour modifier le pitch, utiliser un post-traitement audio.
+        XTTS generates audio with the speaker's natural pitch.
+        To modify pitch, use audio post-processing.
         """
-        pass  # Non supporté
+        pass  # Not supported
     
     def list_speakers(self) -> list[str]:
         """
-        Liste les speakers intégrés disponibles.
+        List available built-in speakers.
         
         Returns:
-            Liste des noms de speakers
+            List of speaker names
         """
         model = self._load_model()
         return model.speakers
@@ -399,9 +399,9 @@ class XTTSProvider(BaseTTS):
     @staticmethod
     def list_languages() -> list[str]:
         """
-        Liste les langues supportées.
+        List supported languages.
         
         Returns:
-            Liste des codes langue
+            List of language codes
         """
         return SUPPORTED_LANGUAGES.copy()
