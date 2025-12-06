@@ -116,8 +116,10 @@ tts:
     # Default language (used when auto_detect_language is false)
     language: "en"
     
-    # Device: null = auto-detect (prefers CUDA if available)
-    device: null
+    # Device: "cuda" for GPU acceleration (~2.8GB VRAM)
+    # With Jan-v2-VL (~7GB) + XTTS (~2.8GB) = ~10GB total → fits in 12GB!
+    # Set to "cpu" if you get OOM errors
+    device: "cuda"
     
     # Built-in speaker (used if no voice cloning and no voice_mapping)
     # Some recommended voices:

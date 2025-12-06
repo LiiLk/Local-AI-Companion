@@ -43,8 +43,11 @@ class App {
         this.ws.onTranscribing = () => this._showTranscribingIndicator();
         this.ws.onVadStart = () => this._handleVadStart();
         this.ws.onVadEnd = () => this._handleVadEnd();
-        this.ws.onModelsLoading = (msg) => this._showModelsLoading(msg);
+        this.ws.onModelsLoading = (msg, progress) => this._showModelsLoading(msg, progress);
+        this.ws.onModelLoading = (model, msg, progress) => this._showModelLoading(model, msg, progress);
+        this.ws.onModelLoaded = (model, msg, progress) => this._showModelLoaded(model, msg, progress);
         this.ws.onModelsReady = (msg) => this._showModelsReady(msg);
+        this.ws.onModelsError = (msg) => this._showModelsError(msg);
         this.ws.onError = (error) => this._handleError(error);
         
         // Audio callbacks
@@ -175,24 +178,53 @@ class App {
         this._showError(error.message || 'An error occurred');
     }
     
-    _showModelsLoading(message) {
-        // Show loading indicator
+    _showModelsLoading(message, progress = 0) {
+        // Show loading indicator with progress
         this.elements.recordingIndicator.classList.remove('hidden');
-        this.elements.recordingIndicator.querySelector('span:last-child').textContent = '🔄 ' + message;
+        this.elements.recordingIndicator.querySelector('span:last-child').textContent = 
+            `🔄 ${message} (${progress}%)`;
         this.elements.micBtn.classList.add('loading');
+    }
+    
+    _showModelLoading(model, message, progress = 0) {
+        // Update loading indicator with specific model info
+        this.elements.recordingIndicator.classList.remove('hidden');
+        const emoji = model === 'tts' ? '🔊' : model === 'asr' ? '🎤' : '👂';
+        this.elements.recordingIndicator.querySelector('span:last-child').textContent = 
+            `${emoji} ${message} (${progress}%)`;
+    }
+    
+    _showModelLoaded(model, message, progress = 0) {
+        // Brief success indication
+        const emoji = model === 'tts' ? '🔊' : model === 'asr' ? '🎤' : '👂';
+        this.elements.recordingIndicator.querySelector('span:last-child').textContent = 
+            `✅ ${emoji} ${message} (${progress}%)`;
     }
     
     _showModelsReady(message) {
         // Update indicator briefly then hide if not recording
         this.elements.recordingIndicator.querySelector('span:last-child').textContent = '✅ ' + message;
         this.elements.micBtn.classList.remove('loading');
+        this._modelsPreloaded = true;
         
-        // Hide after 1 second if not actively recording
+        // Hide after 2 seconds if not actively recording
         setTimeout(() => {
             if (!this.audio.isRecording) {
                 this.elements.recordingIndicator.classList.add('hidden');
             }
-        }, 1000);
+        }, 2000);
+    }
+    
+    _showModelsError(message) {
+        // Show error state
+        this.elements.recordingIndicator.querySelector('span:last-child').textContent = '❌ ' + message;
+        this.elements.micBtn.classList.remove('loading');
+        this.elements.micBtn.classList.add('error');
+        
+        // Remove error class after 3 seconds
+        setTimeout(() => {
+            this.elements.micBtn.classList.remove('error');
+        }, 3000);
     }
     
     _addMessage(role, content, isStreaming = false) {

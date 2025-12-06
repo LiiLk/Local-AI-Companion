@@ -92,6 +92,11 @@ class ConversationState:
             tts_config = self.config.get("tts", {})
             provider = tts_config.get("provider", "kokoro")
             
+            # Check if auto-language detection is enabled
+            auto_detect = tts_config.get("auto_detect_language", False)
+            
+            print(f"🔊 Loading TTS provider: {provider} (auto_detect={auto_detect})")
+            
             if provider == "xtts":
                 # XTTS v2 - Multilingual voice cloning (~2.8GB VRAM)
                 xtts_config = tts_config.get("xtts", {})
@@ -100,17 +105,23 @@ class ConversationState:
                 if speaker_wav:
                     speaker_wav = str(Path(speaker_wav).expanduser())
                 
+                device = xtts_config.get("device")
+                print(f"   XTTS config: language={xtts_config.get('language', 'en')}, device={device}")
+                
                 self.tts = XTTSProvider(
-                    language=xtts_config.get("language", "fr"),
+                    language=xtts_config.get("language", "en"),
                     speaker=xtts_config.get("speaker", "Claribel Dervla"),
                     speaker_wav=speaker_wav,
-                    device=xtts_config.get("device"),
+                    device=device,
+                    auto_detect_language=auto_detect,
                 )
             elif provider == "kokoro":
                 voice = tts_config.get("kokoro_voice", "ff_siwis")
+                print(f"   Kokoro config: voice={voice}")
                 self.tts = KokoroProvider(voice=voice)
             else:
                 voice = tts_config.get("voice", "fr-FR-DeniseNeural")
+                print(f"   Edge TTS config: voice={voice}")
                 self.tts = EdgeTTSProvider(voice=voice)
                 
         return self.tts
@@ -172,6 +183,9 @@ class WebSocketManager:
         self.states[client_id] = ConversationState()
         await self.states[client_id].initialize()
         print(f"✅ Client connected: {client_id}")
+        
+        # Start preloading models in background (don't await - non-blocking)
+        asyncio.create_task(self._preload_models_progressive(client_id))
     
     async def disconnect(self, client_id: str):
         """Handle client disconnection."""
@@ -536,6 +550,142 @@ class WebSocketManager:
             "type": "cleared",
             "message": "Conversation history cleared"
         })
+    
+    async def _preload_models_progressive(self, client_id: str):
+        """
+        Preload models progressively (one by one) on connection.
+        
+        This runs in background and loads models sequentially to:
+        1. Avoid memory spikes from parallel loading
+        2. Provide feedback to user as each model loads
+        3. Prioritize TTS (most needed for quick response)
+        
+        Inspired by Open-LLM-VTuber's approach to model management.
+        """
+        state = self.states.get(client_id)
+        if not state:
+            return
+        
+        # Avoid duplicate preloading
+        if self._preloading.get(client_id, False):
+            return
+        self._preloading[client_id] = True
+        
+        loop = asyncio.get_event_loop()
+        
+        def is_connected() -> bool:
+            """Check if client is still connected."""
+            return client_id in self.active_connections
+        
+        async def safe_send(data: dict):
+            """Send message only if client still connected."""
+            if is_connected():
+                await self.send_json(client_id, data)
+        
+        try:
+            # Small delay to ensure WebSocket is fully established
+            await asyncio.sleep(0.2)
+            
+            if not is_connected():
+                return
+            
+            # Notify start
+            await safe_send({
+                "type": "models_loading",
+                "message": "Preparing voice models...",
+                "progress": 0
+            })
+            
+            # 1. Load VAD first (lightest, ~5MB, needed for speech detection)
+            if not state.vad and is_connected():
+                await safe_send({
+                    "type": "model_loading",
+                    "model": "vad",
+                    "message": "Loading VAD (voice detection)...",
+                    "progress": 5
+                })
+                try:
+                    await loop.run_in_executor(None, state.get_vad)
+                    print(f"   ✅ VAD loaded for {client_id}")
+                    await safe_send({
+                        "type": "model_loaded",
+                        "model": "vad",
+                        "message": "VAD ready!",
+                        "progress": 15
+                    })
+                except Exception as e:
+                    print(f"   ⚠️ VAD load warning: {e}")
+            
+            # 2. Load TTS (needed for responses, ~2.8GB for XTTS)
+            if not state.tts and is_connected():
+                await safe_send({
+                    "type": "model_loading",
+                    "model": "tts",
+                    "message": "Loading TTS (voice synthesis)...",
+                    "progress": 20
+                })
+                try:
+                    await loop.run_in_executor(None, state.get_tts)
+                    print(f"   ✅ TTS loaded for {client_id}")
+                    await safe_send({
+                        "type": "model_loaded",
+                        "model": "tts",
+                        "message": "TTS ready!",
+                        "progress": 60
+                    })
+                except Exception as e:
+                    print(f"   ❌ TTS load error: {e}")
+                    await safe_send({
+                        "type": "models_error",
+                        "message": f"TTS failed: {str(e)}"
+                    })
+            
+            # 3. Load ASR last (can be heavy, ~600MB for Parakeet)
+            if not state.asr and is_connected():
+                await safe_send({
+                    "type": "model_loading",
+                    "model": "asr",
+                    "message": "Loading ASR (speech recognition)...",
+                    "progress": 65
+                })
+                try:
+                    await loop.run_in_executor(None, state.get_asr)
+                    print(f"   ✅ ASR loaded for {client_id}")
+                    await safe_send({
+                        "type": "model_loaded",
+                        "model": "asr",
+                        "message": "ASR ready!",
+                        "progress": 100
+                    })
+                except Exception as e:
+                    print(f"   ❌ ASR load error: {e}")
+                    await safe_send({
+                        "type": "models_error",
+                        "message": f"ASR failed: {str(e)}"
+                    })
+            
+            # All done!
+            if is_connected():
+                await safe_send({
+                    "type": "models_ready",
+                    "message": "All voice models loaded!",
+                    "progress": 100
+                })
+                print(f"✅ All models preloaded for {client_id}")
+            
+        except asyncio.CancelledError:
+            print(f"⚠️ Preloading cancelled for {client_id} (client disconnected)")
+        except Exception as e:
+            print(f"❌ Preloading error for {client_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            if is_connected():
+                await safe_send({
+                    "type": "models_error",
+                    "message": f"Failed to preload models: {str(e)}"
+                })
+        finally:
+            self._preloading[client_id] = False
     
     async def preload_models(self, client_id: str):
         """

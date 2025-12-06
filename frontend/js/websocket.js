@@ -200,16 +200,37 @@ class WebSocketManager {
                     break;
                     
                 case 'models_loading':
-                    console.log('🔄 Models loading...');
+                    console.log('🔄 Models loading...', message.progress || 0, '%');
                     if (this.onModelsLoading) {
-                        this.onModelsLoading(message.message);
+                        this.onModelsLoading(message.message, message.progress || 0);
+                    }
+                    break;
+                    
+                case 'model_loading':
+                    console.log(`📦 Loading ${message.model}...`, message.progress || 0, '%');
+                    if (this.onModelLoading) {
+                        this.onModelLoading(message.model, message.message, message.progress || 0);
+                    }
+                    break;
+                    
+                case 'model_loaded':
+                    console.log(`✅ ${message.model} loaded!`, message.progress || 0, '%');
+                    if (this.onModelLoaded) {
+                        this.onModelLoaded(message.model, message.message, message.progress || 0);
                     }
                     break;
                     
                 case 'models_ready':
-                    console.log('✅ Models ready!');
+                    console.log('✅ All models ready!');
                     if (this.onModelsReady) {
                         this.onModelsReady(message.message);
+                    }
+                    break;
+                    
+                case 'models_error':
+                    console.error('❌ Model loading error:', message.message);
+                    if (this.onModelsError) {
+                        this.onModelsError(message.message);
                     }
                     break;
                     
