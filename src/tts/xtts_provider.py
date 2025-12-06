@@ -23,6 +23,15 @@ import numpy as np
 import soundfile as sf
 
 from .base import BaseTTS, TTSResult
+import re
+
+# Emotion map
+EMOTION_REFS = {
+    "neutral": "resources/voices/f5_refs/aria_neutral.wav",
+    "happy": "resources/voices/f5_refs/aria_happy.wav",
+    "sad": "resources/voices/f5_refs/aria_sad.wav",
+    "angry": "resources/voices/f5_refs/aria_angry.wav"
+}
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +172,10 @@ class XTTSProvider(BaseTTS):
         self.device = device
         self.auto_detect_language = auto_detect_language or (language is None)
         
+        # Emotion state
+        self.current_emotion = "neutral"
+        self.ref_dir = Path("resources/voices/f5_refs")  # Reuse existing refs
+        
         # Lazy loading
         self._model = None
         self._TTS = None
@@ -220,6 +233,27 @@ class XTTSProvider(BaseTTS):
             return str(detected)
         
         return self.language or "en"
+    
+    def _detect_emotion(self, text: str) -> tuple[str, str]:
+        """
+        Detect emotion tag in text and return (emotion, cleaned_text).
+        Tags: [happy], [sad], [angry], [neutral]
+        """
+        text_lower = text.lower()
+        tag_map = {
+            "[happy]": "happy", "[joie]": "happy", "[joyeux]": "happy",
+            "[sad]": "sad", "[triste]": "sad",
+            "[angry]": "angry", "[colere]": "angry", "[fache]": "angry",
+            "[neutral]": "neutral", "[neutre]": "neutral"
+        }
+        
+        detected_emotion = self.current_emotion
+        for tag, emotion in tag_map.items():
+            if tag in text_lower:
+                detected_emotion = emotion
+                text = re.sub(re.escape(tag), "", text, flags=re.IGNORECASE)
+        
+        return detected_emotion, text.strip()
     
     def _load_model(self):
         """
@@ -303,40 +337,67 @@ class XTTSProvider(BaseTTS):
         detected from the text.
         
         Args:
+        Args:
             text: Text to synthesize
             output_path: Output path (optional)
             
         Returns:
             TTSResult with the audio file path
         """
-        if not text.strip():
-            raise ValueError("Text cannot be empty")
+        # 1. Detect and separate emotion tags
+        emotion, clean_text = self._detect_emotion(text)
+        if not clean_text:
+            return TTSResult(audio_data=b"")
+
+        # 2. Update speaker_wav if emotion detected (and ref exists)
+        # Only override if we are in "cloning mode" or forced emotion mode
+        # If user didn't specify a base speaker_wav, we normally use built-in.
+        # But for emotion, we must use cloning.
         
-        # Create temp file if no path specified
-        if output_path is None:
-            import tempfile
-            output_path = Path(tempfile.mktemp(suffix=".wav"))
+        # Resolve reference audio for this emotion
+        ref_path = Path(EMOTION_REFS.get(emotion, EMOTION_REFS["neutral"]))
+        if ref_path.exists():
+            # Temporarily switch speaker_wav for this synthesis
+            original_wav = self.speaker_wav
+            self.speaker_wav = ref_path
+            # Log change
+            if emotion != "neutral":
+                logger.info(f"🎭 XTTS Switching emotion to: {emotion} (using {ref_path})")
+        else:
+            # Fallback
+            original_wav = self.speaker_wav
         
-        output_path = Path(output_path)
-        
-        # Get language (auto-detect if enabled)
-        language = self._get_language_for_text(text)
-        
-        # Synthesize in thread to not block the event loop
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None,
-            self._synthesize_sync,
-            text,
-            output_path,
-            language
-        )
-        
-        # Calculate duration
-        info = sf.info(str(output_path))
-        duration = info.duration
-        
-        return TTSResult(audio_path=output_path, duration=duration)
+        try:
+            # Create temp file if no path specified
+            if output_path is None:
+                import tempfile
+                output_path = Path(tempfile.mktemp(suffix=".wav"))
+            
+            output_path = Path(output_path)
+            
+            # Get language (auto-detect if enabled)
+            language = self._get_language_for_text(clean_text)
+            
+            # Synthesize in thread
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                self._synthesize_sync,
+                clean_text,
+                output_path,
+                language
+            )
+            
+            # Calculate duration
+            info = sf.info(str(output_path))
+            duration = info.duration
+            
+            return TTSResult(audio_path=output_path, duration=duration)
+            
+        finally:
+            # Restore original speaker_wav
+            if 'original_wav' in locals():
+                self.speaker_wav = original_wav
     
     def _synthesize_sync(self, text: str, output_path: Path, language: str | None = None) -> None:
         """

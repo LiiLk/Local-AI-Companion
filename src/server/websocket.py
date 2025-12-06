@@ -23,7 +23,7 @@ import yaml
 
 from src.llm import OllamaLLM, LlamaCppProvider
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider
+from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, F5TTSProvider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
 
@@ -122,6 +122,9 @@ class ConversationState:
                 voice = tts_config.get("kokoro_voice", "ff_siwis")
                 print(f"   Kokoro config: voice={voice}")
                 self.tts = KokoroProvider(voice=voice)
+            elif provider == "f5tts":
+                print(f"   F5-TTS config: standard preset")
+                self.tts = F5TTSProvider(device="cuda")
             else:
                 voice = tts_config.get("voice", "fr-FR-DeniseNeural")
                 print(f"   Edge TTS config: voice={voice}")
@@ -539,7 +542,8 @@ class WebSocketManager:
                     
                 elif len(event) > 100:
                     # This is audio data - transcribe it!
-                    await self._transcribe_and_respond(client_id, event)
+                    # Run in background to avoid blocking VAD loop (and delaying vad_end)
+                    asyncio.create_task(self._transcribe_and_respond(client_id, event))
                     
         except Exception as e:
             print(f"❌ VAD error: {e}")

@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import AsyncGenerator
 import asyncio
+import re
 
 import soundfile as sf
 import numpy as np

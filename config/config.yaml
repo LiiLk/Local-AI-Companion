@@ -53,6 +53,7 @@ tts:
   # Default TTS provider:
   # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM) ⭐ RECOMMENDED
   # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
+  # - "f5tts"  : F5-TTS (Emotional support, ~4GB VRAM)
   # - "edge"   : Edge TTS (Microsoft cloud, free)
   provider: "kokoro"
   
