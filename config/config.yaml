@@ -54,7 +54,7 @@ tts:
   # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM) ⭐ RECOMMENDED
   # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
   # - "edge"   : Edge TTS (Microsoft cloud, free)
-  provider: "xtts"
+  provider: "kokoro"
   
   # ─────────────────────────────────────────────────────────────────────────
   # ⚡ STREAMING TTS (sentence-by-sentence)
@@ -140,7 +140,14 @@ tts:
   # - 82M params, ~300MB, natural quality
   # - Voices: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
   # ─────────────────────────────────────────────────────────────────────────
-  kokoro_voice: "af_heart"
+  kokoro_voice: "ff_siwis"
+  
+  # Voice mapping for multi-language switching
+  voice_mapping:
+    kokoro:
+      fr: "ff_siwis"
+      en: "af_heart"
+      jp: "jf_alpha"
   
   # ─────────────────────────────────────────────────────────────────────────
   # ☁️ EDGE TTS (Microsoft cloud, fallback)
@@ -162,7 +169,7 @@ asr:
   # - "canary"   : NVIDIA Canary 1B v2, best for long audio (6GB+ VRAM required)
   # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, fast and accurate (can run on CPU)
   # ⚠️ With Jan-v2-VL (~7GB VRAM), use ASR on CPU to avoid OOM
-  provider: "parakeet"
+  provider: "whisper"
   
   # ─────────────────────────────────────────────────────────────────────────
   # 🦜 PARAKEET TDT 0.6B V3 (NVIDIA) - Fast and accurate ⭐ RECOMMENDED
@@ -204,10 +211,10 @@ asr:
   # These models are fine-tuned on 2500+ hours of French by bofenghuang.
   # WER: 8.37% (much better than standard Whisper for French)
   # ─────────────────────────────────────────────────────────────────────────
-  model_size: "base"  # Standard model - good compromise
+  model_size: "small"  # Standard model - good compromise
   
   # Language: "fr", "en", "auto" or empty "" for auto-detection
-  language: "en"
+  language: ""
   
   # Prompt to guide transcription (helps even with forced language)
   # Provides context about the expected conversation style.

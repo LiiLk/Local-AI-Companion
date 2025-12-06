@@ -10,8 +10,10 @@ Handles:
 import json
 import asyncio
 import base64
+import emoji
 import tempfile
 import numpy as np
+from langdetect import detect, LangDetectException
 from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
@@ -50,6 +52,7 @@ class ConversationState:
     config: dict = field(default_factory=dict)
     is_recording: bool = False
     audio_buffer: list = field(default_factory=list)  # Buffer for streaming audio
+    current_language: str = "fr"  # Track current language context
     
     def __post_init__(self):
         self.config = load_config()
@@ -208,6 +211,64 @@ class WebSocketManager:
         """Safely get client state, returns None if client disconnected."""
         return self.states.get(client_id)
     
+    def _clean_text_for_tts(self, text: str) -> str:
+        """
+        Clean text before TTS:
+        1. Remove emojis
+        2. Remove markdown symbols (*, #, _, etc.) that TTS reads out loud
+        """
+        # Remove emojis
+        text = emoji.replace_emoji(text, replace="")
+        
+        # Remove markdown chars: * # _ ` ~ >
+        # We replace them with empty string to avoid "asterix" recitation
+        import re
+        text = re.sub(r'[\*\#\_\`\~\>]+', '', text)
+        
+        # Remove multiple spaces
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    async def _update_voice_for_language(self, state: ConversationState, text: str):
+        """
+        Detect language and update TTS voice if needed.
+        """
+        if not text.strip() or len(text) < 5:  # Too short to detect reliability
+            return
+
+        try:
+            # Detect language
+            lang = detect(text)
+            
+            # Simple mapping for common detections
+            if lang in ['fr', 'fr-fr']:
+                lang_code = 'fr'
+            elif lang in ['en', 'en-us', 'en-gb']:
+                lang_code = 'en'
+            else:
+                return # Ignore other languages for now
+            
+            # Update state if changed
+            if state.current_language != lang_code:
+                print(f"🌐 Language switch detected: {state.current_language} -> {lang_code}")
+                state.current_language = lang_code
+                
+                # Update TTS voice
+                tts_config = state.config.get("tts", {})
+                provider_name = tts_config.get("provider", "kokoro")
+                voice_mapping = tts_config.get("voice_mapping", {}).get(provider_name, {})
+                
+                new_voice = voice_mapping.get(lang_code)
+                if new_voice and state.tts:
+                    if hasattr(state.tts, 'set_voice'):
+                        state.tts.set_voice(new_voice)
+                        print(f"   🗣️ Switched {provider_name} voice to: {new_voice}")
+
+        except LangDetectException:
+            pass
+        except Exception as e:
+            print(f"⚠️ Voice switch error: {e}")
+
     async def _process_tts_chunk(self, client_id: str, text: str):
         """Generate and send audio for a text chunk."""
         if not text.strip():
@@ -216,6 +277,16 @@ class WebSocketManager:
         state = self._get_state(client_id)
         if not state:
             return  # Client disconnected
+            
+        # Update voice based on language (before cleaning, might capture context better)
+        await self._update_voice_for_language(state, text)
+        
+        # Clean text for TTS (remove emojis, etc.)
+        text = self._clean_text_for_tts(text)
+        
+        if not text.strip():
+            return
+        
         tts = state.get_tts()
         
         try:
@@ -315,6 +386,8 @@ class WebSocketManager:
     
     async def generate_and_send_audio(self, client_id: str, text: str):
         """Generate TTS audio and send to client."""
+        text = self._clean_text_for_tts(text)
+        
         if not text.strip():
             return
         

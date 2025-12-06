@@ -12,6 +12,7 @@ class App {
         // State
         this.isStreaming = false;
         this.currentStreamContent = '';
+        this.isSpeaking = false;
         this._modelsPreloaded = false;
 
         // DOM Elements - Updated for new UI structure
@@ -75,6 +76,16 @@ class App {
             this.ws.sendAudioStream(samples);
         };
         this.audio.onVolumeChange = (volume) => this._updateVolumeIndicator(volume);
+
+        // Playback events
+        this.audio.onPlaybackStart = () => {
+            this.isSpeaking = true;
+            this._showStatus('🔊 Parole...', 90);
+        };
+        this.audio.onPlaybackEnd = () => {
+            this.isSpeaking = false;
+            this._hideStatus();
+        };
 
         // Event listeners
         this._setupEventListeners();
@@ -161,6 +172,8 @@ class App {
 
         // Add placeholder message for streaming
         this._addMessage('assistant', '', true);
+
+        this._showStatus('Génération de la réponse...', 50);
     }
 
     _handleStreamChunk(chunk) {
@@ -184,12 +197,14 @@ class App {
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
         }
+        this._hideStatus();
     }
 
     _handleTranscription(text) {
         if (text && text.trim()) {
             // Show the transcribed user message
             this._addMessage('user', text);
+            this._hideStatus(); // Clear "Transcription..." status
         }
     }
 
@@ -205,6 +220,9 @@ class App {
 
     _handleVadEnd() {
         // VAD detected speech end - will transcribe now
+        // Ignore if AI is speaking (echo cancellation/feedback)
+        if (this.isSpeaking) return;
+
         this._showStatus('⏳ Transcription...', 75);
         this.elements.voiceBtn?.classList.remove('active');
     }
