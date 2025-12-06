@@ -1,69 +1,363 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="Aria - Your private, local AI companion">
+    <meta name="theme-color" content="#6366f1">
+    
     <title>Aria - Local AI Companion</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
     <link rel="stylesheet" href="css/style.css">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
 </head>
 <body>
-    <div class="app-container">
-        <!-- Header -->
-        <header class="header">
-            <div class="header-left">
-                <h1>🤖 Aria</h1>
-                <span class="subtitle">Local AI Companion</span>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">🤖</span>
+                    <span class="logo-text">Aria</span>
+                </div>
+                <button class="icon-btn sidebar-toggle" id="sidebar-toggle" aria-label="Toggle sidebar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 18l-6-6 6-6"/>
+                    </svg>
+                </button>
             </div>
-            <div class="header-right">
-                <span id="connection-status" class="status disconnected">
-                    ⚫ Disconnected
-                </span>
+            
+            <!-- Connection Status -->
+            <div class="connection-card" id="connection-card">
+                <div class="connection-status" id="connection-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Connecting...</span>
+                </div>
+                <div class="models-status" id="models-status">
+                    <div class="model-item" data-model="vad" data-status="pending">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M2 10v3a7 7 0 0 0 14 0v-3"/>
+                            <line x1="9" y1="21" x2="9" y2="22"/>
+                            <line x1="5" y1="22" x2="13" y2="22"/>
+                        </svg>
+                        <span>VAD</span>
+                        <span class="model-badge">—</span>
+                    </div>
+                    <div class="model-item" data-model="asr" data-status="pending">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                            <line x1="12" y1="19" x2="12" y2="23"/>
+                            <line x1="8" y1="23" x2="16" y2="23"/>
+                        </svg>
+                        <span>ASR</span>
+                        <span class="model-badge">—</span>
+                    </div>
+                    <div class="model-item" data-model="tts" data-status="pending">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                        </svg>
+                        <span>TTS</span>
+                        <span class="model-badge">—</span>
+                    </div>
+                </div>
             </div>
-        </header>
-
-        <!-- Chat Container -->
-        <main class="chat-container">
-            <div id="messages" class="messages">
-                <!-- Welcome message -->
-                <div class="message assistant">
-                    <div class="message-avatar">🤖</div>
-                    <div class="message-content">
-                        <p>Bonjour ! Je suis <strong>Aria</strong>, votre assistante IA locale.</p>
-                        <p>Tapez un message ou cliquez sur le micro pour parler. 🎤</p>
+            
+            <!-- Quick Actions -->
+            <nav class="sidebar-nav">
+                <button class="nav-item" id="new-chat-btn" title="New conversation">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="8" x2="12" y2="16"/>
+                        <line x1="8" y1="12" x2="16" y2="12"/>
+                    </svg>
+                    <span>New Chat</span>
+                </button>
+                <button class="nav-item" id="settings-btn" title="Settings">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                    <span>Settings</span>
+                </button>
+            </nav>
+            
+            <!-- Sidebar Footer -->
+            <div class="sidebar-footer">
+                <button class="nav-item" id="theme-toggle" title="Toggle theme">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-moon">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                    </svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="icon-sun" style="display:none">
+                        <circle cx="12" cy="12" r="5"/>
+                        <line x1="12" y1="1" x2="12" y2="3"/>
+                        <line x1="12" y1="21" x2="12" y2="23"/>
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                        <line x1="1" y1="12" x2="3" y2="12"/>
+                        <line x1="21" y1="12" x2="23" y2="12"/>
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                    </svg>
+                    <span>Dark Mode</span>
+                </button>
+                <div class="version-info">
+                    <span>v0.3.0</span>
+                    <span class="dot">•</span>
+                    <span class="privacy-badge">🔒 100% Local</span>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Chat Header -->
+            <header class="chat-header">
+                <button class="icon-btn mobile-menu-btn" id="mobile-menu-btn" aria-label="Open menu">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="3" y1="12" x2="21" y2="12"/>
+                        <line x1="3" y1="6" x2="21" y2="6"/>
+                        <line x1="3" y1="18" x2="21" y2="18"/>
+                    </svg>
+                </button>
+                <div class="chat-title">
+                    <h1>Aria</h1>
+                    <span class="chat-subtitle">Private & Local AI Companion</span>
+                </div>
+                <div class="chat-actions">
+                    <button class="icon-btn" id="clear-chat-btn" title="Clear conversation">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+            
+            <!-- Messages Area -->
+            <div class="messages-container" id="messages-container">
+                <div class="messages" id="messages">
+                    <!-- Welcome Message -->
+                    <div class="message assistant welcome-message">
+                        <div class="message-avatar">
+                            <span>🤖</span>
+                        </div>
+                        <div class="message-bubble">
+                            <div class="message-content">
+                                <p><strong>Bonjour !</strong> Je suis <strong>Aria</strong>, votre compagnon IA privé.</p>
+                                <p>Tout fonctionne localement sur votre machine — vos conversations ne quittent jamais votre ordinateur. 🔒</p>
+                                <p class="hint">Cliquez sur le micro pour parler ou tapez un message ci-dessous.</p>
+                            </div>
+                            <div class="message-meta">
+                                <span class="message-time">Maintenant</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Scroll to bottom button -->
+                <button class="scroll-to-bottom hidden" id="scroll-to-bottom" aria-label="Scroll to bottom">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="6 9 12 15 18 9"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <!-- Input Area -->
+            <div class="input-area">
+                <!-- Status Bar -->
+                <div class="status-bar hidden" id="status-bar">
+                    <div class="status-content">
+                        <span class="status-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spinning">
+                                <line x1="12" y1="2" x2="12" y2="6"/>
+                                <line x1="12" y1="18" x2="12" y2="22"/>
+                                <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+                                <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                                <line x1="2" y1="12" x2="6" y2="12"/>
+                                <line x1="18" y1="12" x2="22" y2="12"/>
+                                <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+                                <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+                            </svg>
+                        </span>
+                        <span class="status-message" id="status-message">Ready</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+                
+                <!-- Input Container -->
+                <div class="input-wrapper">
+                    <div class="input-container">
+                        <!-- Voice Button -->
+                        <button class="voice-btn" id="voice-btn" title="Click to speak">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mic-icon">
+                                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                                <line x1="12" y1="19" x2="12" y2="23"/>
+                                <line x1="8" y1="23" x2="16" y2="23"/>
+                            </svg>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="stop-icon" style="display:none">
+                                <rect x="6" y="6" width="12" height="12" rx="2"/>
+                            </svg>
+                            <div class="voice-ripple"></div>
+                            <div class="voice-waves">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                            </div>
+                        </button>
+                        
+                        <!-- Text Input -->
+                        <div class="text-input-wrapper">
+                            <textarea 
+                                id="message-input" 
+                                placeholder="Tapez un message ou cliquez sur le micro..."
+                                rows="1"
+                                autocomplete="off"
+                            ></textarea>
+                        </div>
+                        
+                        <!-- Send Button -->
+                        <button class="send-btn" id="send-btn" title="Send message" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="22" y1="2" x2="11" y2="13"/>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <!-- Input Hints -->
+                    <div class="input-hints">
+                        <span><kbd>Entrée</kbd> envoyer</span>
+                        <span><kbd>Shift+Entrée</kbd> nouvelle ligne</span>
                     </div>
                 </div>
             </div>
         </main>
-
-        <!-- Input Area -->
-        <footer class="input-area">
-            <div class="input-container">
-                <button id="mic-button" class="mic-button" title="Parler">
-                    🎤
-                </button>
-                <input 
-                    type="text" 
-                    id="message-input" 
-                    placeholder="Écrivez votre message..." 
-                    autocomplete="off"
-                >
-                <button id="send-button" class="send-button" title="Envoyer">
-                    ➤
+        
+        <!-- Settings Panel (Slide-in) -->
+        <div class="settings-panel" id="settings-panel">
+            <div class="settings-header">
+                <h2>Paramètres</h2>
+                <button class="icon-btn" id="close-settings-btn" aria-label="Close settings">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
                 </button>
             </div>
-            <div id="recording-indicator" class="recording-indicator hidden">
-                <span class="pulse"></span>
-                <span>Enregistrement en cours...</span>
+            
+            <div class="settings-content">
+                <!-- Voice Settings -->
+                <section class="settings-section">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        </svg>
+                        Reconnaissance Vocale (ASR)
+                    </h3>
+                    <div class="setting-item">
+                        <label for="asr-provider">Moteur</label>
+                        <select id="asr-provider">
+                            <option value="parakeet">Parakeet TDT 0.6B (Rapide)</option>
+                            <option value="whisper">Whisper (Précis)</option>
+                            <option value="canary">Canary 1B (Premium)</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label for="asr-language">Langue</label>
+                        <select id="asr-language">
+                            <option value="">Détection auto</option>
+                            <option value="fr">Français</option>
+                            <option value="en">English</option>
+                            <option value="de">Deutsch</option>
+                            <option value="es">Español</option>
+                            <option value="ja">日本語</option>
+                        </select>
+                    </div>
+                </section>
+                
+                <!-- TTS Settings -->
+                <section class="settings-section">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                        </svg>
+                        Synthèse Vocale (TTS)
+                    </h3>
+                    <div class="setting-item">
+                        <label for="tts-provider">Moteur</label>
+                        <select id="tts-provider">
+                            <option value="xtts">XTTS v2 (Multilingue)</option>
+                            <option value="kokoro">Kokoro (Rapide)</option>
+                            <option value="edge">Edge TTS (Cloud)</option>
+                        </select>
+                    </div>
+                    <div class="setting-item toggle">
+                        <label for="auto-detect-language">
+                            Détection automatique de la langue
+                        </label>
+                        <input type="checkbox" id="auto-detect-language" checked>
+                    </div>
+                    <div class="setting-item toggle">
+                        <label for="stream-tts">
+                            Streaming audio (réponse plus rapide)
+                        </label>
+                        <input type="checkbox" id="stream-tts" checked>
+                    </div>
+                </section>
+                
+                <!-- Character Settings -->
+                <section class="settings-section">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        Personnage
+                    </h3>
+                    <div class="setting-item">
+                        <label for="character-name">Nom</label>
+                        <input type="text" id="character-name" value="Aria" placeholder="Nom du personnage">
+                    </div>
+                    <div class="setting-item">
+                        <label for="character-prompt">Personnalité</label>
+                        <textarea id="character-prompt" rows="3" placeholder="Décrivez la personnalité...">Une assistante IA amicale, curieuse et serviable qui aime discuter et aider.</textarea>
+                    </div>
+                </section>
             </div>
-        </footer>
+            
+            <div class="settings-footer">
+                <button class="btn btn-ghost" id="reset-settings-btn">Réinitialiser</button>
+                <button class="btn btn-primary" id="save-settings-btn">Sauvegarder</button>
+            </div>
+        </div>
+        
+        <!-- Overlay for modals/panels -->
+        <div class="overlay" id="overlay"></div>
     </div>
-
-    <!-- Audio element for TTS playback -->
+    
+    <!-- Audio elements -->
     <audio id="audio-player" style="display: none;"></audio>
-
+    
     <!-- Scripts -->
     <script src="js/websocket.js"></script>
     <script src="js/audio.js"></script>
+    <script src="js/ui.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

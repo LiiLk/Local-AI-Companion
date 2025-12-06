@@ -1,6 +1,6 @@
 /* ===========================================
    Main Application
-   Ties everything together
+   Ties everything together - Professional UI Version
    =========================================== */
 
 class App {
@@ -14,14 +14,30 @@ class App {
         this.currentStreamContent = '';
         this._modelsPreloaded = false;
         
-        // DOM Elements
+        // DOM Elements - Updated for new UI structure
         this.elements = {
-            status: document.getElementById('connection-status'),
+            // Messages
+            messagesContainer: document.getElementById('messages-container'),
             messages: document.getElementById('messages'),
+            
+            // Input
             input: document.getElementById('message-input'),
-            sendBtn: document.getElementById('send-button'),
-            micBtn: document.getElementById('mic-button'),
-            recordingIndicator: document.getElementById('recording-indicator')
+            sendBtn: document.getElementById('send-btn'),
+            voiceBtn: document.getElementById('voice-btn'),
+            
+            // Status
+            statusBar: document.getElementById('status-bar'),
+            statusMessage: document.getElementById('status-message'),
+            progressFill: document.getElementById('progress-fill'),
+            
+            // Connection (sidebar)
+            connectionStatus: document.querySelector('.connection-status'),
+            statusText: document.querySelector('.connection-status .status-text'),
+            
+            // Model status items
+            modelVad: document.querySelector('.model-item[data-model="vad"]'),
+            modelAsr: document.querySelector('.model-item[data-model="asr"]'),
+            modelTts: document.querySelector('.model-item[data-model="tts"]')
         };
         
         this._init();
@@ -51,13 +67,8 @@ class App {
         this.ws.onError = (error) => this._handleError(error);
         
         // Audio callbacks
-        this.audio.onRecordingStart = () => this._showRecordingIndicator(true);
-        this.audio.onRecordingStop = () => {
-            this._showRecordingIndicator(false);
-            this.elements.micBtn.classList.remove('recording');
-            // Notify server that mic stopped (in case VAD hasn't triggered yet)
-            this.ws.sendMicStop();
-        };
+        this.audio.onRecordingStart = () => this._handleRecordingStart();
+        this.audio.onRecordingStop = () => this._handleRecordingStop();
         this.audio.onAudioSamples = (samples) => {
             // Stream audio samples to server for VAD processing
             this.ws.sendAudioStream(samples);
@@ -69,22 +80,25 @@ class App {
         
         // Connect
         this.ws.connect();
+        
+        // Listen for settings changes from UIController
+        window.addEventListener('settings-changed', (e) => this._handleSettingsChange(e.detail));
     }
     
     _setupEventListeners() {
         // Send button
-        this.elements.sendBtn.addEventListener('click', () => this._sendMessage());
+        this.elements.sendBtn?.addEventListener('click', () => this._sendMessage());
         
-        // Enter key to send
-        this.elements.input.addEventListener('keypress', (e) => {
+        // Enter key to send (Shift+Enter for new line)
+        this.elements.input?.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this._sendMessage();
             }
         });
         
-        // Microphone button
-        this.elements.micBtn.addEventListener('click', async () => {
+        // Voice button (microphone)
+        this.elements.voiceBtn?.addEventListener('click', async () => {
             try {
                 // Preload models on first mic click
                 if (!this._modelsPreloaded) {
@@ -93,15 +107,15 @@ class App {
                 }
                 
                 await this.audio.toggleRecording();
-                this.elements.micBtn.classList.toggle('recording', this.audio.isRecording);
             } catch (error) {
-                this._showError('Microphone access denied');
+                console.error('[App] Microphone error:', error);
+                this._showToast('Accès au microphone refusé', 'error');
             }
         });
     }
     
     _sendMessage() {
-        const text = this.elements.input.value.trim();
+        const text = this.elements.input?.value.trim();
         if (!text) return;
         
         // Add user message to UI
@@ -110,8 +124,29 @@ class App {
         // Send via WebSocket
         this.ws.sendText(text);
         
-        // Clear input
+        // Clear input and reset height
         this.elements.input.value = '';
+        this.elements.input.style.height = 'auto';
+    }
+    
+    _handleRecordingStart() {
+        // Update voice button state
+        this.elements.voiceBtn?.classList.add('recording');
+        
+        // Show status bar
+        this._showStatus('🎤 Écoute en cours...', 0);
+    }
+    
+    _handleRecordingStop() {
+        // Update voice button state
+        this.elements.voiceBtn?.classList.remove('recording');
+        this.elements.voiceBtn?.classList.remove('active');
+        
+        // Hide status bar
+        this._hideStatus();
+        
+        // Notify server
+        this.ws.sendMicStop();
     }
     
     _handleStreamStart() {
@@ -128,7 +163,7 @@ class App {
         this.currentStreamContent += chunk;
         
         // Update the streaming message
-        const streamingMsg = this.elements.messages.querySelector('.message.streaming .message-content');
+        const streamingMsg = this.elements.messages?.querySelector('.message.streaming .message-content');
         if (streamingMsg) {
             streamingMsg.innerHTML = this._formatMessage(this.currentStreamContent);
             this._scrollToBottom();
@@ -139,7 +174,7 @@ class App {
         this.isStreaming = false;
         
         // Remove streaming class
-        const streamingMsg = this.elements.messages.querySelector('.message.streaming');
+        const streamingMsg = this.elements.messages?.querySelector('.message.streaming');
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
         }
@@ -153,93 +188,102 @@ class App {
     }
     
     _showTranscribingIndicator() {
-        // Update recording indicator to show transcribing
-        const indicator = this.elements.recordingIndicator;
-        indicator.classList.remove('hidden');
-        indicator.querySelector('span:last-child').textContent = 'Transcription en cours...';
+        this._showStatus('⏳ Transcription en cours...', 50);
     }
     
     _handleVadStart() {
         // VAD detected speech start - show visual feedback
-        const indicator = this.elements.recordingIndicator;
-        indicator.querySelector('span:last-child').textContent = 'Parole détectée...';
-        this.elements.micBtn.classList.add('active');
+        this._showStatus('🗣️ Parole détectée...', 25);
+        this.elements.voiceBtn?.classList.add('active');
     }
     
     _handleVadEnd() {
         // VAD detected speech end - will transcribe now
-        const indicator = this.elements.recordingIndicator;
-        indicator.querySelector('span:last-child').textContent = 'Transcription...';
-        this.elements.micBtn.classList.remove('active');
+        this._showStatus('⏳ Transcription...', 75);
+        this.elements.voiceBtn?.classList.remove('active');
     }
     
     _handleError(error) {
-        console.error('Error:', error);
-        this._showError(error.message || 'An error occurred');
+        console.error('[App] Error:', error);
+        this._showToast(error.message || 'Une erreur est survenue', 'error');
     }
     
     _showModelsLoading(message, progress = 0) {
-        // Show loading indicator with progress
-        this.elements.recordingIndicator.classList.remove('hidden');
-        this.elements.recordingIndicator.querySelector('span:last-child').textContent = 
-            `🔄 ${message} (${progress}%)`;
-        this.elements.micBtn.classList.add('loading');
+        this._showStatus(`🔄 ${message}`, progress);
+        this.elements.voiceBtn?.classList.add('loading');
     }
     
     _showModelLoading(model, message, progress = 0) {
-        // Update loading indicator with specific model info
-        this.elements.recordingIndicator.classList.remove('hidden');
-        const emoji = model === 'tts' ? '🔊' : model === 'asr' ? '🎤' : '👂';
-        this.elements.recordingIndicator.querySelector('span:last-child').textContent = 
-            `${emoji} ${message} (${progress}%)`;
+        this._updateModelStatus(model, 'loading', message);
+        this._showStatus(`⏳ ${message}`, progress);
     }
     
     _showModelLoaded(model, message, progress = 0) {
-        // Brief success indication
-        const emoji = model === 'tts' ? '🔊' : model === 'asr' ? '🎤' : '👂';
-        this.elements.recordingIndicator.querySelector('span:last-child').textContent = 
-            `✅ ${emoji} ${message} (${progress}%)`;
+        this._updateModelStatus(model, 'loaded', '✓ Prêt');
+        this._showStatus(`✅ ${message}`, progress);
     }
     
     _showModelsReady(message) {
-        // Update indicator briefly then hide if not recording
-        this.elements.recordingIndicator.querySelector('span:last-child').textContent = '✅ ' + message;
-        this.elements.micBtn.classList.remove('loading');
+        this._showStatus(`✅ ${message}`, 100);
+        this.elements.voiceBtn?.classList.remove('loading');
         this._modelsPreloaded = true;
         
-        // Hide after 2 seconds if not actively recording
+        // Hide status bar after 2 seconds
         setTimeout(() => {
             if (!this.audio.isRecording) {
-                this.elements.recordingIndicator.classList.add('hidden');
+                this._hideStatus();
             }
         }, 2000);
     }
     
     _showModelsError(message) {
-        // Show error state
-        this.elements.recordingIndicator.querySelector('span:last-child').textContent = '❌ ' + message;
-        this.elements.micBtn.classList.remove('loading');
-        this.elements.micBtn.classList.add('error');
+        this._showStatus(`❌ ${message}`, 0);
+        this.elements.voiceBtn?.classList.remove('loading');
+        this.elements.voiceBtn?.classList.add('error');
+        
+        // Update model status
+        this._updateModelStatus('vad', 'error');
+        this._updateModelStatus('asr', 'error');
+        this._updateModelStatus('tts', 'error');
         
         // Remove error class after 3 seconds
         setTimeout(() => {
-            this.elements.micBtn.classList.remove('error');
+            this.elements.voiceBtn?.classList.remove('error');
         }, 3000);
     }
     
+    _updateModelStatus(model, status, info = '') {
+        const modelItem = document.querySelector(`.model-item[data-model="${model}"]`);
+        if (!modelItem) return;
+        
+        modelItem.setAttribute('data-status', status);
+        
+        const badge = modelItem.querySelector('.model-badge');
+        if (badge && info) {
+            badge.textContent = info;
+        }
+    }
+    
     _addMessage(role, content, isStreaming = false) {
+        if (!this.elements.messages) return;
+        
         const message = document.createElement('div');
         message.className = `message ${role}${isStreaming ? ' streaming' : ''}`;
         
+        // Avatar
         const avatar = document.createElement('div');
         avatar.className = 'message-avatar';
-        avatar.textContent = role === 'user' ? '👤' : '🤖';
+        avatar.textContent = role === 'user' ? '👤' : '✨';
         
+        // Message bubble
+        const bubble = document.createElement('div');
+        bubble.className = 'message-bubble';
+        
+        // Content
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
         
         if (isStreaming) {
-            // Show typing indicator while waiting
             contentDiv.innerHTML = `
                 <div class="typing-indicator">
                     <span></span>
@@ -251,8 +295,19 @@ class App {
             contentDiv.innerHTML = this._formatMessage(content);
         }
         
+        // Meta (time)
+        const meta = document.createElement('div');
+        meta.className = 'message-meta';
+        const time = document.createElement('span');
+        time.className = 'message-time';
+        time.textContent = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+        meta.appendChild(time);
+        
+        bubble.appendChild(contentDiv);
+        bubble.appendChild(meta);
+        
         message.appendChild(avatar);
-        message.appendChild(contentDiv);
+        message.appendChild(bubble);
         
         this.elements.messages.appendChild(message);
         this._scrollToBottom();
@@ -271,50 +326,123 @@ class App {
     }
     
     _scrollToBottom() {
-        this.elements.messages.scrollTop = this.elements.messages.scrollHeight;
+        if (this.elements.messagesContainer) {
+            this.elements.messagesContainer.scrollTo({
+                top: this.elements.messagesContainer.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
     }
     
     _updateConnectionStatus(status) {
-        const statusEl = this.elements.status;
-        statusEl.className = `status ${status}`;
+        const connectionEl = this.elements.connectionStatus;
+        if (!connectionEl) return;
         
-        const statusTexts = {
-            'connected': '🟢 Connected',
-            'disconnected': '🔴 Disconnected',
-            'connecting': '🟡 Connecting...'
-        };
+        connectionEl.classList.remove('connected', 'disconnected', 'connecting');
         
-        statusEl.textContent = statusTexts[status] || status;
+        if (status === 'connected') {
+            connectionEl.classList.add('connected');
+            if (this.elements.statusText) {
+                this.elements.statusText.textContent = 'Connecté';
+            }
+            // Also update UIController if available
+            window.uiController?.updateConnectionStatus(true);
+        } else if (status === 'disconnected') {
+            connectionEl.classList.add('disconnected');
+            if (this.elements.statusText) {
+                this.elements.statusText.textContent = 'Déconnecté';
+            }
+            window.uiController?.updateConnectionStatus(false);
+        } else {
+            if (this.elements.statusText) {
+                this.elements.statusText.textContent = 'Connexion...';
+            }
+        }
     }
     
-    _showRecordingIndicator(show) {
-        if (show) {
-            this.elements.recordingIndicator.classList.remove('hidden');
-        } else {
-            this.elements.recordingIndicator.classList.add('hidden');
-            // Reset volume indicator
-            const pulse = this.elements.recordingIndicator.querySelector('.pulse');
-            if (pulse) pulse.style.transform = 'scale(1)';
+    _showStatus(message, progress = 0) {
+        if (!this.elements.statusBar) return;
+        
+        this.elements.statusBar.classList.remove('hidden');
+        
+        if (this.elements.statusMessage) {
+            this.elements.statusMessage.textContent = message;
         }
+        
+        if (this.elements.progressFill) {
+            this.elements.progressFill.style.width = `${progress}%`;
+        }
+    }
+    
+    _hideStatus() {
+        this.elements.statusBar?.classList.add('hidden');
     }
     
     _updateVolumeIndicator(volume) {
-        // Scale the pulse based on volume (0-1)
-        const pulse = this.elements.recordingIndicator.querySelector('.pulse');
-        if (pulse) {
-            const scale = 1 + volume * 3;  // Scale from 1 to 4 based on volume
-            pulse.style.transform = `scale(${scale})`;
-        }
+        // Could add visual feedback for volume if needed
+        // For now, the voice button animation handles this
     }
     
-    _showError(message) {
-        // You could use a toast notification system here
-        alert(message);
+    _showToast(message, type = 'info') {
+        // Simple toast notification
+        console.log(`[Toast ${type}]`, message);
+        
+        // Create toast element
+        let toast = document.getElementById('toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'toast';
+            toast.style.cssText = `
+                position: fixed;
+                bottom: 100px;
+                left: 50%;
+                transform: translateX(-50%);
+                padding: 12px 24px;
+                background: var(--color-bg-elevated);
+                border: 1px solid var(--color-border);
+                border-radius: var(--radius-lg);
+                color: var(--color-text-primary);
+                font-size: var(--font-size-sm);
+                z-index: 9999;
+                box-shadow: var(--shadow-lg);
+                opacity: 0;
+                transition: opacity 0.3s ease;
+            `;
+            document.body.appendChild(toast);
+        }
+        
+        // Style based on type
+        if (type === 'error') {
+            toast.style.borderColor = 'var(--color-error)';
+        } else if (type === 'success') {
+            toast.style.borderColor = 'var(--color-success)';
+        }
+        
+        toast.textContent = message;
+        toast.style.opacity = '1';
+        
+        // Auto hide
+        setTimeout(() => {
+            toast.style.opacity = '0';
+        }, 3000);
+    }
+    
+    _handleSettingsChange(settings) {
+        console.log('[App] Settings changed:', settings);
+        // Send settings update to server if needed
+        // this.ws.sendSettings(settings);
     }
     
     // Public method to clear conversation
     clearConversation() {
-        this.elements.messages.innerHTML = '';
+        if (this.elements.messages) {
+            // Keep welcome message
+            const welcomeMsg = this.elements.messages.querySelector('.message.assistant:first-child');
+            this.elements.messages.innerHTML = '';
+            if (welcomeMsg) {
+                this.elements.messages.appendChild(welcomeMsg);
+            }
+        }
         this.ws.sendClear();
     }
 }
