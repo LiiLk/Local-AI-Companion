@@ -8,47 +8,48 @@ class App {
         // Managers
         this.ws = null;
         this.audio = new AudioManager();
-        
+
         // State
         this.isStreaming = false;
         this.currentStreamContent = '';
         this._modelsPreloaded = false;
-        
+
         // DOM Elements - Updated for new UI structure
         this.elements = {
             // Messages
             messagesContainer: document.getElementById('messages-container'),
             messages: document.getElementById('messages'),
-            
+
             // Input
             input: document.getElementById('message-input'),
             sendBtn: document.getElementById('send-btn'),
             voiceBtn: document.getElementById('voice-btn'),
-            
+
             // Status
             statusBar: document.getElementById('status-bar'),
             statusMessage: document.getElementById('status-message'),
             progressFill: document.getElementById('progress-fill'),
-            
+
             // Connection (sidebar)
             connectionStatus: document.querySelector('.connection-status'),
             statusText: document.querySelector('.connection-status .status-text'),
-            
+
             // Model status items
             modelVad: document.querySelector('.model-item[data-model="vad"]'),
             modelAsr: document.querySelector('.model-item[data-model="asr"]'),
             modelTts: document.querySelector('.model-item[data-model="tts"]')
         };
-        
+
         this._init();
     }
-    
+
     _init() {
         // Setup WebSocket with unique client ID
         const clientId = 'client_' + Math.random().toString(36).substring(2, 15);
-        const wsUrl = `ws://${window.location.host}/ws/${clientId}`;
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/${clientId}`;
         this.ws = new WebSocketManager(wsUrl);
-        
+
         // WebSocket callbacks
         this.ws.onStatusChange = (status) => this._updateConnectionStatus(status);
         this.ws.onTextStart = () => this._handleStreamStart();
@@ -65,7 +66,7 @@ class App {
         this.ws.onModelsReady = (msg) => this._showModelsReady(msg);
         this.ws.onModelsError = (msg) => this._showModelsError(msg);
         this.ws.onError = (error) => this._handleError(error);
-        
+
         // Audio callbacks
         this.audio.onRecordingStart = () => this._handleRecordingStart();
         this.audio.onRecordingStop = () => this._handleRecordingStop();
@@ -74,21 +75,21 @@ class App {
             this.ws.sendAudioStream(samples);
         };
         this.audio.onVolumeChange = (volume) => this._updateVolumeIndicator(volume);
-        
+
         // Event listeners
         this._setupEventListeners();
-        
+
         // Connect
         this.ws.connect();
-        
+
         // Listen for settings changes from UIController
         window.addEventListener('settings-changed', (e) => this._handleSettingsChange(e.detail));
     }
-    
+
     _setupEventListeners() {
         // Send button
         this.elements.sendBtn?.addEventListener('click', () => this._sendMessage());
-        
+
         // Enter key to send (Shift+Enter for new line)
         this.elements.input?.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -96,7 +97,7 @@ class App {
                 this._sendMessage();
             }
         });
-        
+
         // Voice button (microphone)
         this.elements.voiceBtn?.addEventListener('click', async () => {
             try {
@@ -105,7 +106,7 @@ class App {
                     this.ws.sendPreloadModels();
                     this._modelsPreloaded = true;
                 }
-                
+
                 await this.audio.toggleRecording();
             } catch (error) {
                 console.error('[App] Microphone error:', error);
@@ -113,60 +114,60 @@ class App {
             }
         });
     }
-    
+
     _sendMessage() {
         const text = this.elements.input?.value.trim();
         if (!text) return;
-        
+
         // Add user message to UI
         this._addMessage('user', text);
-        
+
         // Send via WebSocket
         this.ws.sendText(text);
-        
+
         // Clear input and reset height
         this.elements.input.value = '';
         this.elements.input.style.height = 'auto';
-        
+
         // Disable send button
         if (this.elements.sendBtn) {
             this.elements.sendBtn.disabled = true;
         }
     }
-    
+
     _handleRecordingStart() {
         // Update voice button state
         this.elements.voiceBtn?.classList.add('recording');
-        
+
         // Show status bar
         this._showStatus('🎤 Écoute en cours...', 0);
     }
-    
+
     _handleRecordingStop() {
         // Update voice button state
         this.elements.voiceBtn?.classList.remove('recording');
         this.elements.voiceBtn?.classList.remove('active');
-        
+
         // Hide status bar
         this._hideStatus();
-        
+
         // Notify server
         this.ws.sendMicStop();
     }
-    
+
     _handleStreamStart() {
         this.isStreaming = true;
         this.currentStreamContent = '';
-        
+
         // Add placeholder message for streaming
         this._addMessage('assistant', '', true);
     }
-    
+
     _handleStreamChunk(chunk) {
         if (!this.isStreaming) return;
-        
+
         this.currentStreamContent += chunk;
-        
+
         // Update the streaming message
         const streamingMsg = this.elements.messages?.querySelector('.message.streaming .message-content');
         if (streamingMsg) {
@@ -174,65 +175,65 @@ class App {
             this._scrollToBottom();
         }
     }
-    
+
     _handleStreamEnd(fullResponse) {
         this.isStreaming = false;
-        
+
         // Remove streaming class
         const streamingMsg = this.elements.messages?.querySelector('.message.streaming');
         if (streamingMsg) {
             streamingMsg.classList.remove('streaming');
         }
     }
-    
+
     _handleTranscription(text) {
         if (text && text.trim()) {
             // Show the transcribed user message
             this._addMessage('user', text);
         }
     }
-    
+
     _showTranscribingIndicator() {
         this._showStatus('⏳ Transcription en cours...', 50);
     }
-    
+
     _handleVadStart() {
         // VAD detected speech start - show visual feedback
         this._showStatus('🗣️ Parole détectée...', 25);
         this.elements.voiceBtn?.classList.add('active');
     }
-    
+
     _handleVadEnd() {
         // VAD detected speech end - will transcribe now
         this._showStatus('⏳ Transcription...', 75);
         this.elements.voiceBtn?.classList.remove('active');
     }
-    
+
     _handleError(error) {
         console.error('[App] Error:', error);
         this._showToast(error.message || 'Une erreur est survenue', 'error');
     }
-    
+
     _showModelsLoading(message, progress = 0) {
         this._showStatus(`🔄 ${message}`, progress);
         this.elements.voiceBtn?.classList.add('loading');
     }
-    
+
     _showModelLoading(model, message, progress = 0) {
         this._updateModelStatus(model, 'loading', message);
         this._showStatus(`⏳ ${message}`, progress);
     }
-    
+
     _showModelLoaded(model, message, progress = 0) {
         this._updateModelStatus(model, 'loaded', '✓ Prêt');
         this._showStatus(`✅ ${message}`, progress);
     }
-    
+
     _showModelsReady(message) {
         this._showStatus(`✅ ${message}`, 100);
         this.elements.voiceBtn?.classList.remove('loading');
         this._modelsPreloaded = true;
-        
+
         // Hide status bar after 2 seconds
         setTimeout(() => {
             if (!this.audio.isRecording) {
@@ -240,54 +241,48 @@ class App {
             }
         }, 2000);
     }
-    
+
     _showModelsError(message) {
         this._showStatus(`❌ ${message}`, 0);
         this.elements.voiceBtn?.classList.remove('loading');
         this.elements.voiceBtn?.classList.add('error');
-        
+
         // Update model status
         this._updateModelStatus('vad', 'error');
         this._updateModelStatus('asr', 'error');
         this._updateModelStatus('tts', 'error');
-        
+
         // Remove error class after 3 seconds
         setTimeout(() => {
             this.elements.voiceBtn?.classList.remove('error');
         }, 3000);
     }
-    
+
     _updateModelStatus(model, status, info = '') {
-        const modelItem = document.querySelector(`.model-item[data-model="${model}"]`);
-        if (!modelItem) return;
-        
-        modelItem.setAttribute('data-status', status);
-        
-        const badge = modelItem.querySelector('.model-badge');
-        if (badge && info) {
-            badge.textContent = info;
+        if (window.uiController) {
+            window.uiController.updateModelStatus(model, status, info);
         }
     }
-    
+
     _addMessage(role, content, isStreaming = false) {
         if (!this.elements.messages) return;
-        
+
         const message = document.createElement('div');
         message.className = `message ${role}${isStreaming ? ' streaming' : ''}`;
-        
+
         // Avatar
         const avatar = document.createElement('div');
         avatar.className = 'message-avatar';
         avatar.textContent = role === 'user' ? '👤' : '✨';
-        
+
         // Message bubble
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        
+
         // Content
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
-        
+
         if (isStreaming) {
             contentDiv.innerHTML = `
                 <div class="typing-indicator">
@@ -299,7 +294,7 @@ class App {
         } else {
             contentDiv.innerHTML = this._formatMessage(content);
         }
-        
+
         // Meta (time)
         const meta = document.createElement('div');
         meta.className = 'message-meta';
@@ -307,29 +302,29 @@ class App {
         time.className = 'message-time';
         time.textContent = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
         meta.appendChild(time);
-        
+
         bubble.appendChild(contentDiv);
         bubble.appendChild(meta);
-        
+
         message.appendChild(avatar);
         message.appendChild(bubble);
-        
+
         this.elements.messages.appendChild(message);
         this._scrollToBottom();
     }
-    
+
     _formatMessage(text) {
         // Basic formatting - escape HTML and convert newlines
         const escaped = text
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
-        
+
         // Convert newlines to paragraphs
         const paragraphs = escaped.split('\n\n');
         return paragraphs.map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('');
     }
-    
+
     _scrollToBottom() {
         if (this.elements.messagesContainer) {
             this.elements.messagesContainer.scrollTo({
@@ -338,60 +333,36 @@ class App {
             });
         }
     }
-    
+
     _updateConnectionStatus(status) {
-        const connectionEl = this.elements.connectionStatus;
-        if (!connectionEl) return;
-        
-        connectionEl.classList.remove('connected', 'disconnected', 'connecting');
-        
-        if (status === 'connected') {
-            connectionEl.classList.add('connected');
-            if (this.elements.statusText) {
-                this.elements.statusText.textContent = 'Connecté';
-            }
-            // Also update UIController if available
-            window.uiController?.updateConnectionStatus(true);
-        } else if (status === 'disconnected') {
-            connectionEl.classList.add('disconnected');
-            if (this.elements.statusText) {
-                this.elements.statusText.textContent = 'Déconnecté';
-            }
-            window.uiController?.updateConnectionStatus(false);
-        } else {
-            if (this.elements.statusText) {
-                this.elements.statusText.textContent = 'Connexion...';
-            }
+        // Delegate to UIController
+        const connected = status === 'connected';
+        if (window.uiController) {
+            window.uiController.updateConnectionStatus(connected);
         }
     }
-    
+
     _showStatus(message, progress = 0) {
-        if (!this.elements.statusBar) return;
-        
-        this.elements.statusBar.classList.remove('hidden');
-        
-        if (this.elements.statusMessage) {
-            this.elements.statusMessage.textContent = message;
-        }
-        
-        if (this.elements.progressFill) {
-            this.elements.progressFill.style.width = `${progress}%`;
+        if (window.uiController) {
+            window.uiController.showStatusBar(message, progress);
         }
     }
-    
+
     _hideStatus() {
-        this.elements.statusBar?.classList.add('hidden');
+        if (window.uiController) {
+            window.uiController.hideStatusBar();
+        }
     }
-    
+
     _updateVolumeIndicator(volume) {
         // Could add visual feedback for volume if needed
         // For now, the voice button animation handles this
     }
-    
+
     _showToast(message, type = 'info') {
         // Simple toast notification
         console.log(`[Toast ${type}]`, message);
-        
+
         // Create toast element
         let toast = document.getElementById('toast');
         if (!toast) {
@@ -415,29 +386,29 @@ class App {
             `;
             document.body.appendChild(toast);
         }
-        
+
         // Style based on type
         if (type === 'error') {
             toast.style.borderColor = 'var(--color-error)';
         } else if (type === 'success') {
             toast.style.borderColor = 'var(--color-success)';
         }
-        
+
         toast.textContent = message;
         toast.style.opacity = '1';
-        
+
         // Auto hide
         setTimeout(() => {
             toast.style.opacity = '0';
         }, 3000);
     }
-    
+
     _handleSettingsChange(settings) {
         console.log('[App] Settings changed:', settings);
         // Send settings update to server if needed
         // this.ws.sendSettings(settings);
     }
-    
+
     // Public method to clear conversation
     clearConversation() {
         if (this.elements.messages) {
