@@ -18,7 +18,7 @@ class UIController {
         this.themeToggle = document.getElementById('theme-toggle');
         this.mobileMenuBtn = document.getElementById('mobile-menu-btn');
         this.settingsBtn = document.getElementById('settings-btn');
-        this.closeSettingsBtn = document.getElementById('close-settings');
+        this.closeSettingsBtn = document.getElementById('close-settings-btn');
         this.scrollToBottomBtn = document.getElementById('scroll-to-bottom');
         this.messagesContainer = document.getElementById('messages-container');
         this.messageInput = document.getElementById('message-input');
@@ -93,11 +93,17 @@ class UIController {
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
         
         // Settings form
-        document.getElementById('save-settings')?.addEventListener('click', () => this.saveSettings());
-        document.getElementById('cancel-settings')?.addEventListener('click', () => this.closeSettings());
+        document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
+        document.getElementById('reset-settings-btn')?.addEventListener('click', () => this.resetSettings());
         
-        // Nav items sidebar
-        document.getElementById('nav-settings')?.addEventListener('click', () => this.openSettings());
+        // Clear chat
+        document.getElementById('clear-chat-btn')?.addEventListener('click', () => this.handleNewChat());
+        
+        // Enable/disable send button based on input
+        this.messageInput?.addEventListener('input', () => {
+            const hasContent = this.messageInput.value.trim().length > 0;
+            this.sendBtn.disabled = !hasContent;
+        });
     }
     
     /**
@@ -341,17 +347,17 @@ class UIController {
     saveSettings() {
         const settings = {
             asr: {
-                provider: document.getElementById('setting-asr-provider')?.value,
-                language: document.getElementById('setting-asr-language')?.value
+                provider: document.getElementById('asr-provider')?.value,
+                language: document.getElementById('asr-language')?.value
             },
             tts: {
-                provider: document.getElementById('setting-tts-provider')?.value,
-                autoDetect: document.getElementById('setting-tts-autodetect')?.checked,
-                streaming: document.getElementById('setting-tts-streaming')?.checked
+                provider: document.getElementById('tts-provider')?.value,
+                autoDetect: document.getElementById('auto-detect-language')?.checked,
+                streaming: document.getElementById('stream-tts')?.checked
             },
             character: {
-                name: document.getElementById('setting-char-name')?.value,
-                personality: document.getElementById('setting-char-personality')?.value
+                name: document.getElementById('character-name')?.value,
+                personality: document.getElementById('character-prompt')?.value
             }
         };
         
@@ -368,6 +374,25 @@ class UIController {
     }
     
     /**
+     * Réinitialise les paramètres par défaut
+     */
+    resetSettings() {
+        // Valeurs par défaut
+        document.getElementById('asr-provider').value = 'parakeet';
+        document.getElementById('asr-language').value = '';
+        document.getElementById('tts-provider').value = 'xtts';
+        document.getElementById('auto-detect-language').checked = true;
+        document.getElementById('stream-tts').checked = true;
+        document.getElementById('character-name').value = 'Aria';
+        document.getElementById('character-prompt').value = 'Une assistante IA amicale, curieuse et serviable qui aime discuter et aider.';
+        
+        // Supprimer du localStorage
+        localStorage.removeItem('aria-settings');
+        
+        console.log('[UI] Paramètres réinitialisés');
+    }
+    
+    /**
      * Charge les paramètres depuis localStorage
      */
     loadSettings() {
@@ -379,24 +404,24 @@ class UIController {
             
             // Appliquer aux champs
             if (settings.asr) {
-                const provider = document.getElementById('setting-asr-provider');
-                const language = document.getElementById('setting-asr-language');
-                if (provider) provider.value = settings.asr.provider || 'whisper';
-                if (language) language.value = settings.asr.language || 'auto';
+                const provider = document.getElementById('asr-provider');
+                const language = document.getElementById('asr-language');
+                if (provider) provider.value = settings.asr.provider || 'parakeet';
+                if (language) language.value = settings.asr.language || '';
             }
             
             if (settings.tts) {
-                const provider = document.getElementById('setting-tts-provider');
-                const autoDetect = document.getElementById('setting-tts-autodetect');
-                const streaming = document.getElementById('setting-tts-streaming');
-                if (provider) provider.value = settings.tts.provider || 'kokoro';
+                const provider = document.getElementById('tts-provider');
+                const autoDetect = document.getElementById('auto-detect-language');
+                const streaming = document.getElementById('stream-tts');
+                if (provider) provider.value = settings.tts.provider || 'xtts';
                 if (autoDetect) autoDetect.checked = settings.tts.autoDetect !== false;
                 if (streaming) streaming.checked = settings.tts.streaming !== false;
             }
             
             if (settings.character) {
-                const name = document.getElementById('setting-char-name');
-                const personality = document.getElementById('setting-char-personality');
+                const name = document.getElementById('character-name');
+                const personality = document.getElementById('character-prompt');
                 if (name) name.value = settings.character.name || 'Aria';
                 if (personality) personality.value = settings.character.personality || '';
             }

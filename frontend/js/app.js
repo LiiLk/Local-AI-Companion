@@ -127,6 +127,11 @@ class App {
         // Clear input and reset height
         this.elements.input.value = '';
         this.elements.input.style.height = 'auto';
+        
+        // Disable send button
+        if (this.elements.sendBtn) {
+            this.elements.sendBtn.disabled = true;
+        }
     }
     
     _handleRecordingStart() {
