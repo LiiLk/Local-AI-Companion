@@ -122,6 +122,8 @@ class XTTSProvider(BaseTTS):
     - Voice cloning with 6 seconds of audio
     - 58 built-in speakers
     - ~2.8GB VRAM, fast generation (~1.7s per sentence)
+    - Automatic language detection support
+    - Speaker embedding caching for faster synthesis
     
     Example:
         # With built-in speaker
@@ -131,35 +133,47 @@ class XTTSProvider(BaseTTS):
         # With voice cloning
         tts = XTTSProvider(language="fr", speaker_wav="~/voices/my_voice.wav")
         await tts.synthesize("Bonjour !", Path("output.wav"))
+        
+        # With auto-detection (language=None)
+        tts = XTTSProvider(language=None, speaker="Claribel Dervla")
+        await tts.synthesize("Bonjour !", Path("output.wav"))  # Auto-detects French
     """
     
     def __init__(
         self,
-        language: str = "fr",
+        language: str | None = "en",
         speaker: str = "Claribel Dervla",
         speaker_wav: str | Path | None = None,
         device: str | None = None,
+        auto_detect_language: bool = False,
     ):
         """
         Initialize the XTTS v2 provider.
         
         Args:
-            language: Language code (fr, en, de, etc.)
+            language: Language code (fr, en, de, etc.) or None for auto-detect
             speaker: Built-in speaker name (ignored if speaker_wav provided)
             speaker_wav: Path to reference audio for voice cloning
             device: "cuda", "cpu" or None (auto-detect)
+            auto_detect_language: Enable automatic language detection
         """
         self.language = language
         self.speaker = speaker
         self.speaker_wav = Path(speaker_wav).expanduser() if speaker_wav else None
         self.device = device
+        self.auto_detect_language = auto_detect_language or (language is None)
         
         # Lazy loading
         self._model = None
         self._TTS = None
         
+        # Cache for speaker embeddings (significant speedup!)
+        self._gpt_cond_latent = None
+        self._speaker_embedding = None
+        self._cached_speaker = None  # Track which speaker is cached
+        
         # Validation
-        if language not in SUPPORTED_LANGUAGES:
+        if language is not None and language not in SUPPORTED_LANGUAGES:
             logger.warning(
                 f"Language '{language}' not officially supported. "
                 f"Supported languages: {SUPPORTED_LANGUAGES}"
@@ -169,6 +183,43 @@ class XTTSProvider(BaseTTS):
     def model_name(self) -> str:
         """Model name for display."""
         return "XTTS v2"
+    
+    def set_language(self, language: str) -> None:
+        """
+        Change the synthesis language.
+        
+        Args:
+            language: Language code (fr, en, de, etc.)
+        """
+        if language not in SUPPORTED_LANGUAGES:
+            logger.warning(
+                f"Language '{language}' not officially supported. "
+                f"Supported languages: {SUPPORTED_LANGUAGES}"
+            )
+        self.language = language
+        logger.debug(f"XTTS language set to: {language}")
+    
+    def _get_language_for_text(self, text: str) -> str:
+        """
+        Get the language to use for synthesis.
+        
+        If auto_detect_language is enabled, detects the language.
+        Otherwise returns the configured language.
+        
+        Args:
+            text: Text to analyze
+            
+        Returns:
+            Language code (e.g., "fr", "en")
+        """
+        if self.auto_detect_language:
+            from ..utils.language_detection import detect_language, LanguageCode
+            
+            detected = detect_language(text)
+            logger.info(f"🌐 Auto-detected language: {detected} for text: '{text[:50]}...'")
+            return str(detected)
+        
+        return self.language or "en"
     
     def _load_model(self):
         """
@@ -194,6 +245,52 @@ class XTTSProvider(BaseTTS):
         logger.info(f"✅ {self.model_name} loaded on {self.device}!")
         return self._model
     
+    def _get_speaker_embedding(self):
+        """
+        Get cached speaker embedding or compute it.
+        
+        Caching the speaker embedding provides significant speedup
+        for subsequent synthesis calls (saves ~0.5-1s per call).
+        
+        Returns:
+            Tuple of (gpt_cond_latent, speaker_embedding)
+        """
+        # Check if we need to recompute (speaker changed)
+        current_speaker = str(self.speaker_wav) if self.speaker_wav else self.speaker
+        
+        if self._gpt_cond_latent is not None and self._cached_speaker == current_speaker:
+            return self._gpt_cond_latent, self._speaker_embedding
+        
+        model = self._load_model()
+        
+        # Access the underlying XTTS model
+        xtts_model = model.synthesizer.tts_model
+        
+        if self.speaker_wav and self.speaker_wav.exists():
+            # Voice cloning - compute embedding from audio
+            logger.info(f"🔄 Computing speaker embedding from: {self.speaker_wav}")
+            gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
+                audio_path=str(self.speaker_wav),
+                gpt_cond_len=30,
+                gpt_cond_chunk_len=4,
+                max_ref_length=60
+            )
+        else:
+            # Built-in speaker - get from speaker manager
+            logger.info(f"🔄 Loading speaker embedding for: {self.speaker}")
+            # For built-in speakers, we use the high-level API which handles this
+            # internally, but we can't cache it easily. Fall back to no cache.
+            self._cached_speaker = current_speaker
+            return None, None
+        
+        # Cache the embeddings
+        self._gpt_cond_latent = gpt_cond_latent
+        self._speaker_embedding = speaker_embedding
+        self._cached_speaker = current_speaker
+        
+        logger.info("✅ Speaker embedding cached!")
+        return gpt_cond_latent, speaker_embedding
+    
     async def synthesize(
         self,
         text: str,
@@ -201,6 +298,9 @@ class XTTSProvider(BaseTTS):
     ) -> TTSResult:
         """
         Convert text to WAV audio file.
+        
+        If auto_detect_language is enabled, the language is automatically
+        detected from the text.
         
         Args:
             text: Text to synthesize
@@ -219,13 +319,17 @@ class XTTSProvider(BaseTTS):
         
         output_path = Path(output_path)
         
+        # Get language (auto-detect if enabled)
+        language = self._get_language_for_text(text)
+        
         # Synthesize in thread to not block the event loop
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
             self._synthesize_sync,
             text,
-            output_path
+            output_path,
+            language
         )
         
         # Calculate duration
@@ -234,19 +338,56 @@ class XTTSProvider(BaseTTS):
         
         return TTSResult(audio_path=output_path, duration=duration)
     
-    def _synthesize_sync(self, text: str, output_path: Path) -> None:
+    def _synthesize_sync(self, text: str, output_path: Path, language: str | None = None) -> None:
         """
         Synchronous synthesis (called in a thread).
+        
+        Uses cached speaker embeddings when available for faster synthesis.
+        
+        Args:
+            text: Text to synthesize
+            output_path: Output file path
+            language: Language code (if None, uses self.language)
         """
         model = self._load_model()
+        lang = language or self.language or "en"
         
-        # Voice cloning or built-in speaker?
+        # Try to use cached embeddings for voice cloning
         if self.speaker_wav and self.speaker_wav.exists():
-            # Voice cloning
+            gpt_cond_latent, speaker_embedding = self._get_speaker_embedding()
+            
+            if gpt_cond_latent is not None:
+                # Use low-level API with cached embeddings (faster!)
+                xtts_model = model.synthesizer.tts_model
+                
+                out = xtts_model.inference(
+                    text=text,
+                    language=lang,
+                    gpt_cond_latent=gpt_cond_latent,
+                    speaker_embedding=speaker_embedding,
+                    temperature=0.7,
+                    length_penalty=1.0,
+                    repetition_penalty=10.0,
+                    top_k=50,
+                    top_p=0.85,
+                    enable_text_splitting=True
+                )
+                
+                # Save audio
+                import torchaudio
+                torchaudio.save(
+                    str(output_path),
+                    out["wav"].unsqueeze(0),
+                    24000  # XTTS sample rate
+                )
+                return
+        
+        # Fall back to high-level API for built-in speakers
+        if self.speaker_wav and self.speaker_wav.exists():
             model.tts_to_file(
                 text=text,
                 speaker_wav=str(self.speaker_wav),
-                language=self.language,
+                language=lang,
                 file_path=str(output_path)
             )
         else:
@@ -254,7 +395,7 @@ class XTTSProvider(BaseTTS):
             model.tts_to_file(
                 text=text,
                 speaker=self.speaker,
-                language=self.language,
+                language=lang,
                 file_path=str(output_path)
             )
     
@@ -267,6 +408,7 @@ class XTTSProvider(BaseTTS):
         
         XTTS v2 supports native streaming with latency < 200ms.
         This implementation uses XTTS internal streaming.
+        If auto_detect_language is enabled, language is auto-detected.
         
         Args:
             text: Text to synthesize
@@ -276,6 +418,9 @@ class XTTSProvider(BaseTTS):
         """
         import io
         import wave
+        
+        # Get language (auto-detect if enabled)
+        language = self._get_language_for_text(text)
         
         # For streaming, we generate full audio then split it
         # A more advanced implementation would use model.inference_stream()
@@ -289,7 +434,8 @@ class XTTSProvider(BaseTTS):
             None,
             self._synthesize_sync,
             text,
-            temp_path
+            temp_path,
+            language
         )
         
         # Read and stream by chunks

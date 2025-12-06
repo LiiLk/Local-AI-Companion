@@ -57,6 +57,52 @@ tts:
   provider: "xtts"
   
   # ─────────────────────────────────────────────────────────────────────────
+  # ⚡ STREAMING TTS (sentence-by-sentence)
+  # ─────────────────────────────────────────────────────────────────────────
+  # When enabled, TTS starts synthesizing as soon as a sentence is complete,
+  # without waiting for the full LLM response. This dramatically reduces
+  # perceived latency.
+  # - true: Synthesize sentence by sentence (faster perceived response)
+  # - false: Wait for full response before TTS (simpler, more stable)
+  # ─────────────────────────────────────────────────────────────────────────
+  stream_tts: true
+  
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🌐 AUTO LANGUAGE DETECTION
+  # ─────────────────────────────────────────────────────────────────────────
+  # When enabled, the TTS will automatically detect the language of the text
+  # and use the appropriate voice configuration.
+  # Works with: XTTS (changes language parameter), Kokoro (changes voice),
+  #             Edge TTS (changes voice)
+  # ─────────────────────────────────────────────────────────────────────────
+  auto_detect_language: true
+  
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🗣️ VOICE MAPPING BY LANGUAGE
+  # ─────────────────────────────────────────────────────────────────────────
+  # Define which voice to use for each language.
+  # Used when auto_detect_language is enabled.
+  # ─────────────────────────────────────────────────────────────────────────
+  voice_mapping:
+    # XTTS v2 voices by language (speaker name)
+    xtts:
+      fr: "Claribel Dervla"     # Works great for French
+      en: "Claribel Dervla"     # Same voice, multilingual
+      # Or use different speakers:
+      # fr: "Zacharie Aimilios"  # French male voice
+      # en: "Ana Florence"       # English female voice
+    
+    # Kokoro voices by language
+    kokoro:
+      fr: "ff_siwis"    # French female voice
+      en: "af_heart"    # American female voice
+    
+    # Edge TTS voices by language
+    edge:
+      fr: "fr-FR-DeniseNeural"   # French female voice
+      en: "en-US-JennyNeural"    # American female voice
+  
+  # ─────────────────────────────────────────────────────────────────────────
   # 🎤 XTTS v2 (Voice Cloning) - Best multilingual choice ⭐ RECOMMENDED
   # ─────────────────────────────────────────────────────────────────────────
   # - ~467M params, ~2.8GB VRAM (coexists with Jan-v2-VL ~7GB = ~10GB total ✅)
@@ -67,13 +113,13 @@ tts:
   # - Model downloaded automatically (~1.9GB)
   # ─────────────────────────────────────────────────────────────────────────
   xtts:
-    # Default language
+    # Default language (used when auto_detect_language is false)
     language: "en"
     
     # Device: null = auto-detect (prefers CUDA if available)
     device: null
     
-    # Built-in speaker (used if no voice cloning)
+    # Built-in speaker (used if no voice cloning and no voice_mapping)
     # Some recommended voices:
     # - "Claribel Dervla" : Clear and natural female voice
     # - "Ana Florence" : Soft female voice

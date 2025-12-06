@@ -13,6 +13,7 @@ Usage:
 
 import asyncio
 import argparse
+import logging
 import subprocess
 import tempfile
 import re
@@ -25,6 +26,9 @@ from src.tts import EdgeTTSProvider, KokoroProvider, XTTSProvider
 from src.tts.base import BaseTTS
 from src.asr import RealtimeWhisperProvider
 from src.asr.base import BaseASR
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 
 def load_config() -> dict:
@@ -75,6 +79,10 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
     Returns:
         TTS provider instance
     """
+    # Check if auto-language detection is enabled
+    auto_detect = tts_config.get("auto_detect_language", False)
+    voice_mapping = tts_config.get("voice_mapping", {})
+    
     if provider == "xtts":
         # XTTS v2 - High quality multilingual voice cloning
         from pathlib import Path
@@ -90,9 +98,11 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
             speaker=xtts_config.get("speaker", "Claribel Dervla"),
             speaker_wav=speaker_wav,
             device=xtts_config.get("device"),  # None = auto-detect
+            auto_detect_language=auto_detect,
         )
     elif provider == "kokoro":
         # Kokoro - High quality local TTS
+        # If auto-detect is enabled, we'll handle language switching in speak_text
         voice = tts_config.get("kokoro_voice", "af_heart")
         return KokoroProvider(voice=voice)
     else:
@@ -133,15 +143,121 @@ def split_into_sentences(text: str) -> list[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 
-async def speak_text(tts: BaseTTS, text: str, temp_dir: Path) -> subprocess.Popen | None:
+class SentenceBuffer:
+    """
+    Buffer that accumulates text and yields complete sentences.
+    
+    Used for streaming TTS: as soon as a sentence is complete,
+    we can start synthesizing it while the LLM continues.
+    """
+    
+    # Sentence ending patterns
+    SENTENCE_ENDINGS = re.compile(r'[.!?:]\s*$')
+    # Minimum sentence length to trigger TTS (avoid very short phrases)
+    MIN_SENTENCE_LENGTH = 10
+    
+    def __init__(self):
+        self.buffer = ""
+        self.sentences: list[str] = []
+    
+    def add(self, text: str) -> list[str]:
+        """
+        Add text to buffer and return any complete sentences.
+        
+        Args:
+            text: New text chunk from LLM
+            
+        Returns:
+            List of complete sentences (may be empty)
+        """
+        self.buffer += text
+        complete = []
+        
+        # Check for sentence endings
+        while True:
+            # Look for sentence boundary
+            match = re.search(r'([.!?:])\s+', self.buffer)
+            if match:
+                end_pos = match.end()
+                sentence = self.buffer[:end_pos].strip()
+                
+                # Only yield if sentence is long enough
+                if len(sentence) >= self.MIN_SENTENCE_LENGTH:
+                    complete.append(sentence)
+                    self.buffer = self.buffer[end_pos:]
+                else:
+                    # Too short, wait for more text
+                    break
+            else:
+                break
+        
+        return complete
+    
+    def flush(self) -> str | None:
+        """
+        Get any remaining text in the buffer.
+        
+        Call this when the LLM stream ends.
+        
+        Returns:
+            Remaining text or None if buffer is empty
+        """
+        if self.buffer.strip():
+            remaining = self.buffer.strip()
+            self.buffer = ""
+            return remaining
+        return None
+
+
+async def speak_text(
+    tts: BaseTTS, 
+    text: str, 
+    temp_dir: Path,
+    tts_config: dict | None = None
+) -> subprocess.Popen | None:
     """
     Synthesize and play the text.
+    
+    For Kokoro and Edge TTS, handles automatic language detection
+    and voice switching if auto_detect_language is enabled in config.
+    
+    Args:
+        tts: TTS provider instance
+        text: Text to synthesize
+        temp_dir: Temporary directory for audio files
+        tts_config: TTS config for voice mapping (optional)
     
     Returns:
         The audio process to wait for completion
     """
     if not text.strip():
         return None
+    
+    # Handle auto-language detection for Kokoro and Edge TTS
+    if tts_config and tts_config.get("auto_detect_language", False):
+        voice_mapping = tts_config.get("voice_mapping", {})
+        
+        # Detect language
+        from src.utils.language_detection import detect_language
+        detected_lang = str(detect_language(text))
+        
+        if isinstance(tts, KokoroProvider):
+            # Switch Kokoro voice based on language
+            kokoro_voices = voice_mapping.get("kokoro", {})
+            if detected_lang in kokoro_voices:
+                new_voice = kokoro_voices[detected_lang]
+                if tts.voice != new_voice:
+                    tts.voice = new_voice
+                    print(f"  🌐 [{detected_lang.upper()}] → Kokoro voice: {new_voice}")
+        
+        elif isinstance(tts, EdgeTTSProvider):
+            # Switch Edge TTS voice based on language
+            edge_voices = voice_mapping.get("edge", {})
+            if detected_lang in edge_voices:
+                new_voice = edge_voices[detected_lang]
+                if tts.voice != new_voice:
+                    tts.set_voice(new_voice)
+                    print(f"  🌐 [{detected_lang.upper()}] → Edge voice: {new_voice}")
     
     # Extension based on TTS type
     # XTTS and Kokoro generate WAV, Edge TTS generates MP3
@@ -155,6 +271,159 @@ async def speak_text(tts: BaseTTS, text: str, temp_dir: Path) -> subprocess.Pope
     
     # Play
     return play_audio(audio_file)
+
+
+async def stream_tts_with_llm(
+    llm,
+    messages: list,
+    tts: BaseTTS,
+    temp_dir: Path,
+    tts_config: dict | None,
+    character_name: str
+) -> str:
+    """
+    Stream LLM response while synthesizing TTS sentence by sentence.
+    
+    This provides much lower latency than waiting for the complete response:
+    - As soon as a sentence is complete, TTS starts synthesizing
+    - Audio plays as soon as each sentence is ready
+    - TTS calls are serialized to avoid CUDA conflicts
+    
+    Args:
+        llm: LLM client instance
+        messages: Conversation history
+        tts: TTS provider instance
+        temp_dir: Temporary directory for audio files
+        tts_config: TTS configuration
+        character_name: Character name for display
+        
+    Returns:
+        Full response text
+    """
+    print(f"\n🤖 {character_name}: ", end="", flush=True)
+    
+    sentence_buffer = SentenceBuffer()
+    full_response = ""
+    sentence_index = 0
+    
+    # Queues for producer-consumer pattern
+    sentences_to_synthesize: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
+    audio_to_play: asyncio.Queue[tuple[int, Path | None] | None] = asyncio.Queue()
+    
+    async def tts_worker():
+        """
+        Worker that synthesizes sentences sequentially.
+        This avoids CUDA conflicts by ensuring only one TTS call at a time.
+        """
+        while True:
+            item = await sentences_to_synthesize.get()
+            
+            if item is None:  # Sentinel to stop
+                await audio_to_play.put(None)
+                break
+            
+            idx, sentence = item
+            
+            try:
+                # Handle auto-language detection for Kokoro and Edge TTS
+                if tts_config and tts_config.get("auto_detect_language", False):
+                    voice_mapping = tts_config.get("voice_mapping", {})
+                    from src.utils.language_detection import detect_language
+                    detected_lang = str(detect_language(sentence))
+                    
+                    if isinstance(tts, KokoroProvider):
+                        kokoro_voices = voice_mapping.get("kokoro", {})
+                        if detected_lang in kokoro_voices:
+                            new_voice = kokoro_voices[detected_lang]
+                            if tts.voice != new_voice:
+                                tts.voice = new_voice
+                    
+                    elif isinstance(tts, EdgeTTSProvider):
+                        edge_voices = voice_mapping.get("edge", {})
+                        if detected_lang in edge_voices:
+                            new_voice = edge_voices[detected_lang]
+                            if tts.voice != new_voice:
+                                tts.set_voice(new_voice)
+                
+                # Extension based on TTS type
+                ext = ".wav" if isinstance(tts, (KokoroProvider, XTTSProvider)) else ".mp3"
+                
+                # Generate unique temp file
+                audio_file = temp_dir / f"sentence_{idx:03d}_{hash(sentence) % 10000}{ext}"
+                
+                # Synthesize (sequential, no CUDA conflicts)
+                await tts.synthesize(sentence, audio_file)
+                
+                await audio_to_play.put((idx, audio_file))
+                
+            except Exception as e:
+                logger.error(f"TTS error for sentence {idx}: {e}")
+                await audio_to_play.put((idx, None))
+    
+    async def audio_player():
+        """Play audio files in order as they become ready."""
+        next_to_play = 0
+        pending: dict[int, Path] = {}
+        
+        while True:
+            item = await audio_to_play.get()
+            
+            if item is None:  # Sentinel to stop
+                # Play any remaining audio in order
+                while next_to_play in pending:
+                    proc = play_audio(pending[next_to_play])
+                    if proc:
+                        await asyncio.get_event_loop().run_in_executor(None, proc.wait)
+                    del pending[next_to_play]
+                    next_to_play += 1
+                break
+            
+            idx, path = item
+            
+            if path:
+                pending[idx] = path
+            
+            # Play in order
+            while next_to_play in pending:
+                proc = play_audio(pending[next_to_play])
+                if proc:
+                    # Wait for audio to finish before playing next
+                    await asyncio.get_event_loop().run_in_executor(None, proc.wait)
+                del pending[next_to_play]
+                next_to_play += 1
+    
+    # Start worker tasks
+    tts_task = asyncio.create_task(tts_worker())
+    player_task = asyncio.create_task(audio_player())
+    
+    # Stream LLM response
+    async for chunk in llm.chat_stream(messages):
+        print(chunk, end="", flush=True)
+        full_response += chunk
+        
+        # Check for complete sentences
+        complete_sentences = sentence_buffer.add(chunk)
+        
+        for sentence in complete_sentences:
+            # Queue sentence for TTS (will be processed sequentially)
+            await sentences_to_synthesize.put((sentence_index, sentence))
+            sentence_index += 1
+    
+    print()  # New line after response
+    
+    # Handle remaining text in buffer
+    remaining = sentence_buffer.flush()
+    if remaining:
+        await sentences_to_synthesize.put((sentence_index, remaining))
+    
+    # Signal end of sentences
+    await sentences_to_synthesize.put(None)
+    
+    # Wait for TTS and audio to finish
+    await tts_task
+    await player_task
+    
+    return full_response
 
 
 async def main():
@@ -227,6 +496,16 @@ async def main():
         
         voice_info = tts.voice if hasattr(tts, 'voice') else "default"
         print(f"🔊 TTS Voice: {voice_info}")
+        
+        # Show auto-detect status
+        if tts_config.get("auto_detect_language", False):
+            print("🌐 Auto language detection: ENABLED (FR/EN)")
+        
+        # Show streaming TTS status
+        if tts_config.get("stream_tts", True):
+            print("⚡ Streaming TTS: ENABLED (sentence-by-sentence)")
+        else:
+            print("📝 Streaming TTS: DISABLED (full response)")
     
     # Create ASR if listen mode
     asr = None
@@ -323,24 +602,47 @@ async def main():
             # 2. Add user message to history
             messages.append(Message(role="user", content=user_input))
             
-            # 3. Get LLM response (with streaming)
-            print(f"\n🤖 {character['name']}: ", end="", flush=True)
+            # 3. Get LLM response with optional streaming TTS
+            stream_tts_enabled = tts_config.get("stream_tts", True) if tts_config else True
             
-            full_response = ""
+            if tts and stream_tts_enabled:
+                # Use streaming TTS (sentence by sentence, parallel to LLM)
+                full_response = await stream_tts_with_llm(
+                    llm=llm,
+                    messages=messages,
+                    tts=tts,
+                    temp_dir=temp_dir,
+                    tts_config=tts_config,
+                    character_name=character['name']
+                )
+            elif tts:
+                # Non-streaming TTS (wait for full response)
+                print(f"\n🤖 {character['name']}: ", end="", flush=True)
+                
+                full_response = ""
+                async for chunk in llm.chat_stream(messages):
+                    print(chunk, end="", flush=True)
+                    full_response += chunk
+                
+                print()  # New line
+                
+                # TTS on complete response
+                if full_response.strip():
+                    proc = await speak_text(tts, full_response, temp_dir, tts_config)
+                    if proc:
+                        audio_processes.append(proc)
+            else:
+                # Text-only mode (no TTS)
+                print(f"\n🤖 {character['name']}: ", end="", flush=True)
+                
+                full_response = ""
+                async for chunk in llm.chat_stream(messages):
+                    print(chunk, end="", flush=True)
+                    full_response += chunk
+                
+                print()  # New line
             
-            async for chunk in llm.chat_stream(messages):
-                print(chunk, end="", flush=True)
-                full_response += chunk
-            
-            print()  # New line
-            
-            # 4. TTS on complete response
-            if tts and full_response.strip():
-                proc = await speak_text(tts, full_response, temp_dir)
-                if proc:
-                    audio_processes.append(proc)
-            
-            # 5. Add response to history
+            # 4. Add response to history
             messages.append(Message(role="assistant", content=full_response))
             
     finally:

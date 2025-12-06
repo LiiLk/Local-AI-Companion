@@ -1,12 +1,12 @@
 #!/bin/bash
-# Script pour lancer le serveur llama.cpp avec Jan-v2-VL-high
+# Script to start the llama.cpp server with Jan-v2-VL-high
 # 
-# Ce script utilise les binaires Vulkan pré-compilés de llama.cpp
-# installés dans ~/tools/llama-cpp/
+# This script uses the pre-compiled Vulkan binaries of llama.cpp
+# installed in ~/tools/llama-cpp/
 #
 # Usage:
-#   ./scripts/start_llm_server.sh           # Lancer au premier plan
-#   ./scripts/start_llm_server.sh --daemon  # Lancer en arrière-plan
+#   ./scripts/start_llm_server.sh           # Run in foreground
+#   ./scripts/start_llm_server.sh --daemon  # Run in background
 
 set -e
 
@@ -17,15 +17,15 @@ MODEL_FILE="$MODEL_DIR/Jan-v2-VL-high-Q4_K_M.gguf"
 MMPROJ_FILE="$MODEL_DIR/mmproj-Jan-v2-VL-high.gguf"
 LOG_FILE="/tmp/llama-server.log"
 
-# Paramètres du serveur
+# Server parameters
 HOST="0.0.0.0"
 PORT=8080
 CTX_SIZE=8192
-GPU_LAYERS=99  # Toutes les couches sur GPU
+GPU_LAYERS=99  # All layers on GPU
 
-# === Vérifications ===
+# === Checks ===
 if [ ! -d "$LLAMA_CPP_DIR" ]; then
-    echo "❌ llama.cpp non trouvé: $LLAMA_CPP_DIR"
+    echo "❌ llama.cpp not found: $LLAMA_CPP_DIR"
     echo ""
     echo "Installation:"
     echo "  mkdir -p ~/tools/llama-cpp && cd ~/tools/llama-cpp"
@@ -35,9 +35,9 @@ if [ ! -d "$LLAMA_CPP_DIR" ]; then
 fi
 
 if [ ! -f "$MODEL_FILE" ]; then
-    echo "❌ Modèle non trouvé: $MODEL_FILE"
+    echo "❌ Model not found: $MODEL_FILE"
     echo ""
-    echo "Téléchargement:"
+    echo "Download:"
     echo "  mkdir -p $MODEL_DIR && cd $MODEL_DIR"
     echo "  wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/Jan-v2-VL-high-Q4_K_M.gguf"
     echo "  wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/mmproj-Jan-v2-VL-high.gguf"
@@ -45,34 +45,34 @@ if [ ! -f "$MODEL_FILE" ]; then
 fi
 
 if [ ! -f "$MMPROJ_FILE" ]; then
-    echo "❌ Vision projector non trouvé: $MMPROJ_FILE"
+    echo "❌ Vision projector not found: $MMPROJ_FILE"
     exit 1
 fi
 
-# === Arrêter l'instance existante ===
+# === Stop existing instance ===
 if pgrep -f "llama-server" > /dev/null; then
-    echo "⚠️  Arrêt de l'instance existante..."
+    echo "⚠️  Stopping existing instance..."
     pkill -f "llama-server" || true
     sleep 2
 fi
 
-# === Afficher les informations ===
+# === Display information ===
 echo "🦙 Jan-v2-VL-high Server"
 echo "========================"
-echo "   Modèle    : $(basename $MODEL_FILE) (4.7 GB)"
+echo "   Model     : $(basename $MODEL_FILE) (4.7 GB)"
 echo "   Vision    : $(basename $MMPROJ_FILE) (1.1 GB)"
 echo "   Backend   : Vulkan (GPU)"
 echo "   Port      : http://localhost:$PORT"
 echo "   Context   : $CTX_SIZE tokens"
-echo "   GPU Layers: $GPU_LAYERS (toutes)"
+echo "   GPU Layers: $GPU_LAYERS (all)"
 echo ""
 
-# === Lancer le serveur ===
+# === Start the server ===
 cd "$LLAMA_CPP_DIR"
 export LD_LIBRARY_PATH="$LLAMA_CPP_DIR:$LD_LIBRARY_PATH"
 
 if [ "$1" = "--daemon" ] || [ "$1" = "-d" ]; then
-    echo "🚀 Lancement en arrière-plan..."
+    echo "🚀 Starting in background..."
     nohup ./llama-server \
         --model "$MODEL_FILE" \
         --mmproj "$MMPROJ_FILE" \
@@ -88,19 +88,19 @@ if [ "$1" = "--daemon" ] || [ "$1" = "-d" ]; then
     echo "   PID: $PID"
     echo "   Logs: $LOG_FILE"
     echo ""
-    echo "Attente du démarrage..."
+    echo "Waiting for startup..."
     sleep 8
     
     if curl -s http://localhost:$PORT/health > /dev/null 2>&1; then
-        echo "✅ Serveur prêt!"
+        echo "✅ Server ready!"
         echo ""
         echo "Test: curl http://localhost:$PORT/v1/chat/completions -H 'Content-Type: application/json' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Salut!\"}]}'"
     else
-        echo "⚠️  Le serveur démarre (peut prendre ~10s pour charger le modèle)"
-        echo "   Vérifiez les logs: tail -f $LOG_FILE"
+        echo "⚠️  Server is starting (may take ~10s to load the model)"
+        echo "   Check the logs: tail -f $LOG_FILE"
     fi
 else
-    echo "🚀 Lancement au premier plan (Ctrl+C pour arrêter)..."
+    echo "🚀 Starting in foreground (Ctrl+C to stop)..."
     echo ""
     ./llama-server \
         --model "$MODEL_FILE" \

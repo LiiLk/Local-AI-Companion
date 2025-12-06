@@ -124,9 +124,9 @@ class EdgeTTSProvider(BaseTTS):
             pitch=self.pitch
         )
         
-        # Edge TTS envoie des chunks audio + metadata
+        # Edge TTS sends audio chunks + metadata
         async for chunk in communicate.stream():
-            # On ne garde que les chunks audio (pas les metadata)
+            # We only keep audio chunks (not metadata)
             if chunk["type"] == "audio":
                 yield chunk["data"]
     

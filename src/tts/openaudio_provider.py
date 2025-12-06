@@ -1,30 +1,30 @@
 """
-Implémentation TTS utilisant OpenAudio S1-mini (Fish Speech).
+TTS implementation using OpenAudio S1-mini (Fish Speech).
 
-OpenAudio S1-mini est le modèle TTS #1 sur TTS-Arena2 (Mai 2025) avec 0.5B paramètres.
-Il offre une qualité exceptionnelle, le voice cloning et le support multilingue natif.
+OpenAudio S1-mini is the #1 TTS model on TTS-Arena2 (May 2025) with 0.5B parameters.
+It offers exceptional quality, voice cloning and native multilingual support.
 
-Avantages :
-- Qualité #1 sur TTS-Arena2 (meilleur que ElevenLabs)
-- Voice cloning avec 10-30 secondes d'audio de référence
-- Support multilingue natif (FR, EN, JA, ZH, etc.)
-- Émotions via tags: (excited), (whispering), (sad), (laughing)
-- Streaming audio pour latence réduite
-- 100% local et gratuit
+Advantages:
+- #1 quality on TTS-Arena2 (better than ElevenLabs)
+- Voice cloning with 10-30 seconds of reference audio
+- Native multilingual support (FR, EN, JA, ZH, etc.)
+- Emotions via tags: (excited), (whispering), (sad), (laughing)
+- Audio streaming for reduced latency
+- 100% local and free
 
-Inconvénients :
-- Modèle plus lourd (0.5B params, ~3.5GB)
-- Premier chargement lent (~30s sur CPU)
-- Requiert ~4GB RAM sur CPU ou ~2GB VRAM sur GPU
+Disadvantages:
+- Heavier model (0.5B params, ~3.5GB)
+- First load is slow (~30s on CPU)
+- Requires ~4GB RAM on CPU or ~2GB VRAM on GPU
 
-Configuration requise :
-- Checkpoints dans ~/models/openaudio-s1-mini/
-  - model.pth (1.7GB) - Modèle text-to-semantic
-  - codec.pth (1.8GB) - Décodeur audio DAC
+Required configuration:
+- Checkpoints in ~/models/openaudio-s1-mini/
+  - model.pth (1.7GB) - Text-to-semantic model
+  - codec.pth (1.8GB) - DAC audio decoder
 
-Usage voice cloning :
-    Préparez un fichier audio de référence (10-30s de parole claire)
-    et sa transcription. Le modèle clonera cette voix.
+Voice cloning usage:
+    Prepare a reference audio file (10-30s of clear speech)
+    and its transcription. The model will clone that voice.
 """
 
 import io
@@ -43,7 +43,7 @@ import soundfile as sf
 from .base import BaseTTS, TTSResult, Voice
 
 
-# Voix disponibles (styles par défaut sans voice cloning)
+# Available voices (default styles without voice cloning)
 AVAILABLE_VOICES = [
     Voice(id="default", name="Default (Neural)", language="multi", gender="Unknown"),
     Voice(id="cloned", name="Cloned Voice", language="multi", gender="Unknown"),
@@ -52,30 +52,30 @@ AVAILABLE_VOICES = [
 
 class OpenAudioProvider(BaseTTS):
     """
-    Provider TTS utilisant OpenAudio S1-mini (Fish Speech).
+    TTS provider using OpenAudio S1-mini (Fish Speech).
     
-    OpenAudio utilise un système de voice cloning : vous fournissez
-    un échantillon audio de référence et sa transcription, et le modèle
-    génère de la parole dans cette voix.
+    OpenAudio uses a voice cloning system: you provide
+    a reference audio sample and its transcription, and the model
+    generates speech in that voice.
     
-    Sans référence, le modèle utilise une voix neutre par défaut.
+    Without reference, the model uses a neutral default voice.
     
     Attributes:
-        checkpoint_path: Chemin vers le dossier des checkpoints
-        device: Device pour l'inférence ("cpu", "cuda", "mps")
-        speaker_wav: Chemin vers l'audio de référence pour voice cloning
-        speaker_text: Transcription de l'audio de référence
-        _engine: Engine d'inférence TTS (chargé à la demande)
+        checkpoint_path: Path to the checkpoints folder
+        device: Device for inference ("cpu", "cuda", "mps")
+        speaker_wav: Path to reference audio for voice cloning
+        speaker_text: Transcription of the reference audio
+        _engine: TTS inference engine (loaded on demand)
     
     Example:
-        # Sans voice cloning
+        # Without voice cloning
         tts = OpenAudioProvider()
-        result = await tts.synthesize("Bonjour le monde !")
+        result = await tts.synthesize("Hello world!")
         
-        # Avec voice cloning
+        # With voice cloning
         tts = OpenAudioProvider(
             speaker_wav=Path("reference.wav"),
-            speaker_text="Bonjour, je suis la voix de référence."
+            speaker_text="Hello, I am the reference voice."
         )
     """
     
@@ -92,24 +92,24 @@ class OpenAudioProvider(BaseTTS):
         half_precision: bool = False,
     ):
         """
-        Initialise le provider OpenAudio S1-mini.
+        Initialize the OpenAudio S1-mini provider.
         
         Args:
-            checkpoint_path: Chemin vers les checkpoints OpenAudio S1-mini
+            checkpoint_path: Path to OpenAudio S1-mini checkpoints
                             (default: ~/models/openaudio-s1-mini)
-            device: Device pour l'inférence ("cpu", "cuda", "mps")
-                    Note: "cpu" est recommandé pour libérer le GPU pour le LLM
-            speaker_wav: Chemin vers l'audio de référence pour voice cloning
-            speaker_text: Transcription exacte de l'audio de référence
-            compile_model: Compiler le modèle avec torch.compile (plus lent au démarrage)
-            half_precision: Utiliser half precision (fp16/bf16) - recommandé sur GPU
+            device: Device for inference ("cpu", "cuda", "mps")
+                    Note: "cpu" is recommended to free GPU for LLM
+            speaker_wav: Path to reference audio for voice cloning
+            speaker_text: Exact transcription of the reference audio
+            compile_model: Compile model with torch.compile (slower startup)
+            half_precision: Use half precision (fp16/bf16) - recommended on GPU
         """
-        # Configuration des chemins
+        # Path configuration
         if checkpoint_path is None:
             checkpoint_path = Path.home() / "models" / "openaudio-s1-mini"
         self.checkpoint_path = Path(checkpoint_path)
         
-        # Vérifier que les checkpoints existent
+        # Verify checkpoints exist
         self._validate_checkpoints()
         
         # Configuration device
@@ -117,60 +117,60 @@ class OpenAudioProvider(BaseTTS):
         self.compile_model = compile_model
         self.half_precision = half_precision
         
-        # Configuration voice cloning
+        # Voice cloning configuration
         self.speaker_wav = Path(speaker_wav) if speaker_wav else None
         self.speaker_text = speaker_text
         
         if self.speaker_wav and not self.speaker_wav.exists():
             raise FileNotFoundError(f"Speaker WAV not found: {self.speaker_wav}")
         
-        # Engine chargé à la demande (lazy loading)
+        # Engine loaded on demand (lazy loading)
         self._engine = None
         self._lock = threading.Lock()
         
-        # Paramètres de génération par défaut
+        # Default generation parameters
         self.temperature = 0.8
         self.top_p = 0.8
         self.repetition_penalty = 1.1
         self.max_new_tokens = 1024
         
     def _validate_checkpoints(self) -> None:
-        """Vérifie que les fichiers checkpoint sont présents."""
+        """Verify that checkpoint files are present."""
         required_files = ["model.pth", "codec.pth"]
         
         for filename in required_files:
             filepath = self.checkpoint_path / filename
             if not filepath.exists():
                 raise FileNotFoundError(
-                    f"Checkpoint manquant: {filepath}\n"
-                    f"Téléchargez avec: huggingface-cli download fishaudio/openaudio-s1-mini "
+                    f"Missing checkpoint: {filepath}\n"
+                    f"Download with: huggingface-cli download fishaudio/openaudio-s1-mini "
                     f"--local-dir {self.checkpoint_path}"
                 )
     
     def _load_engine(self):
         """
-        Charge l'engine d'inférence OpenAudio (lazy loading).
+        Load the OpenAudio inference engine (lazy loading).
         
-        Cette méthode est thread-safe et ne charge le modèle qu'une fois.
-        Le chargement peut prendre ~30s sur CPU.
+        This method is thread-safe and only loads the model once.
+        Loading can take ~30s on CPU.
         """
         if self._engine is not None:
             return self._engine
         
         with self._lock:
-            # Double-check après avoir acquis le lock
+            # Double-check after acquiring lock
             if self._engine is not None:
                 return self._engine
             
-            print(f"🔄 Chargement d'OpenAudio S1-mini (device={self.device})...")
-            print("   ⏳ Cela peut prendre ~30 secondes sur CPU...")
+            print(f"🔄 Loading OpenAudio S1-mini (device={self.device})...")
+            print("   ⏳ This may take ~30 seconds on CPU...")
             
-            # Ajouter fish-speech au path si nécessaire
+            # Add fish-speech to path if needed
             fish_speech_path = Path.home() / "tools" / "fish-speech"
             if str(fish_speech_path) not in sys.path:
                 sys.path.insert(0, str(fish_speech_path))
             
-            # Forcer CPU si demandé (masquer CUDA)
+            # Force CPU if requested (hide CUDA)
             if self.device == "cpu":
                 os.environ["CUDA_VISIBLE_DEVICES"] = ""
             
@@ -179,13 +179,13 @@ class OpenAudioProvider(BaseTTS):
             from fish_speech.models.dac.inference import load_model as load_decoder_model
             from fish_speech.models.text2semantic.inference import launch_thread_safe_queue
             
-            # Déterminer la précision
+            # Determine precision
             if self.half_precision:
                 precision = torch.float16
             else:
                 precision = torch.bfloat16 if torch.cuda.is_available() else torch.float32
             
-            # Charger le modèle LLM (text-to-semantic)
+            # Load LLM model (text-to-semantic)
             llama_checkpoint = str(self.checkpoint_path)
             llama_queue = launch_thread_safe_queue(
                 checkpoint_path=llama_checkpoint,
@@ -194,7 +194,7 @@ class OpenAudioProvider(BaseTTS):
                 compile=self.compile_model,
             )
             
-            # Charger le décodeur audio (DAC)
+            # Load audio decoder (DAC)
             decoder_checkpoint = str(self.checkpoint_path / "codec.pth")
             decoder_model = load_decoder_model(
                 config_name="modded_dac_vq",
@@ -202,7 +202,7 @@ class OpenAudioProvider(BaseTTS):
                 device=self.device,
             )
             
-            # Créer l'engine d'inférence
+            # Create inference engine
             self._engine = TTSInferenceEngine(
                 llama_queue=llama_queue,
                 decoder_model=decoder_model,
@@ -210,13 +210,13 @@ class OpenAudioProvider(BaseTTS):
                 compile=self.compile_model,
             )
             
-            # Récupérer le sample rate réel
+            # Get actual sample rate
             if hasattr(decoder_model, "spec_transform"):
                 self.SAMPLE_RATE = decoder_model.spec_transform.sample_rate
             elif hasattr(decoder_model, "sample_rate"):
                 self.SAMPLE_RATE = decoder_model.sample_rate
             
-            print(f"✅ OpenAudio S1-mini chargé ! (sample_rate={self.SAMPLE_RATE}Hz)")
+            print(f"✅ OpenAudio S1-mini loaded! (sample_rate={self.SAMPLE_RATE}Hz)")
             
             return self._engine
     
@@ -245,23 +245,23 @@ class OpenAudioProvider(BaseTTS):
         """
         Convertit du texte en fichier audio WAV.
         
-        Supporte les tags d'émotion OpenAudio:
-        - (excited) pour l'excitation
-        - (whispering) pour chuchoter
-        - (sad) pour la tristesse
-        - (laughing) pour rire
+        Supports OpenAudio emotion tags:
+        - (excited) for excitement
+        - (whispering) for whispering
+        - (sad) for sadness
+        - (laughing) for laughing
         
         Args:
-            text: Texte à synthétiser (peut contenir des tags d'émotion)
-            output_path: Chemin de sortie (défaut: temp file)
+            text: Text to synthesize (may contain emotion tags)
+            output_path: Output path (default: temp file)
             
         Returns:
-            TTSResult avec le chemin du fichier audio
+            TTSResult with audio file path
             
         Example:
-            result = await tts.synthesize("Bonjour (excited) le monde !")
+            result = await tts.synthesize("Hello (excited) world!")
         """
-        # L'inférence est synchrone, on l'exécute dans un thread
+        # Inference is synchronous, run in a thread
         loop = asyncio.get_event_loop()
         audio_data, sample_rate = await loop.run_in_executor(
             None, 
@@ -269,23 +269,23 @@ class OpenAudioProvider(BaseTTS):
             text
         )
         
-        # Définir le chemin de sortie
+        # Define output path
         if output_path is None:
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             output_path = Path(tmp.name)
             tmp.close()
         
-        # Sauvegarder en WAV
+        # Save as WAV
         sf.write(str(output_path), audio_data, sample_rate)
         
-        # Calculer la durée
+        # Calculate duration
         duration = len(audio_data) / sample_rate
         
         return TTSResult(audio_path=output_path, duration=duration)
     
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
         """
-        Synthèse synchrone (appelée dans un thread).
+        Synchronous synthesis (called in a thread).
         
         Returns:
             Tuple (audio_data, sample_rate)
@@ -294,7 +294,7 @@ class OpenAudioProvider(BaseTTS):
         
         engine = self._load_engine()
         
-        # Préparer la requête
+        # Prepare request
         request = ServeTTSRequest(
             text=text,
             references=self._get_reference_audio(),
@@ -308,13 +308,13 @@ class OpenAudioProvider(BaseTTS):
             format="wav",
         )
         
-        # Exécuter l'inférence
+        # Execute inference
         for result in engine.inference(request):
             if result.code == "final":
                 sample_rate, audio = result.audio
                 return audio, sample_rate
             elif result.code == "error":
-                raise RuntimeError(f"Erreur OpenAudio: {result.error}")
+                raise RuntimeError(f"OpenAudio error: {result.error}")
         
         raise RuntimeError("Aucun audio généré")
     
@@ -323,23 +323,23 @@ class OpenAudioProvider(BaseTTS):
         text: str
     ) -> AsyncGenerator[bytes, None]:
         """
-        Génère l'audio en streaming (segment par segment).
+        Generate audio in streaming mode (segment by segment).
         
-        Permet de commencer la lecture avant que toute
-        la synthèse soit terminée (latence réduite).
+        Allows starting playback before the entire
+        synthesis is complete (reduced latency).
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Yields:
-            Chunks audio en bytes (format WAV)
+            Audio chunks in bytes (WAV format)
         """
         from fish_speech.utils.schema import ServeTTSRequest
         
         loop = asyncio.get_event_loop()
         
         def generate_segments():
-            """Générateur synchrone de segments audio."""
+            """Synchronous audio segment generator."""
             engine = self._load_engine()
             
             request = ServeTTSRequest(
@@ -363,9 +363,9 @@ class OpenAudioProvider(BaseTTS):
                     sample_rate, audio = result.audio
                     yield audio, sample_rate
                 elif result.code == "error":
-                    raise RuntimeError(f"Erreur OpenAudio: {result.error}")
+                    raise RuntimeError(f"OpenAudio error: {result.error}")
         
-        # Collecter tous les segments (run_in_executor ne supporte pas les générateurs)
+        # Collect all segments (run_in_executor doesn't support generators)
         segments = await loop.run_in_executor(None, list, generate_segments())
         
         # Yield chaque segment converti en WAV bytes
@@ -377,13 +377,13 @@ class OpenAudioProvider(BaseTTS):
     
     async def synthesize_to_bytes(self, text: str) -> bytes:
         """
-        Synthétise et retourne les bytes audio directement.
+        Synthesize and return audio bytes directly.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Returns:
-            Données audio en bytes (format WAV)
+            Audio data in bytes (WAV format)
         """
         loop = asyncio.get_event_loop()
         audio_data, sample_rate = await loop.run_in_executor(
@@ -392,7 +392,7 @@ class OpenAudioProvider(BaseTTS):
             text
         )
         
-        # Convertir en WAV bytes
+        # Convert to WAV bytes
         buffer = io.BytesIO()
         sf.write(buffer, audio_data, sample_rate, format='WAV')
         buffer.seek(0)
@@ -400,20 +400,20 @@ class OpenAudioProvider(BaseTTS):
     
     async def list_voices(self, language: str | None = None) -> list[Voice]:
         """
-        Liste les voix disponibles.
+        List available voices.
         
-        OpenAudio utilise le voice cloning, donc les "voix" sont
-        définies par l'audio de référence, pas par des presets.
+        OpenAudio uses voice cloning, so "voices" are
+        defined by reference audio, not by presets.
         
         Args:
-            language: Ignoré (OpenAudio est multilingue)
+            language: Ignored (OpenAudio is multilingual)
             
         Returns:
-            Liste des voix disponibles
+            List of available voices
         """
         voices = AVAILABLE_VOICES.copy()
         
-        # Ajouter une voix personnalisée si configurée
+        # Add custom voice if configured
         if self.speaker_wav:
             voices.append(Voice(
                 id="custom",
@@ -426,12 +426,12 @@ class OpenAudioProvider(BaseTTS):
     
     def set_voice(self, voice_id: str) -> None:
         """
-        OpenAudio n'a pas de voix préréglées.
+        OpenAudio has no preset voices.
         
-        Pour changer de voix, utilisez set_speaker() avec
-        un nouvel audio de référence.
+        To change voice, use set_speaker() with
+        a new reference audio.
         """
-        pass  # No-op car OpenAudio utilise voice cloning
+        pass  # No-op because OpenAudio uses voice cloning
     
     def set_speaker(
         self,
@@ -439,16 +439,16 @@ class OpenAudioProvider(BaseTTS):
         speaker_text: str
     ) -> None:
         """
-        Configure la voix de référence pour le voice cloning.
+        Configure the reference voice for voice cloning.
         
         Args:
-            speaker_wav: Chemin vers l'audio de référence (10-30s recommandé)
-            speaker_text: Transcription exacte de l'audio
+            speaker_wav: Path to reference audio (10-30s recommended)
+            speaker_text: Exact transcription of the audio
             
         Example:
             tts.set_speaker(
                 "reference.wav",
-                "Bonjour, je suis une voix de référence claire et naturelle."
+                "Hello, I am a clear and natural reference voice."
             )
         """
         speaker_path = Path(speaker_wav)
@@ -460,42 +460,42 @@ class OpenAudioProvider(BaseTTS):
     
     def set_temperature(self, temperature: float) -> None:
         """
-        Change la température de génération.
+        Change the generation temperature.
         
-        Plus haute = plus de variété/créativité
-        Plus basse = plus de stabilité/cohérence
+        Higher = more variety/creativity
+        Lower = more stability/consistency
         
         Args:
-            temperature: Valeur entre 0.1 et 1.0 (défaut: 0.8)
+            temperature: Value between 0.1 and 1.0 (default: 0.8)
         """
         self.temperature = max(0.1, min(1.0, temperature))
     
     def set_rate(self, rate: str) -> None:
         """
-        Change la vitesse de parole (non supporté directement).
+        Change speech rate (not directly supported).
         
-        OpenAudio ne supporte pas le changement de vitesse.
-        Cette méthode existe pour la compatibilité avec l'interface.
+        OpenAudio does not support speed changes.
+        This method exists for interface compatibility.
         
         Args:
-            rate: Ignoré
+            rate: Ignored
         """
-        # OpenAudio ne supporte pas le rate
+        # OpenAudio does not support rate
         pass
     
     def set_pitch(self, pitch: str) -> None:
         """
-        Change la hauteur de voix (non supporté).
+        Change voice pitch (not supported).
         
-        OpenAudio ne supporte pas le changement de pitch.
-        Cette méthode existe pour la compatibilité avec l'interface.
+        OpenAudio does not support pitch changes.
+        This method exists for interface compatibility.
         
         Args:
-            pitch: Ignoré
+            pitch: Ignored
         """
-        # OpenAudio ne supporte pas le pitch
+        # OpenAudio does not support pitch
         pass
 
 
-# Alias pour cohérence avec le reste du projet
+# Alias for consistency with rest of project
 OpenAudioS1Provider = OpenAudioProvider

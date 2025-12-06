@@ -201,7 +201,7 @@ class KokoroProvider(BaseTTS):
             output_path = Path(tmp.name)
             tmp.close()
         
-        # Sauvegarder en WAV
+        # Save as WAV
         sf.write(str(output_path), audio_data, self.SAMPLE_RATE)
         
         return TTSResult(audio_path=output_path)
@@ -252,9 +252,9 @@ class KokoroProvider(BaseTTS):
             for _, _, audio in pipeline(text, voice=self.voice, speed=self.speed):
                 yield audio
         
-        # Convertir en async
+        # Convert to async
         for audio in await loop.run_in_executor(None, list, generate_segments()):
-            # Convertir numpy array en bytes WAV
+            # Convert numpy array to WAV bytes
             buffer = io.BytesIO()
             sf.write(buffer, audio, self.SAMPLE_RATE, format='WAV')
             buffer.seek(0)
@@ -262,13 +262,13 @@ class KokoroProvider(BaseTTS):
     
     async def synthesize_to_bytes(self, text: str) -> bytes:
         """
-        Synthétise et retourne les bytes audio directement.
+        Synthesize and return audio bytes directly.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Returns:
-            Données audio en bytes (format WAV)
+            Audio data in bytes (WAV format)
         """
         loop = asyncio.get_event_loop()
         audio_data = await loop.run_in_executor(
@@ -277,7 +277,7 @@ class KokoroProvider(BaseTTS):
             text
         )
         
-        # Convertir en WAV bytes
+        # Convert to WAV bytes
         buffer = io.BytesIO()
         sf.write(buffer, audio_data, self.SAMPLE_RATE, format='WAV')
         buffer.seek(0)
@@ -333,14 +333,14 @@ class KokoroProvider(BaseTTS):
     
     def set_rate(self, rate: str) -> None:
         """
-        Change la vitesse de parole (compatibilité avec l'interface).
+        Change speech rate (interface compatibility).
         
-        Convertit le format Edge TTS ("+20%") en float pour Kokoro.
+        Converts Edge TTS format ("+20%") to float for Kokoro.
         
         Args:
-            rate: Modification de vitesse (ex: "+20%", "-10%")
+            rate: Speed modification (e.g., "+20%", "-10%")
         """
-        # Convertir "+20%" -> 1.2, "-10%" -> 0.9
+        # Convert "+20%" -> 1.2, "-10%" -> 0.9
         try:
             rate_clean = rate.replace("%", "").replace("+", "")
             rate_value = float(rate_clean) / 100
@@ -351,26 +351,26 @@ class KokoroProvider(BaseTTS):
     
     def set_pitch(self, pitch: str) -> None:
         """
-        Change la hauteur de voix (non supporté par Kokoro).
+        Change voice pitch (not supported by Kokoro).
         
-        Cette méthode existe pour la compatibilité avec l'interface,
-        mais Kokoro ne supporte pas le changement de pitch.
+        This method exists for interface compatibility,
+        but Kokoro does not support pitch changes.
         
         Args:
-            pitch: Ignoré (Kokoro ne supporte pas le pitch)
+            pitch: Ignored (Kokoro does not support pitch)
         """
-        # Kokoro ne supporte pas le pitch, on ignore silencieusement
+        # Kokoro does not support pitch, silently ignore
         pass
     
     @staticmethod
     def get_recommended_voice(language: str) -> str:
         """
-        Retourne une voix recommandée pour une langue.
+        Returns a recommended voice for a language.
         
         Args:
-            language: Code langue (ex: "fr-FR", "en-US")
+            language: Language code (e.g., "fr-FR", "en-US")
             
         Returns:
-            Identifiant de la voix recommandée
+            Recommended voice identifier
         """
         return RECOMMENDED_VOICES.get(language, "af_heart")
