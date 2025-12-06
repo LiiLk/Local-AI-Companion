@@ -93,7 +93,7 @@ class ConversationState:
             provider = tts_config.get("provider", "kokoro")
             
             if provider == "xtts":
-                # XTTS v2 - Voice cloning multilingue (~2.8GB VRAM)
+                # XTTS v2 - Multilingual voice cloning (~2.8GB VRAM)
                 xtts_config = tts_config.get("xtts", {})
                 speaker_wav = xtts_config.get("speaker_wav")
                 
@@ -476,11 +476,11 @@ class WebSocketManager:
             
             # Calculate audio duration
             duration_sec = len(audio_int16) / 16000
-            print(f"🎤 Audio reçu: {len(audio_bytes)} bytes, {duration_sec:.2f}s, {len(audio_int16)} samples")
+            print(f"🎤 Audio received: {len(audio_bytes)} bytes, {duration_sec:.2f}s, {len(audio_int16)} samples")
             
             # Check if audio is too short (< 0.5s often causes hallucinations)
             if duration_sec < 0.5:
-                print("⚠️ Audio trop court (< 0.5s), ignoré")
+                print("⚠️ Audio too short (< 0.5s), ignored")
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": "",

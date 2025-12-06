@@ -1,14 +1,14 @@
 """
-Module de base pour les LLM (Large Language Models).
+Base module for LLM (Large Language Models).
 
-Ce fichier définit l'INTERFACE que tous les LLM doivent respecter.
-C'est comme un "contrat" : toute classe qui hérite de BaseLLM
-DOIT implémenter les méthodes définies ici.
+This file defines the INTERFACE that all LLMs must implement.
+It's like a "contract": any class that inherits from BaseLLM
+MUST implement the methods defined here.
 
-Pourquoi c'est utile ?
-- Tu peux changer de LLM (Ollama → OpenAI) sans modifier le reste du code
-- Le code principal utilise BaseLLM, pas une implémentation spécifique
-- C'est le pattern "Dependency Inversion" (SOLID principles)
+Why is this useful?
+- You can switch LLMs (Ollama → OpenAI) without modifying the rest of the code
+- The main code uses BaseLLM, not a specific implementation
+- This is the "Dependency Inversion" pattern (SOLID principles)
 """
 
 from abc import ABC, abstractmethod
@@ -19,11 +19,11 @@ from typing import AsyncGenerator
 @dataclass
 class Message:
     """
-    Représente un message dans une conversation.
+    Represents a message in a conversation.
     
     Attributes:
-        role: "user", "assistant", ou "system"
-        content: Le contenu du message
+        role: "user", "assistant", or "system"
+        content: The message content
     """
     role: str  # "user", "assistant", "system"
     content: str
@@ -32,11 +32,11 @@ class Message:
 @dataclass 
 class LLMResponse:
     """
-    Représente la réponse du LLM.
+    Represents the LLM response.
     
     Attributes:
-        content: Le texte de la réponse
-        model: Le nom du modèle utilisé
+        content: The response text
+        model: The name of the model used
     """
     content: str
     model: str
@@ -44,46 +44,46 @@ class LLMResponse:
 
 class BaseLLM(ABC):
     """
-    Classe abstraite de base pour tous les LLM.
+    Abstract base class for all LLMs.
     
     ABC = Abstract Base Class
-    Les méthodes avec @abstractmethod DOIVENT être implémentées
-    par les classes enfants.
+    Methods with @abstractmethod MUST be implemented
+    by child classes.
     
     Example:
         class OllamaLLM(BaseLLM):
             def chat(self, messages):
-                # Implémentation spécifique à Ollama
+                # Ollama-specific implementation
                 ...
     """
     
     @abstractmethod
     async def chat(self, messages: list[Message]) -> LLMResponse:
         """
-        Envoie des messages au LLM et obtient une réponse.
+        Send messages to the LLM and get a response.
         
         Args:
-            messages: Liste de messages (historique de conversation)
+            messages: List of messages (conversation history)
             
         Returns:
-            LLMResponse avec le contenu de la réponse
+            LLMResponse with the response content
             
         Note:
-            'async' signifie que cette fonction est asynchrone.
-            On utilise 'await' pour l'appeler. Ça permet de ne pas
-            bloquer le programme pendant que le LLM réfléchit.
+            'async' means this function is asynchronous.
+            Use 'await' to call it. This prevents blocking
+            the program while the LLM is thinking.
         """
         pass
     
     @abstractmethod
     async def chat_stream(self, messages: list[Message]) -> AsyncGenerator[str, None]:
         """
-        Comme chat(), mais envoie la réponse mot par mot (streaming).
+        Like chat(), but sends the response word by word (streaming).
         
-        C'est plus réactif : l'utilisateur voit la réponse s'écrire
-        au lieu d'attendre que tout soit généré.
+        More responsive: the user sees the response being typed
+        instead of waiting for everything to be generated.
         
         Yields:
-            Morceaux de texte au fur et à mesure
+            Text chunks progressively
         """
         pass

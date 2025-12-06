@@ -1,14 +1,14 @@
 """
-Point d'entrée principal de l'assistant IA avec voix.
+Main entry point for the AI assistant with voice support.
 
-L'IA répond en texte ET en voix simultanément !
-Le TTS se déclenche phrase par phrase pour une latence minimale.
+The AI responds with both text AND voice simultaneously!
+TTS triggers sentence by sentence for minimal latency.
 
 Usage:
-    python main.py                    # Mode texte uniquement
-    python main.py --voice            # Mode texte + voix (Kokoro par défaut)
-    python main.py --voice --tts edge # Mode texte + voix Edge TTS
-    python main.py --voice --listen   # Mode conversation vocale complète
+    python main.py                    # Text-only mode
+    python main.py --voice            # Text + voice (Kokoro by default)
+    python main.py --voice --tts edge # Text + voice with Edge TTS
+    python main.py --voice --listen   # Full voice conversation mode
 """
 
 import asyncio
@@ -28,7 +28,7 @@ from src.asr.base import BaseASR
 
 
 def load_config() -> dict:
-    """Charge la configuration depuis config.yaml"""
+    """Load configuration from config.yaml"""
     config_path = Path(__file__).parent / "config" / "config.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -36,21 +36,21 @@ def load_config() -> dict:
 
 def play_audio(audio_path: Path) -> subprocess.Popen:
     """
-    Joue un fichier audio en arrière-plan.
+    Play an audio file in background.
     
-    Supporte WAV (Kokoro) et MP3 (Edge TTS).
-    Utilise mpv, ffplay ou aplay selon ce qui est disponible.
-    Retourne le processus pour pouvoir l'arrêter si besoin.
+    Supports WAV (Kokoro) and MP3 (Edge TTS).
+    Uses mpv, ffplay or aplay depending on availability.
+    Returns the process to be able to stop it if needed.
     """
     players = [
         ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(audio_path)],
         ["mpv", "--no-terminal", "--no-video", str(audio_path)],
-        ["aplay", str(audio_path)],  # WAV uniquement
+        ["aplay", str(audio_path)],  # WAV only
     ]
     
     for player_cmd in players:
         try:
-            # Lancer en arrière-plan, sans output
+            # Launch in background, no output
             process = subprocess.Popen(
                 player_cmd,
                 stdout=subprocess.DEVNULL,
@@ -60,23 +60,23 @@ def play_audio(audio_path: Path) -> subprocess.Popen:
         except FileNotFoundError:
             continue
     
-    print("\n⚠️  Aucun lecteur audio trouvé (ffplay, mpv, aplay)")
+    print("\n⚠️  No audio player found (ffplay, mpv, aplay)")
     return None
 
 
 def create_tts(provider: str, tts_config: dict) -> BaseTTS:
     """
-    Crée le provider TTS approprié.
+    Create the appropriate TTS provider.
     
     Args:
-        provider: "f5tts", "kokoro" ou "edge"
-        tts_config: Configuration TTS depuis config.yaml
+        provider: "xtts", "kokoro" or "edge"
+        tts_config: TTS configuration from config.yaml
         
     Returns:
-        Instance du provider TTS
+        TTS provider instance
     """
     if provider == "xtts":
-        # XTTS v2 - Voice cloning multilingue de qualité
+        # XTTS v2 - High quality multilingual voice cloning
         from pathlib import Path
         xtts_config = tts_config.get("xtts", {})
         speaker_wav = xtts_config.get("speaker_wav")
@@ -86,35 +86,35 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
             speaker_wav = str(Path(speaker_wav).expanduser())
         
         return XTTSProvider(
-            language=xtts_config.get("language", "fr"),
+            language=xtts_config.get("language", "en"),
             speaker=xtts_config.get("speaker", "Claribel Dervla"),
             speaker_wav=speaker_wav,
             device=xtts_config.get("device"),  # None = auto-detect
         )
     elif provider == "kokoro":
-        # Kokoro - TTS local haute qualité
-        voice = tts_config.get("kokoro_voice", "ff_siwis")
+        # Kokoro - High quality local TTS
+        voice = tts_config.get("kokoro_voice", "af_heart")
         return KokoroProvider(voice=voice)
     else:
-        # Edge TTS - Cloud Microsoft (fallback)
-        voice = tts_config.get("voice", "fr-FR-DeniseNeural")
-        rate = tts_config.get("rate", "+20%")
+        # Edge TTS - Microsoft Cloud (fallback)
+        voice = tts_config.get("voice", "en-US-JennyNeural")
+        rate = tts_config.get("rate", "+0%")
         pitch = tts_config.get("pitch", "+0Hz")
         return EdgeTTSProvider(voice=voice, rate=rate, pitch=pitch)
 
 
 def create_asr(asr_config: dict) -> RealtimeWhisperProvider:
     """
-    Crée le provider ASR (Speech-to-Text).
+    Create the ASR provider (Speech-to-Text).
     
     Args:
-        asr_config: Configuration ASR depuis config.yaml
+        asr_config: ASR configuration from config.yaml
         
     Returns:
-        Instance du provider ASR
+        ASR provider instance
     """
     model_size = asr_config.get("model_size", "base")
-    device = asr_config.get("device", "cpu")  # CPU par défaut (cuDNN issues)
+    device = asr_config.get("device", "cpu")  # CPU by default (cuDNN issues)
     
     return RealtimeWhisperProvider(
         model_size=model_size,
@@ -124,69 +124,69 @@ def create_asr(asr_config: dict) -> RealtimeWhisperProvider:
 
 def split_into_sentences(text: str) -> list[str]:
     """
-    Découpe le texte en phrases pour le TTS.
+    Split text into sentences for TTS.
     
-    On veut des phrases complètes pour un TTS naturel.
+    We want complete sentences for natural TTS output.
     """
-    # Pattern pour détecter les fins de phrases
+    # Pattern to detect sentence endings
     sentences = re.split(r'(?<=[.!?])\s+', text)
     return [s.strip() for s in sentences if s.strip()]
 
 
 async def speak_text(tts: BaseTTS, text: str, temp_dir: Path) -> subprocess.Popen | None:
     """
-    Synthétise et joue le texte.
+    Synthesize and play the text.
     
     Returns:
-        Le processus audio pour pouvoir attendre qu'il finisse
+        The audio process to wait for completion
     """
     if not text.strip():
         return None
     
-    # Extension selon le type de TTS
-    # XTTS et Kokoro génèrent du WAV, Edge TTS génère du MP3
+    # Extension based on TTS type
+    # XTTS and Kokoro generate WAV, Edge TTS generates MP3
     ext = ".wav" if isinstance(tts, (KokoroProvider, XTTSProvider)) else ".mp3"
     
-    # Générer un fichier temporaire unique
+    # Generate unique temp file
     audio_file = temp_dir / f"speech_{hash(text) % 10000}{ext}"
     
-    # Synthétiser
+    # Synthesize
     await tts.synthesize(text, audio_file)
     
-    # Jouer
+    # Play
     return play_audio(audio_file)
 
 
 async def main():
     """
-    Boucle principale du chatbot avec support vocal.
+    Main chatbot loop with voice support.
     """
-    # Parser les arguments
+    # Parse arguments
     parser = argparse.ArgumentParser(description="Local AI Companion")
     parser.add_argument("--voice", "-v", action="store_true", 
-                       help="Activer la synthèse vocale")
+                       help="Enable voice synthesis")
     parser.add_argument("--tts", type=str, default="kokoro",
                        choices=["xtts", "kokoro", "edge"],
-                       help="Provider TTS: xtts (voice cloning), kokoro (local) ou edge (cloud)")
+                       help="TTS provider: xtts (voice cloning), kokoro (local) or edge (cloud)")
     parser.add_argument("--listen", "-l", action="store_true",
-                       help="Activer l'écoute vocale (microphone)")
+                       help="Enable voice listening (microphone)")
     parser.add_argument("--asr-model", type=str, default="base",
                        choices=["tiny", "base", "small", "medium", "large-v3"],
-                       help="Taille du modèle Whisper pour l'ASR")
+                       help="Whisper model size for ASR")
     args = parser.parse_args()
     
-    # Si --listen est activé, activer aussi --voice automatiquement
+    # If --listen is enabled, also enable --voice automatically
     if args.listen:
         args.voice = True
     
-    # Charger la configuration
+    # Load configuration
     config = load_config()
     llm_config = config["llm"]["ollama"]
     character = config["character"]
     tts_config = config.get("tts", {})
     asr_config = config.get("asr", {})
     
-    # Surcharger avec les arguments CLI
+    # Override with CLI arguments
     asr_config["model_size"] = args.asr_model
     
     print("=" * 50)
@@ -194,29 +194,29 @@ async def main():
     print("=" * 50)
     
     if args.listen:
-        print("🎤 Mode CONVERSATION VOCALE activé")
-        print("   Parlez dans votre micro, l'IA vous répondra à voix haute !")
+        print("🎤 VOICE CONVERSATION mode enabled")
+        print("   Speak into your mic, the AI will respond out loud!")
     elif args.voice:
         tts_names = {
-            "openaudio": "OpenAudio S1-mini (#1 quality)",
+            "xtts": "XTTS v2 (voice cloning)",
             "kokoro": "Kokoro (local)",
             "edge": "Edge TTS (cloud)"
         }
         tts_name = tts_names.get(args.tts, args.tts)
-        print(f"🔊 Mode vocal ACTIVÉ - {tts_name}")
+        print(f"🔊 Voice mode ENABLED - {tts_name}")
     else:
-        print("🔇 Mode texte (utilise --voice ou --listen)")
+        print("🔇 Text mode (use --voice or --listen)")
     
-    print("\nCommandes: 'quit', 'clear', 'voice on', 'voice off', 'listen on', 'listen off'")
+    print("\nCommands: 'quit', 'clear', 'voice on', 'voice off', 'listen on', 'listen off'")
     print()
     
-    # Créer le client LLM
+    # Create LLM client
     llm = OllamaLLM(
         model=llm_config["model"],
         base_url=llm_config["base_url"]
     )
     
-    # Créer le TTS si mode vocal
+    # Create TTS if voice mode
     tts = None
     tts_provider = args.tts
     temp_dir = None
@@ -226,9 +226,9 @@ async def main():
         temp_dir = Path(tempfile.mkdtemp(prefix="ai_companion_"))
         
         voice_info = tts.voice if hasattr(tts, 'voice') else "default"
-        print(f"🔊 Voix TTS: {voice_info}")
+        print(f"🔊 TTS Voice: {voice_info}")
     
-    # Créer l'ASR si mode écoute
+    # Create ASR if listen mode
     asr = None
     listen_mode = args.listen
     
@@ -238,7 +238,7 @@ async def main():
     
     print()
     
-    # Historique de la conversation
+    # Conversation history
     messages: list[Message] = [
         Message(role="system", content=character["system_prompt"])
     ]
@@ -247,83 +247,83 @@ async def main():
     
     try:
         while True:
-            # Attendre que les audios précédents finissent
+            # Wait for previous audio to finish
             for proc in audio_processes:
                 if proc:
                     proc.wait()
             audio_processes.clear()
             
-            # 1. Obtenir l'entrée utilisateur (texte ou voix)
+            # 1. Get user input (text or voice)
             user_input = None
             
             if listen_mode and asr:
-                # Mode écoute vocale
-                print("\n🎤 [Parlez maintenant... ou tapez du texte]")
+                # Voice listening mode
+                print("\n🎤 [Speak now... or type text]")
                 
-                # On utilise un système hybride: 
-                # - Soit l'utilisateur parle (ASR)
-                # - Soit il tape du texte (fallback)
+                # Hybrid system:
+                # - Either user speaks (ASR)
+                # - Or types text (fallback)
                 try:
-                    # Essayer d'écouter pendant 10 secondes max
+                    # Try to listen for 10 seconds max
                     result = await asr.listen_once(timeout=10.0)
                     user_input = result.text.strip()
                     
                     if user_input:
-                        print(f"👤 Toi (voix): {user_input}")
+                        print(f"👤 You (voice): {user_input}")
                     else:
-                        print("   (Pas de parole détectée, tapez votre message)")
-                        user_input = input("👤 Toi: ").strip()
+                        print("   (No speech detected, type your message)")
+                        user_input = input("👤 You: ").strip()
                         
                 except KeyboardInterrupt:
-                    # L'utilisateur a appuyé sur Ctrl+C pendant l'écoute
-                    print("\n   (Écoute annulée)")
-                    user_input = input("👤 Toi: ").strip()
+                    # User pressed Ctrl+C during listening
+                    print("\n   (Listening cancelled)")
+                    user_input = input("👤 You: ").strip()
                 except Exception as e:
-                    print(f"\n   ⚠️ Erreur ASR: {e}")
-                    user_input = input("👤 Toi: ").strip()
+                    print(f"\n   ⚠️ ASR Error: {e}")
+                    user_input = input("👤 You: ").strip()
             else:
-                # Mode texte classique
+                # Classic text mode
                 try:
-                    user_input = input("\n👤 Toi: ").strip()
+                    user_input = input("\n👤 You: ").strip()
                 except EOFError:
                     break
             
             if not user_input:
                 continue
             
-            # Commandes spéciales
+            # Special commands
             if user_input.lower() == "quit":
-                print("\n👋 À bientôt !")
+                print("\n👋 Goodbye!")
                 break
             if user_input.lower() == "clear":
                 messages = [Message(role="system", content=character["system_prompt"])]
-                print("🗑️  Historique effacé !")
+                print("🗑️  History cleared!")
                 continue
             if user_input.lower() == "voice on":
                 if not tts:
                     tts = create_tts(tts_provider, tts_config)
                     temp_dir = Path(tempfile.mkdtemp(prefix="ai_companion_"))
-                print("🔊 Mode vocal activé !")
+                print("🔊 Voice mode enabled!")
                 continue
             if user_input.lower() == "voice off":
                 tts = None
-                print("🔇 Mode vocal désactivé !")
+                print("🔇 Voice mode disabled!")
                 continue
             if user_input.lower() == "listen on":
                 if not asr:
                     asr = create_asr(asr_config)
                 listen_mode = True
-                print("🎤 Mode écoute activé !")
+                print("🎤 Listen mode enabled!")
                 continue
             if user_input.lower() == "listen off":
                 listen_mode = False
-                print("⌨️  Mode écoute désactivé (texte uniquement)")
+                print("⌨️  Listen mode disabled (text only)")
                 continue
             
-            # 2. Ajouter le message utilisateur à l'historique
+            # 2. Add user message to history
             messages.append(Message(role="user", content=user_input))
             
-            # 3. Obtenir la réponse du LLM (avec streaming)
+            # 3. Get LLM response (with streaming)
             print(f"\n🤖 {character['name']}: ", end="", flush=True)
             
             full_response = ""
@@ -332,15 +332,15 @@ async def main():
                 print(chunk, end="", flush=True)
                 full_response += chunk
             
-            print()  # Nouvelle ligne
+            print()  # New line
             
-            # 4. TTS sur la réponse complète
+            # 4. TTS on complete response
             if tts and full_response.strip():
                 proc = await speak_text(tts, full_response, temp_dir)
                 if proc:
                     audio_processes.append(proc)
             
-            # 5. Ajouter la réponse à l'historique
+            # 5. Add response to history
             messages.append(Message(role="assistant", content=full_response))
             
     finally:

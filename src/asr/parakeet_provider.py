@@ -80,7 +80,7 @@ class ParakeetProvider(BaseASR):
                     "Install it with: pip install nemo_toolkit[asr]"
                 )
             
-            print(f"🔄 Chargement de Parakeet TDT 0.6B v3 sur {self.device.upper()}...")
+            print(f"🔄 Loading Parakeet TDT 0.6B v3 on {self.device.upper()}...")
             
             # Force CPU loading if requested to avoid CUDA OOM
             if self.device == "cpu":
@@ -98,7 +98,7 @@ class ParakeetProvider(BaseASR):
                         map_location=torch.device('cpu')
                     )
                     self._model = self._model.cpu()
-                    print(f"✅ Parakeet chargé sur CPU")
+                    print(f"✅ Parakeet loaded on CPU")
                 finally:
                     # Restore CUDA visibility for other components (like LLM)
                     if original_cuda_visible is not None:
@@ -112,9 +112,9 @@ class ParakeetProvider(BaseASR):
                 )
                 if torch.cuda.is_available():
                     self._model = self._model.cuda()
-                    print(f"✅ Parakeet chargé sur GPU!")
+                    print(f"✅ Parakeet loaded on GPU!")
                 else:
-                    print("⚠️ CUDA non disponible, utilisation du CPU")
+                    print("⚠️ CUDA not available, using CPU")
                     self._model = self._model.cpu()
             
             # Set to evaluation mode
@@ -165,12 +165,12 @@ class ParakeetProvider(BaseASR):
                 wf.setframerate(16000)
                 wf.writeframes(audio_int16.tobytes())
             
-            print(f"🎤 Transcription de buffer audio ({len(audio_input)} samples)")
+            print(f"🎤 Transcribing audio buffer ({len(audio_input)} samples)")
         else:
             audio_path = Path(audio_input)
             if not audio_path.exists():
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
-            print(f"🎤 Transcription de {audio_path.name}")
+            print(f"🎤 Transcribing {audio_path.name}")
         
         try:
             # Transcribe with Parakeet (auto language detection)

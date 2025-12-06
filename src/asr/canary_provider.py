@@ -72,7 +72,7 @@ class CanaryProvider(BaseASR):
                     "Install it with: pip install nemo_toolkit[asr]"
                 )
             
-            print(f"🔄 Chargement de Canary 1B v2 (cela peut prendre un moment)...")
+            print(f"🔄 Loading Canary 1B v2 (this may take a moment)...")
             
             # Load model from HuggingFace
             self._model = ASRModel.from_pretrained(model_name=self.model_name)
@@ -82,13 +82,13 @@ class CanaryProvider(BaseASR):
                 import torch
                 if torch.cuda.is_available():
                     self._model = self._model.cuda()
-                    print(f"✅ Canary 1B v2 chargé sur GPU!")
+                    print(f"✅ Canary 1B v2 loaded on GPU!")
                 else:
-                    print("⚠️ CUDA non disponible, utilisation du CPU (lent)")
+                    print("⚠️ CUDA not available, using CPU (slow)")
                     self._model = self._model.cpu()
             else:
                 self._model = self._model.cpu()
-                print(f"✅ Canary 1B v2 chargé sur CPU (lent)")
+                print(f"✅ Canary 1B v2 loaded on CPU (slow)")
             
             # Set to evaluation mode
             self._model.eval()
@@ -119,7 +119,7 @@ class CanaryProvider(BaseASR):
         
         # Validate language
         if source_lang not in CANARY_LANGUAGES:
-            print(f"⚠️ Langue '{source_lang}' non supportée par Canary, utilisation de 'fr'")
+            print(f"⚠️ Language '{source_lang}' not supported by Canary, using 'fr'")
             source_lang = "fr"
         
         # Handle numpy array input - save to temp file
@@ -143,12 +143,12 @@ class CanaryProvider(BaseASR):
                 wf.setframerate(16000)
                 wf.writeframes(audio_int16.tobytes())
             
-            print(f"🎤 Transcription de buffer audio ({len(audio_input)} samples)")
+            print(f"🎤 Transcribing audio buffer ({len(audio_input)} samples)")
         else:
             audio_path = Path(audio_input)
             if not audio_path.exists():
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
-            print(f"🎤 Transcription de {audio_path.name}")
+            print(f"🎤 Transcribing {audio_path.name}")
         
         try:
             # Transcribe with Canary

@@ -1,20 +1,20 @@
 """
-Implémentation TTS utilisant Kokoro - TTS local haute qualité.
+TTS implementation using Kokoro - High quality local TTS.
 
-Kokoro est un modèle TTS open-source de 82M paramètres qui offre
-une qualité comparable à ElevenLabs tout en étant 100% local.
+Kokoro is an open-source TTS model with 82M parameters that offers
+quality comparable to ElevenLabs while being 100% local.
 
-Avantages :
-- 100% local (pas besoin d'internet)
-- Qualité vocale exceptionnelle et naturelle
-- Débit de parole réaliste
-- Support multilingue (FR, EN, JA, ZH, etc.)
-- Léger (82M paramètres, ~300MB)
-- Fonctionne sur CPU (GPU optionnel pour plus de vitesse)
+Advantages:
+- 100% local (no internet required)
+- Exceptional and natural voice quality
+- Realistic speech rate
+- Multilingual support (FR, EN, JA, ZH, etc.)
+- Lightweight (82M parameters, ~300MB)
+- Works on CPU (GPU optional for more speed)
 
-Inconvénients :
-- Premier chargement plus lent (téléchargement du modèle)
-- Consomme plus de RAM que Edge TTS
+Disadvantages:
+- First load is slower (model download)
+- Consumes more RAM than Edge TTS
 """
 
 import io
@@ -29,8 +29,8 @@ import numpy as np
 from .base import BaseTTS, TTSResult, Voice
 
 
-# Mapping des codes langue Kokoro
-# Kokoro utilise des codes à une lettre pour les langues
+# Kokoro language code mapping
+# Kokoro uses single-letter codes for languages
 LANG_CODES = {
     "en-US": "a",  # American English
     "en-GB": "b",  # British English
@@ -43,21 +43,21 @@ LANG_CODES = {
     "zh-CN": "z",  # Mandarin Chinese
 }
 
-# Voix recommandées par langue
-# Format: voice_id (utilisé par Kokoro)
+# Recommended voices by language
+# Format: voice_id (used by Kokoro)
 RECOMMENDED_VOICES = {
-    "fr-FR": "ff_siwis",      # Voix française féminine (SIWIS dataset)
-    "en-US": "af_heart",      # Voix américaine féminine
-    "en-GB": "bf_emma",       # Voix britannique féminine
-    "ja-JP": "jf_alpha",      # Voix japonaise féminine
-    "zh-CN": "zf_xiaobei",    # Voix chinoise féminine
-    "es-ES": "ef_dora",       # Voix espagnole féminine
-    "it-IT": "if_sara",       # Voix italienne féminine
+    "fr-FR": "ff_siwis",      # French female voice (SIWIS dataset)
+    "en-US": "af_heart",      # American English female voice
+    "en-GB": "bf_emma",       # British English female voice
+    "ja-JP": "jf_alpha",      # Japanese female voice
+    "zh-CN": "zf_xiaobei",    # Chinese female voice
+    "es-ES": "ef_dora",       # Spanish female voice
+    "it-IT": "if_sara",       # Italian female voice
 }
 
-# Liste complète des voix disponibles
+# Complete list of available voices
 AVAILABLE_VOICES = [
-    # Français
+    # French
     Voice(id="ff_siwis", name="Siwis (French Female)", language="fr-FR", gender="Female"),
     
     # American English
@@ -89,20 +89,20 @@ AVAILABLE_VOICES = [
 
 class KokoroProvider(BaseTTS):
     """
-    Provider TTS utilisant Kokoro - Modèle local haute qualité.
+    TTS provider using Kokoro - High quality local model.
     
-    Kokoro génère de l'audio à 24kHz avec un débit naturel.
-    Le modèle est chargé au premier appel (lazy loading).
+    Kokoro generates 24kHz audio with natural speech rate.
+    The model is loaded on first call (lazy loading).
     
     Attributes:
-        voice: Identifiant de la voix Kokoro
-        lang_code: Code langue pour la phonétisation
-        speed: Vitesse de parole (1.0 = normal)
-        _pipeline: Pipeline Kokoro (chargé à la demande)
+        voice: Kokoro voice identifier
+        lang_code: Language code for phonetization
+        speed: Speech speed (1.0 = normal)
+        _pipeline: Kokoro pipeline (loaded on demand)
     
     Example:
         tts = KokoroProvider(voice="ff_siwis")
-        result = await tts.synthesize("Bonjour le monde !")
+        result = await tts.synthesize("Hello world!")
     """
     
     # Sample rate de Kokoro (fixe)
@@ -115,25 +115,25 @@ class KokoroProvider(BaseTTS):
         speed: float = 1.0
     ):
         """
-        Initialise le provider Kokoro.
+        Initialize the Kokoro provider.
         
         Args:
-            voice: Identifiant de la voix (ex: "ff_siwis", "af_heart")
-                   Le préfixe indique la langue (ff=français, af=anglais US, etc.)
-            lang_code: Code langue explicite (auto-détecté depuis la voix si None)
-            speed: Vitesse de parole (0.5 à 2.0, 1.0 = normal)
+            voice: Voice identifier (e.g., "ff_siwis", "af_heart")
+                   The prefix indicates the language (ff=French, af=US English, etc.)
+            lang_code: Explicit language code (auto-detected from voice if None)
+            speed: Speech speed (0.5 to 2.0, 1.0 = normal)
         """
         self.voice = voice
         self.speed = speed
         self._pipeline = None
         
-        # Auto-détecter le code langue depuis le préfixe de la voix
-        # ff_siwis -> f (français), af_heart -> a (anglais US)
+        # Auto-detect language code from voice prefix
+        # ff_siwis -> f (French), af_heart -> a (US English)
         if lang_code:
             self.lang_code = lang_code
         else:
             voice_prefix = voice[:2] if len(voice) >= 2 else "a"
-            # Mapping préfixe voix -> code langue Kokoro
+            # Voice prefix to Kokoro language code mapping
             prefix_to_lang = {
                 "ff": "f",  # French female
                 "fm": "f",  # French male
@@ -154,20 +154,20 @@ class KokoroProvider(BaseTTS):
     
     def _load_pipeline(self):
         """
-        Charge le pipeline Kokoro (lazy loading).
+        Load the Kokoro pipeline (lazy loading).
         
-        Le modèle est téléchargé automatiquement au premier appel
-        depuis HuggingFace (~300MB).
+        The model is automatically downloaded on first call
+        from HuggingFace (~300MB).
         """
         if self._pipeline is None:
             from kokoro import KPipeline
             
-            print(f"🔄 Chargement de Kokoro (lang={self.lang_code})...")
+            print(f"🔄 Loading Kokoro (lang={self.lang_code})...")
             self._pipeline = KPipeline(
                 lang_code=self.lang_code,
                 repo_id="hexgrad/Kokoro-82M"  # Explicit to suppress warning
             )
-            print("✅ Kokoro chargé !")
+            print("✅ Kokoro loaded!")
         
         return self._pipeline
     
@@ -177,16 +177,16 @@ class KokoroProvider(BaseTTS):
         output_path: Path | None = None
     ) -> TTSResult:
         """
-        Convertit du texte en fichier audio WAV.
+        Convert text to WAV audio file.
         
         Args:
-            text: Texte à synthétiser
-            output_path: Chemin de sortie (défaut: temp file)
+            text: Text to synthesize
+            output_path: Output path (default: temp file)
             
         Returns:
-            TTSResult avec le chemin du fichier audio
+            TTSResult with audio file path
         """
-        # Kokoro est synchrone, on l'exécute dans un thread
+        # Kokoro is synchronous, run in a thread
         loop = asyncio.get_event_loop()
         audio_data = await loop.run_in_executor(
             None, 
@@ -194,9 +194,9 @@ class KokoroProvider(BaseTTS):
             text
         )
         
-        # Définir le chemin de sortie
+        # Define output path
         if output_path is None:
-            # Créer un fichier temporaire WAV
+            # Create temporary WAV file
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             output_path = Path(tmp.name)
             tmp.close()
@@ -208,21 +208,21 @@ class KokoroProvider(BaseTTS):
     
     def _synthesize_sync(self, text: str) -> np.ndarray:
         """
-        Synthèse synchrone (appelée dans un thread).
+        Synchronous synthesis (called in a thread).
         
         Returns:
-            Array numpy contenant les données audio
+            Numpy array containing audio data
         """
         pipeline = self._load_pipeline()
         
-        # Générer l'audio
-        # Le générateur retourne (graphemes, phonemes, audio) pour chaque segment
+        # Generate audio
+        # Generator returns (graphemes, phonemes, audio) for each segment
         audio_segments = []
         
         for _, _, audio in pipeline(text, voice=self.voice, speed=self.speed):
             audio_segments.append(audio)
         
-        # Concaténer tous les segments
+        # Concatenate all segments
         if audio_segments:
             return np.concatenate(audio_segments)
         else:
@@ -233,20 +233,20 @@ class KokoroProvider(BaseTTS):
         text: str
     ) -> AsyncGenerator[bytes, None]:
         """
-        Génère l'audio en streaming (segment par segment).
+        Generate audio in streaming mode (segment by segment).
         
-        Kokoro génère naturellement par segments (phrases),
-        ce qui permet de commencer la lecture avant la fin.
+        Kokoro naturally generates by segments (sentences),
+        allowing playback to start before completion.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Yields:
-            Chunks audio en bytes (format WAV PCM)
+            Audio chunks in bytes (WAV PCM format)
         """
         loop = asyncio.get_event_loop()
         
-        # Générateur synchrone vers async
+        # Synchronous generator to async
         def generate_segments():
             pipeline = self._load_pipeline()
             for _, _, audio in pipeline(text, voice=self.voice, speed=self.speed):
@@ -285,32 +285,32 @@ class KokoroProvider(BaseTTS):
     
     async def list_voices(self, language: str | None = None) -> list[Voice]:
         """
-        Liste les voix disponibles.
+        List available voices.
         
         Args:
-            language: Filtre par langue (ex: "fr-FR", "en")
+            language: Filter by language (e.g., "fr-FR", "en")
             
         Returns:
-            Liste des voix disponibles
+            List of available voices
         """
         voices = AVAILABLE_VOICES.copy()
         
         if language:
-            # Filtrer par langue
+            # Filter by language
             voices = [v for v in voices if v.language.startswith(language)]
         
         return voices
     
     def set_voice(self, voice_id: str) -> None:
         """
-        Change la voix utilisée.
+        Change the voice used.
         
-        Note: Si la langue change, le pipeline sera rechargé.
+        Note: If the language changes, the pipeline will be reloaded.
         """
         old_lang = self.lang_code
         self.voice = voice_id
         
-        # Recalculer le code langue
+        # Recalculate language code
         voice_prefix = voice_id[:2] if len(voice_id) >= 2 else "a"
         prefix_to_lang = {
             "ff": "f", "fm": "f",
@@ -323,12 +323,12 @@ class KokoroProvider(BaseTTS):
         }
         self.lang_code = prefix_to_lang.get(voice_prefix, "a")
         
-        # Si la langue a changé, forcer le rechargement du pipeline
+        # If language changed, force pipeline reload
         if old_lang != self.lang_code:
             self._pipeline = None
     
     def set_speed(self, speed: float) -> None:
-        """Change la vitesse de parole (0.5 à 2.0)."""
+        """Change speech speed (0.5 to 2.0)."""
         self.speed = max(0.5, min(2.0, speed))
     
     def set_rate(self, rate: str) -> None:

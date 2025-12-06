@@ -131,11 +131,11 @@ class WhisperProvider(BaseASR):
         
         # Check if already downloaded
         if ctranslate2_path.exists() and (ctranslate2_path / "model.bin").exists():
-            print(f"✅ Modèle français déjà en cache: {local_path}")
+            print(f"✅ French model already cached: {local_path}")
             return ctranslate2_path
         
-        print(f"📥 Téléchargement du modèle français depuis {hf_repo}...")
-        print(f"   (Ceci ne sera fait qu'une seule fois)")
+        print(f"📥 Downloading French model from {hf_repo}...")
+        print(f"   (This will only be done once)")
         
         # Create models directory
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ class WhisperProvider(BaseASR):
             local_dir_use_symlinks=False,
         )
         
-        print(f"✅ Modèle téléchargé: {local_path}")
+        print(f"✅ Model downloaded: {local_path}")
         return ctranslate2_path
     
     def _get_model(self):
@@ -171,9 +171,9 @@ class WhisperProvider(BaseASR):
             is_french_model = "hf_repo" in model_config
             
             if is_french_model:
-                print(f"🔄 Chargement du modèle français ({self.model_size})...")
+                print(f"🔄 Loading French model ({self.model_size})...")
             else:
-                print(f"🔄 Chargement de Whisper ({self.model_size})...")
+                print(f"🔄 Loading Whisper ({self.model_size})...")
             
             # Determine device
             if self.device == "auto":
@@ -223,7 +223,7 @@ class WhisperProvider(BaseASR):
                     raise
             
             model_name = self.model_size if not is_french_model else f"{self.model_size} 🇫🇷"
-            print(f"✅ {model_name} chargé ! (device={device}, compute={compute_type})")
+            print(f"✅ {model_name} loaded! (device={device}, compute={compute_type})")
             
         return self._model
     
@@ -256,11 +256,11 @@ class WhisperProvider(BaseASR):
             # Log audio file info for debugging
             import os
             file_size = os.path.getsize(audio_path)
-            print(f"🎤 Transcription de {audio_path.name} ({file_size/1024:.1f} KB)")
+            print(f"🎤 Transcribing {audio_path.name} ({file_size/1024:.1f} KB)")
             transcribe_input = str(audio_path)
         else:
             # Numpy array
-            print(f"🎤 Transcription de buffer audio ({len(audio_input)} samples)")
+            print(f"🎤 Transcribing audio buffer ({len(audio_input)} samples)")
             transcribe_input = audio_input
         
         # Normalize language setting
@@ -304,7 +304,7 @@ class WhisperProvider(BaseASR):
             
             # Filter out low-confidence segments
             if avg_logprob < -1.0 or no_speech_prob > 0.5:
-                print(f"   ⚠️ Segment filtré (faible confiance)")
+                print(f"   ⚠️ Segment filtered (low confidence)")
                 continue
                 
             full_text_parts.append(segment.text)
@@ -440,7 +440,7 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
                 "pip install sounddevice soundfile numpy"
             )
         
-        print("🎤 Écoute... (parlez maintenant)")
+        print("🎤 Listening... (speak now)")
         
         # Recording parameters
         duration = timeout or 10.0  # Default 10 seconds max
@@ -460,7 +460,7 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
         except KeyboardInterrupt:
             sd.stop()
         
-        print("✅ Enregistrement terminé, transcription...")
+        print("✅ Recording complete, transcribing...")
         
         # Trim silence from end (simple energy-based)
         audio = recording.flatten()

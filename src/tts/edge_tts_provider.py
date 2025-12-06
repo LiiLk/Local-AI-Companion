@@ -1,18 +1,18 @@
 """
-Implémentation TTS utilisant Microsoft Edge TTS.
+TTS implementation using Microsoft Edge TTS.
 
-Edge TTS utilise l'API de synthèse vocale de Microsoft Edge.
-C'est gratuit, de bonne qualité, et supporte 50+ langues.
+Edge TTS uses Microsoft Edge's speech synthesis API.
+It's free, good quality, and supports 50+ languages.
 
-Avantages :
-- Gratuit et illimité
-- Voix très naturelles (neural voices)
-- Pas besoin de GPU
-- Support async natif
+Advantages:
+- Free and unlimited
+- Very natural voices (neural voices)
+- No GPU required
+- Native async support
 
-Inconvénients :
-- Nécessite une connexion internet
-- Pas de voice cloning
+Disadvantages:
+- Requires internet connection
+- No voice cloning
 """
 
 import edge_tts
@@ -22,33 +22,33 @@ from typing import AsyncGenerator
 from .base import BaseTTS, TTSResult, Voice
 
 
-# Voix recommandées par langue
+# Recommended voices by language
 RECOMMENDED_VOICES = {
-    "fr-FR": "fr-FR-DeniseNeural",      # Française, naturelle
-    "fr-CA": "fr-CA-SylvieNeural",      # Québécoise
-    "en-US": "en-US-JennyNeural",       # Américaine
-    "en-GB": "en-GB-SoniaNeural",       # Britannique
-    "ja-JP": "ja-JP-NanamiNeural",      # Japonaise
-    "es-ES": "es-ES-ElviraNeural",      # Espagnole
-    "de-DE": "de-DE-KatjaNeural",       # Allemande
-    "it-IT": "it-IT-ElsaNeural",        # Italienne
-    "zh-CN": "zh-CN-XiaoxiaoNeural",    # Chinoise
-    "ko-KR": "ko-KR-SunHiNeural",       # Coréenne
+    "fr-FR": "fr-FR-DeniseNeural",      # French, natural
+    "fr-CA": "fr-CA-SylvieNeural",      # Quebec French
+    "en-US": "en-US-JennyNeural",       # American English
+    "en-GB": "en-GB-SoniaNeural",       # British English
+    "ja-JP": "ja-JP-NanamiNeural",      # Japanese
+    "es-ES": "es-ES-ElviraNeural",      # Spanish
+    "de-DE": "de-DE-KatjaNeural",       # German
+    "it-IT": "it-IT-ElsaNeural",        # Italian
+    "zh-CN": "zh-CN-XiaoxiaoNeural",    # Chinese
+    "ko-KR": "ko-KR-SunHiNeural",       # Korean
 }
 
 
 class EdgeTTSProvider(BaseTTS):
     """
-    Provider TTS utilisant Microsoft Edge TTS.
+    TTS provider using Microsoft Edge TTS.
     
     Attributes:
-        voice: Identifiant de la voix actuelle
-        rate: Vitesse de parole (ex: "+0%")
-        pitch: Hauteur de voix (ex: "+0Hz")
+        voice: Current voice identifier
+        rate: Speech speed (e.g., "+0%")
+        pitch: Voice pitch (e.g., "+0Hz")
     
     Example:
-        tts = EdgeTTSProvider(voice="fr-FR-DeniseNeural")
-        result = await tts.synthesize("Bonjour !", Path("hello.mp3"))
+        tts = EdgeTTSProvider(voice="en-US-JennyNeural")
+        result = await tts.synthesize("Hello!", Path("hello.mp3"))
     """
     
     def __init__(
@@ -58,12 +58,12 @@ class EdgeTTSProvider(BaseTTS):
         pitch: str = "+0Hz"
     ):
         """
-        Initialise le provider Edge TTS.
+        Initialize the Edge TTS provider.
         
         Args:
-            voice: Identifiant de la voix (voir RECOMMENDED_VOICES)
-            rate: Vitesse de parole (ex: "+20%" pour plus rapide)
-            pitch: Hauteur de voix (ex: "+10Hz" pour plus aigu)
+            voice: Voice identifier (see RECOMMENDED_VOICES)
+            rate: Speech speed (e.g., "+20%" for faster)
+            pitch: Voice pitch (e.g., "+10Hz" for higher)
         """
         self.voice = voice
         self.rate = rate
@@ -75,16 +75,16 @@ class EdgeTTSProvider(BaseTTS):
         output_path: Path | None = None
     ) -> TTSResult:
         """
-        Convertit du texte en fichier audio MP3.
+        Convert text to MP3 audio file.
         
         Args:
-            text: Texte à synthétiser
-            output_path: Chemin de sortie (défaut: temp file)
+            text: Text to synthesize
+            output_path: Output path (default: temp file)
             
         Returns:
-            TTSResult avec le chemin du fichier audio
+            TTSResult with audio file path
         """
-        # Créer le communicator Edge TTS
+        # Create Edge TTS communicator
         communicate = edge_tts.Communicate(
             text=text,
             voice=self.voice,
@@ -92,11 +92,11 @@ class EdgeTTSProvider(BaseTTS):
             pitch=self.pitch
         )
         
-        # Définir le chemin de sortie
+        # Define output path
         if output_path is None:
             output_path = Path(f"/tmp/tts_output_{hash(text)}.mp3")
         
-        # Générer et sauvegarder l'audio
+        # Generate and save audio
         await communicate.save(str(output_path))
         
         return TTSResult(audio_path=output_path)
@@ -106,16 +106,16 @@ class EdgeTTSProvider(BaseTTS):
         text: str
     ) -> AsyncGenerator[bytes, None]:
         """
-        Génère l'audio en streaming (chunk par chunk).
+        Generate audio in streaming mode (chunk by chunk).
         
-        Permet de commencer à jouer l'audio avant que
-        toute la synthèse soit terminée.
+        Allows starting playback before the entire
+        synthesis is complete.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Yields:
-            Chunks audio (bytes) au format MP3
+            Audio chunks (bytes) in MP3 format
         """
         communicate = edge_tts.Communicate(
             text=text,
@@ -132,15 +132,15 @@ class EdgeTTSProvider(BaseTTS):
     
     async def synthesize_to_bytes(self, text: str) -> bytes:
         """
-        Méthode helper : synthétise et retourne les bytes directement.
+        Helper method: synthesize and return bytes directly.
         
-        Utile quand on veut l'audio en mémoire sans sauvegarder.
+        Useful when you want audio in memory without saving.
         
         Args:
-            text: Texte à synthétiser
+            text: Text to synthesize
             
         Returns:
-            Données audio complètes en bytes (MP3)
+            Complete audio data in bytes (MP3)
         """
         audio_chunks = []
         async for chunk in self.synthesize_stream(text):
@@ -149,22 +149,22 @@ class EdgeTTSProvider(BaseTTS):
     
     async def list_voices(self, language: str | None = None) -> list[Voice]:
         """
-        Liste toutes les voix disponibles.
+        List all available voices.
         
         Args:
-            language: Filtre par langue (ex: "fr-FR", "en")
+            language: Filter by language (e.g., "fr-FR", "en")
             
         Returns:
-            Liste des voix disponibles
+            List of available voices
         """
-        # Récupérer toutes les voix de Edge TTS
+        # Get all Edge TTS voices
         voices_data = await edge_tts.list_voices()
         
         voices = []
         for v in voices_data:
-            # Filtrer par langue si spécifié
+            # Filter by language if specified
             if language:
-                # Supporte "fr" ou "fr-FR"
+                # Supports "fr" or "fr-FR"
                 if not v["Locale"].startswith(language):
                     continue
             
@@ -178,26 +178,26 @@ class EdgeTTSProvider(BaseTTS):
         return voices
     
     def set_voice(self, voice_id: str) -> None:
-        """Change la voix utilisée."""
+        """Change the voice used."""
         self.voice = voice_id
     
     def set_rate(self, rate: str) -> None:
-        """Change la vitesse de parole."""
+        """Change speech speed."""
         self.rate = rate
     
     def set_pitch(self, pitch: str) -> None:
-        """Change la hauteur de voix."""
+        """Change voice pitch."""
         self.pitch = pitch
     
     @staticmethod
     def get_recommended_voice(language: str) -> str:
         """
-        Retourne une voix recommandée pour une langue.
+        Return a recommended voice for a language.
         
         Args:
-            language: Code langue (ex: "fr-FR", "en-US")
+            language: Language code (e.g., "fr-FR", "en-US")
             
         Returns:
-            Identifiant de la voix recommandée
+            Recommended voice identifier
         """
         return RECOMMENDED_VOICES.get(language, "en-US-JennyNeural")

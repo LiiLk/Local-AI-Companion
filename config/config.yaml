@@ -1,22 +1,22 @@
-# Configuration de l'Assistant IA
-# Tu peux modifier ce fichier sans toucher au code !
+# AI Assistant Configuration
+# You can modify this file without touching the code!
 
-# === LLM (Cerveau) ===
+# === LLM (Brain) ===
 llm:
-  # Quel type de LLM utiliser : "ollama" ou "llamacpp"
-  # - "ollama"   : Simple, modèles pré-packagés (llama3.2, mistral, etc.)
-  # - "llamacpp" : Flexible, supporte les modèles vision (Jan-v2-VL, LLaVA, etc.)
+  # Which LLM provider to use: "ollama" or "llamacpp"
+  # - "ollama"   : Simple, pre-packaged models (llama3.2, mistral, etc.)
+  # - "llamacpp" : Flexible, supports vision models (Jan-v2-VL, LLaVA, etc.)
   provider: "llamacpp"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🦙 LLAMA.CPP SERVER (pour Jan-v2-VL et modèles vision)
+  # 🦙 LLAMA.CPP SERVER (for Jan-v2-VL and vision models)
   # ─────────────────────────────────────────────────────────────────────────
-  # Jan-v2-VL-high est un modèle "thinking" (8B params) qui réfléchit avant
-  # de répondre. Il utilise Vulkan pour le GPU (pas besoin de CUDA Toolkit).
+  # Jan-v2-VL-high is a "thinking" model (8B params) that reflects before
+  # responding. It uses Vulkan for GPU (no CUDA Toolkit needed).
   # 
-  # Lancer le serveur avant de démarrer l'assistant:
+  # Start the server before launching the assistant:
   #   ./scripts/start_llm_server.sh
-  # ou manuellement:
+  # or manually:
   #   cd ~/tools/llama-cpp && LD_LIBRARY_PATH="$PWD" ./llama-server \
   #     --model ~/models/jan-v2-vl-high/Jan-v2-VL-high-Q4_K_M.gguf \
   #     --mmproj ~/models/jan-v2-vl-high/mmproj-Jan-v2-VL-high.gguf \
@@ -26,147 +26,147 @@ llm:
   llamacpp:
     base_url: "http://localhost:8080"
     model_name: "jan-v2-vl-high"
-    # Paramètres recommandés pour Jan-v2-VL (modèle "thinking")
-    max_tokens: 2048        # Les modèles thinking ont besoin de plus de tokens
-    temperature: 1.0        # Recommandé par Jan pour ce modèle
+    # Recommended parameters for Jan-v2-VL (thinking model)
+    max_tokens: 2048        # Thinking models need more tokens
+    temperature: 1.0        # Recommended by Jan for this model
     top_p: 0.95             # Top-p sampling
     top_k: 20               # Top-k sampling  
-    presence_penalty: 1.5   # Réduit les répétitions
+    presence_penalty: 1.5   # Reduces repetitions
   
-  # Configuration Ollama (fallback)
+  # Ollama configuration (fallback)
   ollama:
-    model: "llama3.2:3b"      # Modèle à utiliser
+    model: "llama3.2:3b"      # Model to use
     base_url: "http://localhost:11434"
 
-# === Personnalité de l'assistant ===
+# === Assistant Personality ===
 character:
   name: "Aria"
-  # Le "system prompt" définit la personnalité de l'IA
+  # The "system prompt" defines the AI's personality
   system_prompt: |
-    Tu es Aria, une assistante IA amicale et serviable.
-    Tu réponds de manière concise et claire en français.
-    Tu es enthousiaste et positive.
-    Tu aides l'utilisateur dans ses tâches quotidiennes.
+    You are Aria, a friendly and helpful AI assistant.
+    You respond concisely and clearly.
+    You are enthusiastic and positive.
+    You help the user with their daily tasks.
 
-# === TTS (Voix) ===
+# === TTS (Voice) ===
 tts:
-  # Provider TTS par défaut :
-  # - "xtts"   : XTTS v2 (voice cloning, 17 langues, ~2.8GB VRAM) ⭐ RECOMMANDÉ
-  # - "kokoro" : Kokoro 82M (local, naturel, léger, pas de voice cloning)
-  # - "edge"   : Edge TTS (cloud Microsoft, gratuit)
+  # Default TTS provider:
+  # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM) ⭐ RECOMMENDED
+  # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
+  # - "edge"   : Edge TTS (Microsoft cloud, free)
   provider: "xtts"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🎤 XTTS v2 (Voice Cloning) - Meilleur choix multilingue ⭐ RECOMMANDÉ
+  # 🎤 XTTS v2 (Voice Cloning) - Best multilingual choice ⭐ RECOMMENDED
   # ─────────────────────────────────────────────────────────────────────────
-  # - ~467M params, ~2.8GB VRAM (cohabite avec Jan-v2-VL ~7GB = ~10GB total ✅)
-  # - Voice cloning avec seulement 6 secondes d'audio !
-  # - 17 langues natives: FR, EN, ES, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO, HI
-  # - 58 speakers intégrés de haute qualité
-  # - Streaming avec latence < 200ms
-  # - Modèle téléchargé automatiquement (~1.9GB)
+  # - ~467M params, ~2.8GB VRAM (coexists with Jan-v2-VL ~7GB = ~10GB total ✅)
+  # - Voice cloning with only 6 seconds of audio!
+  # - 17 native languages: FR, EN, ES, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO, HI
+  # - 58 high-quality built-in speakers
+  # - Streaming with latency < 200ms
+  # - Model downloaded automatically (~1.9GB)
   # ─────────────────────────────────────────────────────────────────────────
   xtts:
-    # Langue par défaut
-    language: "fr"
+    # Default language
+    language: "en"
     
-    # Device: null = auto-detect (préfère CUDA si disponible)
+    # Device: null = auto-detect (prefers CUDA if available)
     device: null
     
-    # Speaker intégré (utilisé si pas de voice cloning)
-    # Quelques voix recommandées:
-    # - "Claribel Dervla" : Voix féminine claire et naturelle
-    # - "Ana Florence" : Voix féminine douce
-    # - "Craig Gutsy" : Voix masculine énergique
-    # - "Zacharie Aimilios" : Voix masculine française
-    # - "Filip Traverse" : Voix masculine française
+    # Built-in speaker (used if no voice cloning)
+    # Some recommended voices:
+    # - "Claribel Dervla" : Clear and natural female voice
+    # - "Ana Florence" : Soft female voice
+    # - "Craig Gutsy" : Energetic male voice
+    # - "Zacharie Aimilios" : French male voice
+    # - "Filip Traverse" : French male voice
     speaker: "Claribel Dervla"
     
-    # 🎭 Voice Cloning (optionnel): décommenter pour cloner votre voix
-    # Il suffit de 6 secondes d'audio clair !
+    # 🎭 Voice Cloning (optional): uncomment to clone your voice
+    # Only 6 seconds of clear audio needed!
     # speaker_wav: "~/voices/my_voice.wav"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🎵 KOKORO TTS (100% local, léger, pas de voice cloning)
+  # 🎵 KOKORO TTS (100% local, lightweight, no voice cloning)
   # ─────────────────────────────────────────────────────────────────────────
-  # - 82M params, ~300MB, qualité naturelle
-  # - Voix: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
+  # - 82M params, ~300MB, natural quality
+  # - Voices: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
   # ─────────────────────────────────────────────────────────────────────────
-  kokoro_voice: "ff_siwis"
+  kokoro_voice: "af_heart"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # ☁️ EDGE TTS (cloud Microsoft, fallback)
+  # ☁️ EDGE TTS (Microsoft cloud, fallback)
   # ─────────────────────────────────────────────────────────────────────────
-  voice: "fr-FR-DeniseNeural"
-  # Autres voix Edge:
-  # - fr-FR-HenriNeural (homme français)
-  # - en-US-JennyNeural (femme américaine)  
-  # - ja-JP-NanamiNeural (femme japonaise)
+  voice: "en-US-JennyNeural"
+  # Other Edge voices:
+  # - en-US-GuyNeural (American male)
+  # - en-GB-SoniaNeural (British female)
+  # - fr-FR-DeniseNeural (French female)
+  # - ja-JP-NanamiNeural (Japanese female)
   
-  rate: "+20%"   # Vitesse Edge TTS (-50% à +100%)
-  pitch: "+0Hz"  # Hauteur Edge TTS (-50Hz à +50Hz)
+  rate: "+0%"    # Edge TTS speed (-50% to +100%)
+  pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)
 
-# === ASR (Reconnaissance vocale) ===
+# === ASR (Speech Recognition) ===
 asr:
-  # Provider ASR disponibles :
-  # - "whisper"  : Local, compatible CPU/GPU, bon pour le français avec modèles distillés
-  # - "canary"   : NVIDIA Canary 1B v2, meilleur pour longs audios (6GB+ VRAM requis)
-  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, rapide et précis (peut tourner sur CPU)
-  # ⚠️ Avec Jan-v2-VL (~7GB VRAM), utiliser ASR sur CPU pour éviter OOM
+  # Available ASR providers:
+  # - "whisper"  : Local, CPU/GPU compatible, good for many languages with distilled models
+  # - "canary"   : NVIDIA Canary 1B v2, best for long audio (6GB+ VRAM required)
+  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, fast and accurate (can run on CPU)
+  # ⚠️ With Jan-v2-VL (~7GB VRAM), use ASR on CPU to avoid OOM
   provider: "parakeet"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🦜 PARAKEET TDT 0.6B V3 (NVIDIA) - Rapide et précis ⭐ RECOMMANDÉ
+  # 🦜 PARAKEET TDT 0.6B V3 (NVIDIA) - Fast and accurate ⭐ RECOMMENDED
   # ─────────────────────────────────────────────────────────────────────────
-  # - 600M params, ~2GB VRAM (léger!)
+  # - 600M params, ~2GB VRAM (lightweight!)
   # - Token-and-Duration Transducer (TDT) architecture
-  # - Excellent sur audios courts ET longs
-  # - 25 langues supportées (dont français, anglais, espagnol...)
-  # - Détection automatique de la langue
-  # - Plus rapide que Canary et Whisper large
-  # - REQUIERT un GPU NVIDIA
+  # - Excellent on both short AND long audio
+  # - 25 languages supported (including French, English, Spanish...)
+  # - Automatic language detection
+  # - Faster than Canary and Whisper large
+  # - REQUIRES an NVIDIA GPU
   # ─────────────────────────────────────────────────────────────────────────
   
   # ─────────────────────────────────────────────────────────────────────────
   # 🐤 CANARY 1B V2 (NVIDIA) - State-of-the-art ASR
   # ─────────────────────────────────────────────────────────────────────────
-  # - Meilleure précision que Whisper (WER ~5% pour le français)
-  # - 25 langues européennes supportées
-  # - Ponctuation et majuscules automatiques
-  # - REQUIERT un GPU NVIDIA avec 6GB+ VRAM
-  # - Plus rapide que Whisper sur GPU
-  # ⚠️ Moins bon sur les phrases courtes conversationnelles
+  # - Better accuracy than Whisper (WER ~5% for French)
+  # - 25 European languages supported
+  # - Automatic punctuation and capitalization
+  # - REQUIRES an NVIDIA GPU with 6GB+ VRAM
+  # - Faster than Whisper on GPU
+  # ⚠️ Less good on short conversational phrases
   # ─────────────────────────────────────────────────────────────────────────
   
-  # Modèles Whisper disponibles (si provider: "whisper"):
+  # Available Whisper models (if provider: "whisper"):
   # ─────────────────────────────────────────────────────────────────────────
-  # MODÈLES STANDARD (téléchargement auto depuis OpenAI):
-  # - tiny   : 39M params, très rapide, faible qualité
-  # - base   : 74M params, rapide, qualité moyenne
-  # - small  : 244M params, BON COMPROMIS! Léger + bonne qualité
-  # - medium : 769M params, lent, très bonne qualité
-  # - large-v3: 1.5B params, très lent, meilleure qualité
-  # - turbo  : 809M params, 6x plus rapide que large-v3 (mais hallucine parfois)
-  # - distil-large-v3: 756M params, rapide mais ANGLAIS SEULEMENT
+  # STANDARD MODELS (auto-download from OpenAI):
+  # - tiny   : 39M params, very fast, low quality
+  # - base   : 74M params, fast, medium quality
+  # - small  : 244M params, GOOD COMPROMISE! Lightweight + good quality
+  # - medium : 769M params, slow, very good quality
+  # - large-v3: 1.5B params, very slow, best quality
+  # - turbo  : 809M params, 6x faster than large-v3 (but sometimes hallucinates)
+  # - distil-large-v3: 756M params, fast but ENGLISH ONLY
   # ─────────────────────────────────────────────────────────────────────────
-  # 🇫🇷 MODÈLES FRANÇAIS OPTIMISÉS (téléchargés dans models/, gitignored):
-  # - french-distil-dec4 : 0.8B params, Excellente qualité FR, ~500MB download
-  # - french-distil-dec2 : 0.8B params, Plus rapide, très bonne qualité FR
-  # Ces modèles sont fine-tunés sur 2500+ heures de français par bofenghuang.
-  # WER: 8.37% (bien meilleur que Whisper standard pour le français)
+  # 🇫🇷 FRENCH-OPTIMIZED MODELS (downloaded to models/, gitignored):
+  # - french-distil-dec4 : 0.8B params, Excellent FR quality, ~500MB download
+  # - french-distil-dec2 : 0.8B params, Faster, very good FR quality
+  # These models are fine-tuned on 2500+ hours of French by bofenghuang.
+  # WER: 8.37% (much better than standard Whisper for French)
   # ─────────────────────────────────────────────────────────────────────────
-  model_size: "french-distil-dec2"  # Modèle français optimisé - rapide et précis
+  model_size: "base"  # Standard model - good compromise
   
-  # Langue: "fr", "en", "auto" ou vide "" pour auto-détection
-  # Pour les modèles français, laisser "fr" pour de meilleurs résultats.
-  language: "fr"
+  # Language: "fr", "en", "auto" or empty "" for auto-detection
+  language: "en"
   
-  # Prompt pour guider la transcription (aide même avec langue forcée)
-  # Donne du contexte sur le style de conversation attendu.
-  # Note: Utilisé uniquement par Whisper, Canary n'utilise pas de prompt.
-  prompt: "Transcription d'une conversation en français avec une assistante IA."
+  # Prompt to guide transcription (helps even with forced language)
+  # Provides context about the expected conversation style.
+  # Note: Only used by Whisper, Canary doesn't use prompts.
+  prompt: "Transcription of a conversation with an AI assistant."
   
-  # Device: "cpu" ou "cuda" (GPU)
-  # ⚠️ Avec Jan-v2-VL sur GPU, utiliser "cpu" pour Whisper afin d'éviter OOM
-  # Whisper french-distil-dec2 sur CPU est assez rapide (~1-2s par phrase)
+  # Device: "cpu" or "cuda" (GPU)
+  # ⚠️ With Jan-v2-VL on GPU, use "cpu" for Whisper to avoid OOM
+  # Whisper base on CPU is fast enough (~1-2s per phrase)
   device: "cpu"

@@ -1,13 +1,13 @@
 """
-Module de base pour le TTS (Text-to-Speech).
+Base module for TTS (Text-to-Speech).
 
-Ce fichier définit l'INTERFACE que tous les TTS doivent respecter.
-Même principe que pour le LLM : on peut changer de provider
-(Edge TTS → Coqui → Piper) sans modifier le code principal.
+This file defines the INTERFACE that all TTS providers must implement.
+Same principle as for LLM: you can switch providers
+(Edge TTS → Coqui → Piper) without modifying the main code.
 
-Le TTS convertit du texte en audio. Il peut :
-1. Générer un fichier audio complet
-2. Streamer l'audio chunk par chunk (pour le temps réel)
+TTS converts text to audio. It can:
+1. Generate a complete audio file
+2. Stream audio chunk by chunk (for real-time)
 """
 
 from abc import ABC, abstractmethod
@@ -19,12 +19,12 @@ from pathlib import Path
 @dataclass
 class TTSResult:
     """
-    Résultat d'une synthèse vocale.
+    Result of a voice synthesis.
     
     Attributes:
-        audio_path: Chemin vers le fichier audio généré (si sauvegardé)
-        audio_data: Données audio brutes en bytes (si en mémoire)
-        duration: Durée de l'audio en secondes (si connue)
+        audio_path: Path to generated audio file (if saved)
+        audio_data: Raw audio data in bytes (if in memory)
+        duration: Audio duration in seconds (if known)
     """
     audio_path: Path | None = None
     audio_data: bytes | None = None
@@ -34,13 +34,13 @@ class TTSResult:
 @dataclass
 class Voice:
     """
-    Représente une voix disponible.
+    Represents an available voice.
     
     Attributes:
-        id: Identifiant unique de la voix (ex: "fr-FR-DeniseNeural")
-        name: Nom lisible (ex: "Denise")
-        language: Code langue (ex: "fr-FR")
-        gender: "Male" ou "Female"
+        id: Unique voice identifier (e.g., "en-US-JennyNeural")
+        name: Human-readable name (e.g., "Jenny")
+        language: Language code (e.g., "en-US")
+        gender: "Male" or "Female"
     """
     id: str
     name: str
@@ -50,15 +50,15 @@ class Voice:
 
 class BaseTTS(ABC):
     """
-    Classe abstraite de base pour tous les TTS.
+    Abstract base class for all TTS providers.
     
-    Toute implémentation TTS doit hériter de cette classe
-    et implémenter les méthodes abstraites.
+    Every TTS implementation must inherit from this class
+    and implement the abstract methods.
     
     Example:
         class EdgeTTSProvider(BaseTTS):
             async def synthesize(self, text, voice):
-                # Implémentation spécifique à Edge TTS
+                # Edge TTS specific implementation
                 ...
     """
     
@@ -69,19 +69,19 @@ class BaseTTS(ABC):
         output_path: Path | None = None
     ) -> TTSResult:
         """
-        Convertit du texte en audio.
+        Convert text to audio.
         
         Args:
-            text: Le texte à convertir en parole
-            output_path: Chemin où sauvegarder l'audio (optionnel)
-                        Si None, l'audio est retourné en mémoire
+            text: The text to convert to speech
+            output_path: Path to save the audio (optional)
+                        If None, audio is returned in memory
         
         Returns:
-            TTSResult contenant le chemin ou les données audio
+            TTSResult containing the path or audio data
         
         Example:
-            result = await tts.synthesize("Bonjour !", Path("output.mp3"))
-            # result.audio_path contient le chemin du fichier
+            result = await tts.synthesize("Hello!", Path("output.mp3"))
+            # result.audio_path contains the file path
         """
         pass
     
@@ -91,37 +91,37 @@ class BaseTTS(ABC):
         text: str
     ) -> AsyncGenerator[bytes, None]:
         """
-        Convertit du texte en audio en streaming.
+        Convert text to audio in streaming mode.
         
-        Utile pour commencer à jouer l'audio avant que
-        toute la synthèse soit terminée (latence réduite).
+        Useful to start playing audio before the entire
+        synthesis is complete (reduced latency).
         
         Args:
-            text: Le texte à convertir
+            text: The text to convert
             
         Yields:
-            Chunks d'audio (bytes) au fur et à mesure
+            Audio chunks (bytes) progressively
             
         Example:
-            async for chunk in tts.synthesize_stream("Bonjour !"):
-                audio_player.feed(chunk)  # Joue immédiatement
+            async for chunk in tts.synthesize_stream("Hello!"):
+                audio_player.feed(chunk)  # Play immediately
         """
         pass
     
     @abstractmethod
     async def list_voices(self, language: str | None = None) -> list[Voice]:
         """
-        Liste les voix disponibles.
+        List available voices.
         
         Args:
-            language: Filtre par langue (ex: "fr-FR", "en-US")
-                     Si None, retourne toutes les voix
+            language: Filter by language (e.g., "fr-FR", "en-US")
+                     If None, returns all voices
         
         Returns:
-            Liste des voix disponibles
+            List of available voices
             
         Example:
-            voices = await tts.list_voices("fr-FR")
+            voices = await tts.list_voices("en-US")
             for v in voices:
                 print(f"{v.name} ({v.gender})")
         """
@@ -130,29 +130,29 @@ class BaseTTS(ABC):
     @abstractmethod
     def set_voice(self, voice_id: str) -> None:
         """
-        Change la voix utilisée pour la synthèse.
+        Change the voice used for synthesis.
         
         Args:
-            voice_id: Identifiant de la voix (ex: "fr-FR-DeniseNeural")
+            voice_id: Voice identifier (e.g., "en-US-JennyNeural")
         """
         pass
     
     @abstractmethod
     def set_rate(self, rate: str) -> None:
         """
-        Change la vitesse de parole.
+        Change speech speed.
         
         Args:
-            rate: Modification de vitesse (ex: "+20%", "-10%", "+0%")
+            rate: Speed modification (e.g., "+20%", "-10%", "+0%")
         """
         pass
     
     @abstractmethod
     def set_pitch(self, pitch: str) -> None:
         """
-        Change la hauteur de la voix.
+        Change voice pitch.
         
         Args:
-            pitch: Modification de pitch (ex: "+10Hz", "-5Hz")
+            pitch: Pitch modification (e.g., "+10Hz", "-5Hz")
         """
         pass

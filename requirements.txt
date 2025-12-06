@@ -1,23 +1,23 @@
 # Local AI Companion - Dependencies
 
-# HTTP client async (pour communiquer avec Ollama)
+# Async HTTP client (for communicating with Ollama)
 httpx>=0.25.0
 
-# Gestion de configuration YAML
+# YAML configuration management
 pyyaml>=6.0
 
 # Text-to-Speech
-edge-tts>=6.1.0      # Edge TTS (cloud Microsoft, fallback)
-kokoro>=0.9.4        # Kokoro TTS (local, haute qualité)
-soundfile>=0.12.0    # Pour sauvegarder les fichiers WAV
+edge-tts>=6.1.0      # Edge TTS (Microsoft cloud, fallback)
+kokoro>=0.9.4        # Kokoro TTS (local, high quality)
+soundfile>=0.12.0    # For saving WAV files
 
 # Speech-to-Text (ASR)
-faster-whisper>=1.0.0  # Whisper optimisé (4x plus rapide)
-sounddevice>=0.4.0     # Capture audio microphone
-huggingface_hub>=0.20.0  # Pour télécharger les modèles français optimisés
+faster-whisper>=1.0.0  # Optimized Whisper (4x faster)
+sounddevice>=0.4.0     # Microphone audio capture
+huggingface_hub>=0.20.0  # For downloading optimized French models
 
 # Web Server
-fastapi>=0.104.0       # Framework web async
+fastapi>=0.104.0       # Async web framework
 uvicorn>=0.24.0        # ASGI server
 websockets>=12.0       # WebSocket support
-python-multipart>=0.0.6  # Pour upload de fichiers
+python-multipart>=0.0.6  # For file uploads
