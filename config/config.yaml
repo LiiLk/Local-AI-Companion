@@ -25,9 +25,9 @@ llm:
   # ─────────────────────────────────────────────────────────────────────────
   llamacpp:
     base_url: "http://localhost:8080"
-    model_name: "jan-v2-vl-high"
+    model_name: "qwen3-vl-8b-instruct"
     # Recommended parameters for Jan-v2-VL (thinking model)
-    max_tokens: 2048        # Thinking models need more tokens
+    max_tokens: 4096        # Qwen2.5-VL supports long generation
     temperature: 1.0        # Recommended by Jan for this model
     top_p: 0.95             # Top-p sampling
     top_k: 20               # Top-k sampling  
@@ -40,13 +40,15 @@ llm:
 
 # === Assistant Personality ===
 character:
-  name: "Aria"
+  name: "Juri"
   # The "system prompt" defines the AI's personality
   system_prompt: |
-    You are Aria, a friendly and helpful AI assistant.
-    You respond concisely and clearly.
-    You are enthusiastic and positive.
-    You help the user with their daily tasks.
+    You are Juri Han from Street Fighter.
+    You are a sarcastic, teasing, and slightly sadistic AI assistant, but ultimately helpful.
+    You often use slang and express boredom or excitement aggressively.
+    You call the user "loser" or "honey" depending on your mood.
+    IMPORTANT: You MUST reply in the same language as the user. If the user speaks French, reply in French.
+    Be expressive!
 
 # === TTS (Voice) ===
 tts:
@@ -55,7 +57,7 @@ tts:
   # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
   # - "f5tts"  : F5-TTS (Emotional support, ~4GB VRAM)
   # - "edge"   : Edge TTS (Microsoft cloud, free)
-  provider: "kokoro"
+  provider: "xtts"
   
   # ─────────────────────────────────────────────────────────────────────────
   # ⚡ STREAMING TTS (sentence-by-sentence)
@@ -85,6 +87,11 @@ tts:
   # Used when auto_detect_language is enabled.
   # ─────────────────────────────────────────────────────────────────────────
   voice_mapping:
+    # F5-TTS voices by language
+    f5tts:
+      fr: "f5_juri_fr"  # Triggers set_voice("f5_juri_fr") -> sets French ref
+      en: "f5_juri_en"  # Triggers set_voice("f5_juri_en") -> sets English ref
+
     # XTTS v2 voices by language (speaker name)
     xtts:
       fr: "Claribel Dervla"     # Works great for French
@@ -133,7 +140,7 @@ tts:
     
     # 🎭 Voice Cloning (optional): uncomment to clone your voice
     # Only 6 seconds of clear audio needed!
-    # speaker_wav: "~/voices/my_voice.wav"
+    speaker_wav: "resources/voices/f5_refs/juri_neutral.wav"
   
   # ─────────────────────────────────────────────────────────────────────────
   # 🎵 KOKORO TTS (100% local, lightweight, no voice cloning)
@@ -212,10 +219,12 @@ asr:
   # These models are fine-tuned on 2500+ hours of French by bofenghuang.
   # WER: 8.37% (much better than standard Whisper for French)
   # ─────────────────────────────────────────────────────────────────────────
-  model_size: "small"  # Standard model - good compromise
-  
+  # model_size: "french-distil-dec2"  # Optimized FR model
+  # model_size: "small"  # Multilingual model (good compromise speed/quality)
+  model_size: "small" # Changed from large-v3-turbo (~10s latency) to small (~2.5s latency)
+
   # Language: "fr", "en", "auto" or empty "" for auto-detection
-  language: ""
+  language: "auto"
   
   # Prompt to guide transcription (helps even with forced language)
   # Provides context about the expected conversation style.

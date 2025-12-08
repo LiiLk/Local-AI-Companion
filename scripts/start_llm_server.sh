@@ -11,10 +11,15 @@
 set -e
 
 # === Configuration ===
+# Resolve project root
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 LLAMA_CPP_DIR="$HOME/tools/llama-cpp"
-MODEL_DIR="$HOME/models/jan-v2-vl-high"
-MODEL_FILE="$MODEL_DIR/Jan-v2-VL-high-Q4_K_M.gguf"
-MMPROJ_FILE="$MODEL_DIR/mmproj-Jan-v2-VL-high.gguf"
+
+# Model paths
+MODEL_DIR="$PROJECT_ROOT/models/qwen3-vl-8b"
+MODEL_FILE="$MODEL_DIR/Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+MMPROJ_FILE="$MODEL_DIR/mmproj-F16.gguf"
 LOG_FILE="/tmp/llama-server.log"
 
 # Server parameters
@@ -57,10 +62,10 @@ if pgrep -f "llama-server" > /dev/null; then
 fi
 
 # === Display information ===
-echo "🦙 Jan-v2-VL-high Server"
-echo "========================"
+echo "🦙 Qwen3-VL-8B-Instruct Server"
+echo "=============================="
 echo "   Model     : $(basename $MODEL_FILE) (4.7 GB)"
-echo "   Vision    : $(basename $MMPROJ_FILE) (1.1 GB)"
+echo "   Vision    : $(basename $MMPROJ_FILE) (170 MB)"
 echo "   Backend   : Vulkan (GPU)"
 echo "   Port      : http://localhost:$PORT"
 echo "   Context   : $CTX_SIZE tokens"

@@ -39,7 +39,16 @@ async def lifespan(app: FastAPI):
     app.state.character = config.get("character", {})
     
     print(f"   Character: {app.state.character.get('name', 'AI')}")
-    print(f"   LLM: {config['llm']['ollama']['model']}")
+    
+    # Display correct LLM info based on provider
+    llm_config = config.get("llm", {})
+    provider = llm_config.get("provider", "ollama")
+    if provider == "llamacpp":
+        model_name = llm_config.get("llamacpp", {}).get("model_name", "unknown")
+    else:
+        model_name = llm_config.get("ollama", {}).get("model", "unknown")
+        
+    print(f"   LLM: {model_name} ({provider})")
     print("   Models will be loaded on first request (lazy loading)")
     print()
     

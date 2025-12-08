@@ -24,88 +24,88 @@ class UIController {
         this.messageInput = document.getElementById('message-input');
         this.sendBtn = document.getElementById('send-btn');
         this.newChatBtn = document.getElementById('new-chat-btn');
-        
+
         // Éléments de statut
         this.connectionStatus = document.querySelector('.connection-status');
         this.statusText = this.connectionStatus?.querySelector('.status-text');
         this.modelItems = document.querySelectorAll('.model-item');
-        
+
         // Éléments de la barre de statut
         this.statusBar = document.getElementById('status-bar');
         this.statusMessage = document.getElementById('status-message');
         this.progressFill = document.getElementById('progress-fill');
-        
+
         // État
         this.theme = localStorage.getItem('theme') || 'dark';
         this.isSidebarOpen = false;
         this.isSettingsOpen = false;
-        
+
         // Initialisation
         this.init();
     }
-    
+
     /**
      * Initialisation des événements et de l'état initial
      */
     init() {
         // Appliquer le thème sauvegardé
         this.applyTheme(this.theme);
-        
+
         // Event listeners
         this.bindEvents();
-        
+
         // Observer le scroll pour le bouton "scroll to bottom"
         this.setupScrollObserver();
-        
+
         // Auto-resize du textarea
         this.setupTextareaResize();
-        
+
         console.log('[UI] Controller initialisé');
     }
-    
+
     /**
      * Liaison des événements
      */
     bindEvents() {
         // Theme toggle
         this.themeToggle?.addEventListener('click', () => this.toggleTheme());
-        
+
         // Mobile menu
         this.mobileMenuBtn?.addEventListener('click', () => this.toggleSidebar());
-        
+
         // Settings panel
         this.settingsBtn?.addEventListener('click', () => this.openSettings());
         this.closeSettingsBtn?.addEventListener('click', () => this.closeSettings());
-        
+
         // Overlay (ferme sidebar mobile et settings)
         this.overlay?.addEventListener('click', () => {
             this.closeSidebar();
             this.closeSettings();
         });
-        
+
         // Scroll to bottom
         this.scrollToBottomBtn?.addEventListener('click', () => this.scrollToBottom());
-        
+
         // New chat
         this.newChatBtn?.addEventListener('click', () => this.handleNewChat());
-        
+
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => this.handleKeyboard(e));
-        
+
         // Settings form
         document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
         document.getElementById('reset-settings-btn')?.addEventListener('click', () => this.resetSettings());
-        
+
         // Clear chat
         document.getElementById('clear-chat-btn')?.addEventListener('click', () => this.handleNewChat());
-        
+
         // Enable/disable send button based on input
         this.messageInput?.addEventListener('input', () => {
             const hasContent = this.messageInput.value.trim().length > 0;
             this.sendBtn.disabled = !hasContent;
         });
     }
-    
+
     /**
      * Toggle du thème dark/light
      */
@@ -115,14 +115,14 @@ class UIController {
         localStorage.setItem('theme', this.theme);
         console.log(`[UI] Thème changé: ${this.theme}`);
     }
-    
+
     /**
      * Applique le thème
      * @param {string} theme - 'dark' ou 'light'
      */
     applyTheme(theme) {
         document.documentElement.setAttribute('data-theme', theme);
-        
+
         // Mettre à jour l'icône du toggle
         const icon = this.themeToggle?.querySelector('svg');
         if (icon) {
@@ -145,7 +145,7 @@ class UIController {
             }
         }
     }
-    
+
     /**
      * Toggle sidebar (mobile)
      */
@@ -154,7 +154,7 @@ class UIController {
         this.sidebar?.classList.toggle('open', this.isSidebarOpen);
         this.overlay?.classList.toggle('visible', this.isSidebarOpen);
     }
-    
+
     /**
      * Ferme la sidebar
      */
@@ -165,7 +165,7 @@ class UIController {
             this.overlay?.classList.remove('visible');
         }
     }
-    
+
     /**
      * Ouvre le panneau de paramètres
      */
@@ -175,7 +175,7 @@ class UIController {
         this.overlay?.classList.add('visible');
         this.closeSidebar();
     }
-    
+
     /**
      * Ferme le panneau de paramètres
      */
@@ -186,21 +186,21 @@ class UIController {
             this.overlay?.classList.remove('visible');
         }
     }
-    
+
     /**
      * Configure l'observer de scroll
      */
     setupScrollObserver() {
         if (!this.messagesContainer) return;
-        
+
         this.messagesContainer.addEventListener('scroll', () => {
             const { scrollTop, scrollHeight, clientHeight } = this.messagesContainer;
             const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-            
+
             this.scrollToBottomBtn?.classList.toggle('hidden', isNearBottom);
         });
     }
-    
+
     /**
      * Scroll vers le bas des messages
      */
@@ -212,19 +212,19 @@ class UIController {
             });
         }
     }
-    
+
     /**
      * Configure l'auto-resize du textarea
      */
     setupTextareaResize() {
         if (!this.messageInput) return;
-        
+
         this.messageInput.addEventListener('input', () => {
             this.messageInput.style.height = 'auto';
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
     }
-    
+
     /**
      * Gestion des raccourcis clavier
      * @param {KeyboardEvent} e 
@@ -235,34 +235,34 @@ class UIController {
             this.closeSettings();
             this.closeSidebar();
         }
-        
+
         // Ctrl+Enter envoie le message
         if (e.ctrlKey && e.key === 'Enter') {
             this.sendBtn?.click();
         }
-        
+
         // Ctrl+, ouvre les paramètres
         if (e.ctrlKey && e.key === ',') {
             e.preventDefault();
             this.openSettings();
         }
     }
-    
+
     /**
      * Met à jour le statut de connexion
      * @param {boolean} connected 
      */
     updateConnectionStatus(connected) {
         if (!this.connectionStatus) return;
-        
+
         this.connectionStatus.classList.remove('connected', 'disconnected');
         this.connectionStatus.classList.add(connected ? 'connected' : 'disconnected');
-        
+
         if (this.statusText) {
             this.statusText.textContent = connected ? 'Connecté' : 'Déconnecté';
         }
     }
-    
+
     /**
      * Met à jour le statut d'un modèle
      * @param {string} modelType - 'vad', 'asr', ou 'tts'
@@ -272,9 +272,9 @@ class UIController {
     updateModelStatus(modelType, status, info = '') {
         const modelItem = document.querySelector(`.model-item[data-model="${modelType}"]`);
         if (!modelItem) return;
-        
+
         modelItem.setAttribute('data-status', status);
-        
+
         const badge = modelItem.querySelector('.model-badge');
         if (badge) {
             switch (status) {
@@ -292,7 +292,7 @@ class UIController {
             }
         }
     }
-    
+
     /**
      * Affiche la barre de statut
      * @param {string} message 
@@ -300,24 +300,24 @@ class UIController {
      */
     showStatusBar(message, progress = null) {
         if (!this.statusBar) return;
-        
+
         this.statusBar.classList.remove('hidden');
         if (this.statusMessage) {
             this.statusMessage.textContent = message;
         }
-        
+
         if (progress !== null && this.progressFill) {
             this.progressFill.style.width = `${progress}%`;
         }
     }
-    
+
     /**
      * Cache la barre de statut
      */
     hideStatusBar() {
         this.statusBar?.classList.add('hidden');
     }
-    
+
     /**
      * Nouveau chat
      */
@@ -331,16 +331,16 @@ class UIController {
                 messages.appendChild(welcomeMessage);
             }
         }
-        
+
         // Fermer la sidebar mobile
         this.closeSidebar();
-        
+
         // Focus sur l'input
         this.messageInput?.focus();
-        
+
         console.log('[UI] Nouveau chat');
     }
-    
+
     /**
      * Sauvegarde les paramètres
      */
@@ -360,19 +360,19 @@ class UIController {
                 personality: document.getElementById('character-prompt')?.value
             }
         };
-        
+
         // Sauvegarder en localStorage
         localStorage.setItem('aria-settings', JSON.stringify(settings));
-        
+
         // Émettre un événement custom pour que app.js puisse réagir
         window.dispatchEvent(new CustomEvent('settings-changed', { detail: settings }));
-        
+
         // Fermer le panneau
         this.closeSettings();
-        
+
         console.log('[UI] Paramètres sauvegardés:', settings);
     }
-    
+
     /**
      * Réinitialise les paramètres par défaut
      */
@@ -380,28 +380,28 @@ class UIController {
         // Valeurs par défaut
         document.getElementById('asr-provider').value = 'parakeet';
         document.getElementById('asr-language').value = '';
-        document.getElementById('tts-provider').value = 'xtts';
+        document.getElementById('tts-provider').value = 'f5tts';
         document.getElementById('auto-detect-language').checked = true;
         document.getElementById('stream-tts').checked = true;
-        document.getElementById('character-name').value = 'Aria';
-        document.getElementById('character-prompt').value = 'Une assistante IA amicale, curieuse et serviable qui aime discuter et aider.';
-        
+        document.getElementById('character-name').value = 'Juri';
+        document.getElementById('character-prompt').value = 'You are Juri Han from Street Fighter. You are sarcastic, sadistic, but helpful.';
+
         // Supprimer du localStorage
         localStorage.removeItem('aria-settings');
-        
+
         console.log('[UI] Paramètres réinitialisés');
     }
-    
+
     /**
      * Charge les paramètres depuis localStorage
      */
     loadSettings() {
         const saved = localStorage.getItem('aria-settings');
         if (!saved) return;
-        
+
         try {
             const settings = JSON.parse(saved);
-            
+
             // Appliquer aux champs
             if (settings.asr) {
                 const provider = document.getElementById('asr-provider');
@@ -409,23 +409,23 @@ class UIController {
                 if (provider) provider.value = settings.asr.provider || 'parakeet';
                 if (language) language.value = settings.asr.language || '';
             }
-            
+
             if (settings.tts) {
                 const provider = document.getElementById('tts-provider');
                 const autoDetect = document.getElementById('auto-detect-language');
                 const streaming = document.getElementById('stream-tts');
-                if (provider) provider.value = settings.tts.provider || 'xtts';
+                if (provider) provider.value = settings.tts.provider || 'f5tts';
                 if (autoDetect) autoDetect.checked = settings.tts.autoDetect !== false;
                 if (streaming) streaming.checked = settings.tts.streaming !== false;
             }
-            
+
             if (settings.character) {
                 const name = document.getElementById('character-name');
                 const personality = document.getElementById('character-prompt');
-                if (name) name.value = settings.character.name || 'Aria';
+                if (name) name.value = settings.character.name || 'Juri';
                 if (personality) personality.value = settings.character.personality || '';
             }
-            
+
             console.log('[UI] Paramètres chargés:', settings);
         } catch (e) {
             console.error('[UI] Erreur chargement paramètres:', e);

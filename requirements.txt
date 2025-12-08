@@ -9,6 +9,7 @@ pyyaml>=6.0
 # Text-to-Speech
 edge-tts>=6.1.0      # Edge TTS (Microsoft cloud, fallback)
 kokoro>=0.9.4        # Kokoro TTS (local, high quality)
+f5-tts>=0.2.0        # F5-TTS voice cloning (Juri voice)
 soundfile>=0.12.0    # For saving WAV files
 
 # Speech-to-Text (ASR)
@@ -21,3 +22,4 @@ fastapi>=0.104.0       # Async web framework
 uvicorn>=0.24.0        # ASGI server
 websockets>=12.0       # WebSocket support
 python-multipart>=0.0.6  # For file uploads
+torchaudio>=2.1.0      # Needed for XTTS/F5-TTS audio save

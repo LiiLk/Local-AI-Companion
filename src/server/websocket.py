@@ -223,9 +223,12 @@ class WebSocketManager:
         # Remove emojis
         text = emoji.replace_emoji(text, replace="")
         
+        import re
+        # Remove actions between asterisks like *rolls eyes* or *sighs*
+        text = re.sub(r'\*[^*]+\*', '', text)
+        
         # Remove markdown chars: * # _ ` ~ >
         # We replace them with empty string to avoid "asterix" recitation
-        import re
         text = re.sub(r'[\*\#\_\`\~\>]+', '', text)
         
         # Remove multiple spaces
@@ -280,17 +283,26 @@ class WebSocketManager:
         state = self._get_state(client_id)
         if not state:
             return  # Client disconnected
+        
+        try:
+            # Update voice based on language (before cleaning, might capture context better)
+            await self._update_voice_for_language(state, text)
             
-        # Update voice based on language (before cleaning, might capture context better)
-        await self._update_voice_for_language(state, text)
-        
-        # Clean text for TTS (remove emojis, etc.)
-        text = self._clean_text_for_tts(text)
-        
-        if not text.strip():
+            # Clean text for TTS (remove emojis, etc.)
+            text = self._clean_text_for_tts(text)
+            
+            if not text.strip():
+                return
+            
+            # Lazy load TTS provider (can raise if dependency missing)
+            tts = state.get_tts()
+        except Exception as e:
+            print(f"❌ TTS init error: {e}")
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": f"TTS unavailable: {e}"
+            })
             return
-        
-        tts = state.get_tts()
         
         try:
             # Generate audio to temp file
@@ -322,13 +334,18 @@ class WebSocketManager:
         except Exception as e:
             print(f"❌ TTS chunk error: {e}")
 
-    async def handle_text_message(self, client_id: str, content: str):
+    async def handle_text_message(self, client_id: str, content: str, language: str | None = None):
         """
         Handle a text message from the client.
         
         1. Add user message to history
         2. Stream LLM response
         3. Generate and stream TTS audio (sentence by sentence)
+        
+        Args:
+            client_id: Client identifier
+            content: User message text
+            language: Detected language code (e.g. "fr", "en")
         """
         state = self._get_state(client_id)
         if not state:
@@ -345,7 +362,24 @@ class WebSocketManager:
         full_response = ""
         current_sentence = ""
         
-        async for chunk in state.llm.chat_stream(state.messages):
+        # Prepare messages for LLM
+        llm_messages = list(state.messages)
+        
+        # If language is detected, enforce it via a temporary system instruction
+        # This helps the LLM switch languages even if history is in another language
+        if language:
+            lang_map = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "ja": "Japanese"}
+            lang_name = lang_map.get(language, language)
+            
+            # Prepend instruction to the last user message
+            # This is safer than appending a system message at the end
+            if llm_messages and llm_messages[-1].role == "user":
+                last_msg = llm_messages[-1]
+                new_content = f"(System: The user is speaking {lang_name}. Reply in {lang_name}.)\n\n{last_msg.content}"
+                llm_messages[-1] = Message(role="user", content=new_content)
+                print(f"🧠 Enforcing language: {lang_name}")
+        
+        async for chunk in state.llm.chat_stream(llm_messages):
             full_response += chunk
             current_sentence += chunk
             
@@ -499,7 +533,7 @@ class WebSocketManager:
                 })
                 
                 # Process as text message
-                await self.handle_text_message(client_id, result.text)
+                await self.handle_text_message(client_id, result.text, language=result.language)
             else:
                 await self.send_json(client_id, {
                     "type": "transcription",
@@ -598,7 +632,7 @@ class WebSocketManager:
                 })
                 
                 # Process as text message
-                await self.handle_text_message(client_id, result.text)
+                await self.handle_text_message(client_id, result.text, language=result.language)
             else:
                 await self.send_json(client_id, {
                     "type": "transcription",
@@ -851,7 +885,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             if msg_type == "text":
                 content = data.get("content", "")
                 if content.strip():
-                    await manager.handle_text_message(client_id, content)
+                    # Detect language for text input
+                    lang = None
+                    try:
+                        from langdetect import detect
+                        detected = detect(content)
+                        if detected.startswith('fr'): lang = 'fr'
+                        elif detected.startswith('en'): lang = 'en'
+                    except:
+                        pass
+                        
+                    await manager.handle_text_message(client_id, content, language=lang)
                     
             elif msg_type == "audio":
                 # WebM blob audio (fallback mode)

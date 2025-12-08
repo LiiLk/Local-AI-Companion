@@ -27,10 +27,10 @@ import re
 
 # Emotion map
 EMOTION_REFS = {
-    "neutral": "resources/voices/f5_refs/aria_neutral.wav",
-    "happy": "resources/voices/f5_refs/aria_happy.wav",
-    "sad": "resources/voices/f5_refs/aria_sad.wav",
-    "angry": "resources/voices/f5_refs/aria_angry.wav"
+    "neutral": "resources/voices/f5_refs/juri_neutral.wav",
+    "happy": "resources/voices/f5_refs/juri_neutral.wav",
+    "sad": "resources/voices/f5_refs/juri_neutral.wav",
+    "angry": "resources/voices/f5_refs/juri_neutral.wav"
 }
 
 logger = logging.getLogger(__name__)
@@ -436,9 +436,23 @@ class XTTSProvider(BaseTTS):
                 
                 # Save audio
                 import torchaudio
+                import torch
+                import numpy as np
+                
+                wav_data = out["wav"]
+                
+                # Convert to tensor if it's numpy
+                if isinstance(wav_data, np.ndarray):
+                    wav_tensor = torch.from_numpy(wav_data)
+                else:
+                    wav_tensor = wav_data.cpu()
+
+                if wav_tensor.dim() == 1:
+                    wav_tensor = wav_tensor.unsqueeze(0)
+                
                 torchaudio.save(
                     str(output_path),
-                    out["wav"].unsqueeze(0),
+                    wav_tensor,
                     24000  # XTTS sample rate
                 )
                 return

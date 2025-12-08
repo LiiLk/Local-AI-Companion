@@ -31,25 +31,30 @@ class F5TTSProvider(BaseTTS):
         self.ref_dir = Path("resources/voices/f5_refs")
         self.refs = {
             "neutral": {
-                "file": self.ref_dir / "aria_neutral.wav",
-                "text": "Bonjour, je suis Aria. Je suis ton assistante virtuelle."
+                "file": self.ref_dir / "juri_neutral.wav",
+                "text": "My kicks will make you feel real good."
+            },
+            "neutral_fr": {
+                "file": self.ref_dir / "juri_neutral_fr.wav",
+                "text": "Salut, je suis Juri. Prête pour le combat ? Ça va faire mal."
             },
             "happy": {
-                "file": self.ref_dir / "aria_happy.wav",
-                "text": "C'est génial ! Je suis tellement contente de discuter avec toi aujourd'hui !"
+                "file": self.ref_dir / "juri_happy.wav",
+                "text": ""
             },
             "sad": {
-                "file": self.ref_dir / "aria_sad.wav",
-                "text": "Oh non... c'est vraiment dommage... je suis triste d'apprendre ça..."
+                "file": self.ref_dir / "juri_sad.wav",
+                "text": ""
             },
             "angry": {
-                "file": self.ref_dir / "aria_angry.wav",
-                "text": "Mais c'est inacceptable ! Je ne suis pas du tout d'accord avec ça !"
+                "file": self.ref_dir / "juri_angry.wav",
+                "text": ""
             }
         }
         
         # Default voice/emotion
         self.current_emotion = "neutral"
+        self.current_language = "en"
 
     def _load_model(self):
         if self._model is None:
@@ -98,15 +103,24 @@ class F5TTSProvider(BaseTTS):
         if not clean_text:
             return TTSResult(audio_data=b"")
 
-        # Get reference
-        ref = self.refs.get(emotion, self.refs["neutral"])
+        # Select reference based on Language AND Emotion
+        ref_key = emotion
+        
+        # If we are in French mode, try to find a French version of the emotion
+        # Fallback to "neutral_fr" if specific emotion not found, then to English neutral
+        if self.current_language == "fr":
+            if emotion == "neutral":
+                ref_key = "neutral_fr"
+            # You could add "happy_fr", "angry_fr" etc. later
+        
+        ref = self.refs.get(ref_key, self.refs.get("neutral_fr" if self.current_language == "fr" else "neutral"))
         
         # Check if ref file exists
         if not ref["file"].exists():
             print(f"⚠️ Reference file not found: {ref['file']}, using neutral")
             ref = self.refs["neutral"]
 
-        print(f"🎤 F5-TTS Generating ({emotion}): '{clean_text}'")
+        print(f"🎤 F5-TTS Generating ({emotion}, lang={self.current_language}): '{clean_text}'")
         
         # Run inference in executor (it's sync)
         wav, sr, spec = await loop.run_in_executor(
@@ -152,7 +166,16 @@ class F5TTSProvider(BaseTTS):
         return [Voice(id="f5_aria", name="Aria (F5-TTS)", language="fr", gender="Female")]
 
     def set_voice(self, voice_id: str) -> None:
-        pass # Only one voice identity supported for now
+        """
+        Switch language/voice based on ID.
+        Called by the system when language changes.
+        """
+        if "fr" in voice_id.lower():
+            self.current_language = "fr"
+            print("🇫🇷 F5-TTS: Switched to French reference")
+        else:
+            self.current_language = "en"
+            print("🇺🇸 F5-TTS: Switched to English reference")
 
     def set_rate(self, rate: str) -> None:
         pass # Not implemented

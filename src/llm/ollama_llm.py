@@ -61,6 +61,7 @@ class OllamaLLM(BaseLLM):
         Returns:
             The complete LLM response
         """
+        print(f"📤 Sending request to Ollama ({self.model})...")
         response = await self._client.post(
             "/api/chat",
             json={
@@ -87,6 +88,7 @@ class OllamaLLM(BaseLLM):
         Yields:
             Text chunks (tokens) one by one
         """
+        print(f"📤 Streaming request to Ollama ({self.model})...")
         async with self._client.stream(
             "POST",
             "/api/chat",

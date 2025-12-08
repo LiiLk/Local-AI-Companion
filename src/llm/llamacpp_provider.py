@@ -308,8 +308,9 @@ class LlamaCppProvider(BaseLLM):
                                     yield buffer
                                     buffer = ""
                                 elif in_thinking:
-                                    # In thinking mode, don't yield, just clear buffer
-                                    buffer = ""
+                                    # In thinking mode, don't yield, but keep tail for split tags
+                                    if len(buffer) > 20:
+                                        buffer = buffer[-20:]
                             
                     except json.JSONDecodeError:
                         continue
