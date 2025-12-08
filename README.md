@@ -52,6 +52,7 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 - [x] **CLI Chatbot** - Functional command-line interface
 - [x] **Text-to-Speech (TTS)** - Voice synthesis with:
   - 🎤 **OpenAudio S1-mini** (local, 0.5B params, #1 TTS-Arena2, voice cloning) - *Best quality*
+  - 🎤 **F5-TTS** (local, high quality, voice cloning)
   - 🔊 **Kokoro TTS** (local, 82M params, high quality, fast) - *Recommended*
   - 🌐 **Edge TTS** (cloud fallback, Microsoft voices)
 
@@ -237,7 +238,7 @@ python -m src.server
 |----------|--------------|
 | **Language** | Python 3.12 |
 | **LLM** | Qwen3-VL-8B (8B, vision) via llama.cpp + Ollama fallback |
-| **TTS** | OpenAudio S1-mini (0.5B, voice cloning, #1 quality) + Kokoro (82M, fast) + Edge TTS |
+| **TTS** | OpenAudio S1-mini + F5-TTS + Kokoro (82M) + Edge TTS |
 | **ASR** | NVIDIA Parakeet TDT (0.6B) + Faster-Whisper + Canary |
 | **VAD** | Silero VAD (voice activity detection) |
 | **Backend** | FastAPI + WebSockets |
@@ -279,11 +280,11 @@ Phase 1: Foundations         ████████████████ 10
 ├── ✅ TTS Module (Kokoro + Edge)
 └── ✅ ASR Module (Whisper + Canary + Parakeet)
 
-Phase 2: Web Interface       ████████████░░░░ 80%
+Phase 2: Web Interface       ████████████▒▒▒▒ 85%
 ├── ✅ WebSocket Server
 ├── ✅ Web Frontend
 ├── ✅ Voice Activity Detection (Silero VAD)
-└── ⬜ Live2D Avatar
+└── 🚧 Live2D Avatar (In Progress)
 
 Phase 3: Advanced Features   ░░░░░░░░░░░░░░░░ 0%
 ├── ⬜ Voice Cloning (XTTS v2)
