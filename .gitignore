@@ -45,6 +45,9 @@ models/
 logs/
 *.log
 
+# Live2D SDK (proprietary license - do not distribute)
+assets/live2d_sdk_web/
+
 # Test files
 test_*.py
 test_*.mp3

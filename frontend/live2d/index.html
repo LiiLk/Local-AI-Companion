@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D Avatar - Local AI Companion</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* Transparent background for overlay mode */
+            background: transparent;
+        }
+        
+        #live2d-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            /* Allow click-through on transparent areas */
+            pointer-events: auto;
+        }
+        
+        /* Debug info overlay - hidden by default */
+        #debug-info {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #00ff00;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+            z-index: 1000;
+        }
+        
+        #debug-info.visible {
+            display: block;
+        }
+        
+        /* Status indicator */
+        #status {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            font-family: sans-serif;
+            font-size: 11px;
+            padding: 5px 10px;
+            border-radius: 3px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- Main canvas for Live2D rendering -->
+    <canvas id="live2d-canvas"></canvas>
+    
+    <!-- Debug overlay -->
+    <div id="debug-info">
+        <div>FPS: <span id="fps">0</span></div>
+        <div>Model: <span id="model-name">-</span></div>
+        <div>Lip Sync: <span id="lip-value">0.00</span></div>
+        <div>Expression: <span id="expression-name">-</span></div>
+    </div>
+    
+    <!-- Status indicator -->
+    <div id="status">Loading...</div>
+    
+    <!-- Live2D Cubism Core SDK -->
+    <script src="../../assets/live2d_sdk_web/Core/live2dcubismcore.min.js"></script>
+    
+    <!-- Our Live2D module -->
+    <script src="./live2d.js"></script>
+    
+    <script>
+        // Initialize when DOM is ready
+        document.addEventListener('DOMContentLoaded', async () => {
+            const statusEl = document.getElementById('status');
+            
+            try {
+                statusEl.style.display = 'block';
+                statusEl.textContent = 'Initializing Live2D...';
+                
+                // Initialize Live2D with March 7th model
+                await Live2DManager.init({
+                    canvasId: 'live2d-canvas',
+                    modelPath: '../../assets/models/march7th/',
+                    modelName: 'march 7th.model3.json',
+                    scale: 1.0,
+                    position: { x: 0, y: -0.3 },
+                    debug: false
+                });
+                
+                statusEl.style.display = 'none';
+                console.log('Live2D initialized successfully');
+                
+            } catch (error) {
+                console.error('Failed to initialize Live2D:', error);
+                statusEl.textContent = `Error: ${error.message}`;
+                statusEl.style.background = 'rgba(255, 0, 0, 0.7)';
+            }
+        });
+        
+        // Expose API for Python integration via pywebview
+        window.Live2DAPI = {
+            // Set expression by name (e.g., "happy", "sad")
+            setExpression: (name) => Live2DManager.setExpression(name),
+            
+            // Set lip sync value (0.0 - 1.0)
+            setLipSync: (value) => Live2DManager.setLipSync(value),
+            
+            // Start lip sync from audio analysis
+            startLipSyncFromAudio: () => Live2DManager.startAudioLipSync(),
+            
+            // Stop lip sync
+            stopLipSync: () => Live2DManager.stopLipSync(),
+            
+            // Set parameter directly (advanced)
+            setParameter: (name, value) => Live2DManager.setParameter(name, value),
+            
+            // Play motion
+            playMotion: (group, index) => Live2DManager.playMotion(group, index),
+            
+            // Toggle debug info
+            toggleDebug: () => {
+                const el = document.getElementById('debug-info');
+                el.classList.toggle('visible');
+            },
+            
+            // Get available expressions
+            getExpressions: () => Live2DManager.getExpressionNames(),
+            
+            // Get available motions
+            getMotions: () => Live2DManager.getMotionGroups()
+        };
+    </script>
+</body>
+</html>

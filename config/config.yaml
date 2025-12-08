@@ -235,3 +235,52 @@ asr:
   # ⚠️ With Qwen3-VL on GPU, use "cpu" for Whisper to avoid OOM
   # Whisper base on CPU is fast enough (~1-2s per phrase)
   device: "cpu"
+
+# === Live2D Avatar ===
+live2d:
+  # Enable/disable Live2D overlay
+  enabled: false
+  
+  # Model configuration
+  model:
+    # Path relative to project root
+    path: "assets/models/march7th/"
+    # Model settings file name
+    settings_file: "march 7th.model3.json"
+  
+  # Window settings
+  window:
+    width: 400
+    height: 600
+    # Position: -1 = auto (bottom-right corner)
+    x: -1
+    y: -1
+    opacity: 0.95
+    frameless: true
+    on_top: true
+    transparent: true
+  
+  # Expression mapping from emotions to model expressions
+  # Format: emotion_name: "expression_name"
+  expressions:
+    happy: "星星"        # Stars
+    excited: "比耶"      # Peace sign
+    sad: "哭"           # Cry
+    angry: "黑脸"        # Dark face
+    shy: "脸红"          # Blush
+    embarrassed: "流汗"   # Sweat
+    surprised: "比耶"
+    photo: "照相"        # Camera
+    facepalm: "捂脸"     # Face cover
+  
+  # Lip-sync settings
+  lip_sync:
+    # Smoothing factor (0.0 = instant, 1.0 = very smooth)
+    smoothing: 0.3
+    # Sensitivity multiplier
+    sensitivity: 1.0
+  
+  # Hotkeys
+  hotkeys:
+    toggle_visibility: "F12"
+    toggle_frameless: "F11"

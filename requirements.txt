@@ -23,3 +23,8 @@ uvicorn>=0.24.0        # ASGI server
 websockets>=12.0       # WebSocket support
 python-multipart>=0.0.6  # For file uploads
 torchaudio>=2.1.0      # Needed for XTTS/F5-TTS audio save
+
+# Live2D Avatar Overlay
+pywebview>=5.0.0       # Transparent window for Live2D avatar
+pynput>=1.7.0          # Global hotkeys (F11, F12)
+numpy>=1.24.0          # Audio analysis for lip-sync
