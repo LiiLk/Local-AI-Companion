@@ -124,7 +124,7 @@ tts:
   # ─────────────────────────────────────────────────────────────────────────
   xtts:
     # Default language (used when auto_detect_language is false)
-    language: "en"
+    language: "fr"
     
     # Device: "cuda" for GPU acceleration (~2.8GB VRAM)
     # With Qwen3-VL (~7GB) + XTTS (~2.8GB) = ~10GB total → fits in 12GB!
@@ -140,9 +140,10 @@ tts:
     # - "Filip Traverse" : French male voice
     speaker: "Claribel Dervla"
     
-    # 🎭 Voice Cloning (optional): uncomment to clone your voice
+    # 🎭 Voice Cloning: Uses Juri's voice as reference
     # Only 6 seconds of clear audio needed!
     speaker_wav: "resources/voices/f5_refs/juri_neutral.wav"
+    # For French-specific reference, use: juri_neutral_fr.wav
   
   # ─────────────────────────────────────────────────────────────────────────
   # 🎵 KOKORO TTS (100% local, lightweight, no voice cloning)
