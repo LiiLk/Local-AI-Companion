@@ -64,11 +64,11 @@ class ConversationState:
             provider = llm_config.get("provider", "ollama")
             
             if provider == "llamacpp":
-                # llama.cpp server (for Jan-v2-VL and other vision models)
+                # llama.cpp server (for Qwen3-VL and other vision models)
                 llamacpp_config = llm_config.get("llamacpp", {})
                 self.llm = LlamaCppProvider(
                     base_url=llamacpp_config.get("base_url", "http://localhost:8080"),
-                    model_name=llamacpp_config.get("model_name", "jan-v2-vl-high"),
+                    model_name=llamacpp_config.get("model_name", "qwen3-vl-8b-instruct"),
                     max_tokens=llamacpp_config.get("max_tokens", 2048),
                     temperature=llamacpp_config.get("temperature", 1.0),
                     top_p=llamacpp_config.get("top_p", 0.95),

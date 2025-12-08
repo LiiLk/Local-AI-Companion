@@ -44,7 +44,7 @@ Instead of forking an existing project, I chose to **rebuild from scratch** to:
 
 ### Implemented ✅
 - [x] **Local LLM module** - Multiple providers, runs 100% on your machine
-  - 🦙 **llama.cpp** (Jan-v2-VL-high) - 8B vision-language "thinking" model
+  - 🦙 **llama.cpp** (Qwen3-VL-8B) - 8B vision-language state-of-the-art model
   - 🦣 **Ollama** - Easy-to-use with pre-packaged models
 - [x] **Privacy-first** - Your conversations never leave your computer
 - [x] **Response streaming** - Real-time display of generation
@@ -155,18 +155,12 @@ pip install -r requirements.txt
 
 ### LLM Setup (Choose one)
 
-#### Option A: Jan-v2-VL-high (Recommended for vision tasks)
+#### Option A: Qwen3-VL-8B (Recommended for vision tasks)
+This is the default configuration.
+
 ```bash
-# 1. Download llama.cpp binaries
-mkdir -p ~/tools/llama-cpp && cd ~/tools/llama-cpp
-wget https://github.com/ggml-org/llama.cpp/releases/latest/download/llama-b7274-bin-ubuntu-vulkan-x64.tar.gz
-tar -xzf llama-b7274-bin-ubuntu-vulkan-x64.tar.gz
-
-# 2. Download the model (~5.8 GB total)
-mkdir -p ~/models/jan-v2-vl-high && cd ~/models/jan-v2-vl-high
-wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/Jan-v2-VL-high-Q4_K_M.gguf
-wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/mmproj-Jan-v2-VL-high.gguf
-
+./scripts/setup_qwen_vl.sh
+```
 # 3. Start the LLM server
 ./scripts/start_llm_server.sh --daemon
 ```
@@ -242,7 +236,7 @@ python -m src.server
 | Category | Technologies |
 |----------|--------------|
 | **Language** | Python 3.12 |
-| **LLM** | Jan-v2-VL-high (8B, vision) via llama.cpp + Ollama fallback |
+| **LLM** | Qwen3-VL-8B (8B, vision) via llama.cpp + Ollama fallback |
 | **TTS** | OpenAudio S1-mini (0.5B, voice cloning, #1 quality) + Kokoro (82M, fast) + Edge TTS |
 | **ASR** | NVIDIA Parakeet TDT (0.6B) + Faster-Whisper + Canary |
 | **VAD** | Silero VAD (voice activity detection) |
@@ -304,7 +298,7 @@ Phase 3: Advanced Features   ░░░░░░░░░░░░░░░░ 0%
 
 - [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) - Main architecture inspiration
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) - Fast local inference with Vulkan/CUDA
-- [Jan-v2-VL](https://huggingface.co/janhq/Jan-v2-VL-high-gguf) - Vision-language "thinking" model
+- [Qwen3-VL](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF) - Vision-language state-of-the-art model
 - [Ollama](https://ollama.com/) - Easy-to-use local LLM
 - [Kokoro TTS](https://github.com/hexgrad/kokoro) - High-quality local TTS (82M params)
 - [Fish Speech / OpenAudio](https://github.com/fishaudio/fish-speech) - #1 TTS-Arena2 with voice cloning

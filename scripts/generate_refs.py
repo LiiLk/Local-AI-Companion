@@ -1,5 +1,4 @@
 import asyncio
-import os
 from pathlib import Path
 from src.tts.kokoro_provider import KokoroProvider
 
@@ -14,7 +13,7 @@ async def generate_refs():
     
     prompts = {
         "neutral": "Bonjour, je suis Aria. Je suis ton assistante virtuelle.",
-        "happy": "C'est génial ! Je suis tellement contente de discuter avec toi aujourd'hui !",
+        "happy": "C'est     génial ! Je suis tellement contente de discuter avec toi aujourd'hui !",
         "sad": "Oh non... c'est vraiment dommage... je suis triste d'apprendre ça...",
         "angry": "Mais c'est inacceptable ! Je ne suis pas du tout d'accord avec ça !"
     }

@@ -4,7 +4,7 @@ Screen Capture Provider - Local screen capture with multimodal LLM analysis.
 Uses:
 - mss (cross-platform screen capture, fast)
 - PIL for image processing
-- Multimodal LLM (Jan-v2-VL, LLaVA, etc.) for analysis
+- Multimodal LLM (Qwen3-VL, LLaVA, etc.) for analysis
 
 This is a 100% local solution - no data leaves your machine.
 """
@@ -25,14 +25,14 @@ class ScreenCaptureProvider(VisionProvider):
     Screen capture provider using mss (cross-platform).
     
     Integrates with multimodal LLMs for visual understanding:
-    - Jan-v2-VL (via llama.cpp server)
+    - Qwen3-VL (via llama.cpp server)
     - LLaVA
     - Any OpenAI-compatible vision API
     
     Example:
         provider = ScreenCaptureProvider(
-            llm_base_url="http://localhost:8080",  # llama.cpp with Jan-v2-VL
-            llm_model="jan-v2-vl-high"
+            llm_base_url="http://localhost:8080",  # llama.cpp with Qwen3-VL
+            llm_model="qwen3-vl-8b-instruct"
         )
         capture, analysis = provider.capture_and_analyze("What application is open?")
     """
@@ -40,7 +40,7 @@ class ScreenCaptureProvider(VisionProvider):
     def __init__(
         self,
         llm_base_url: str = "http://localhost:8080",
-        llm_model: str = "jan-v2-vl-high",
+        llm_model: str = "qwen3-vl-8b-instruct",
         llm_api_key: Optional[str] = None,
         image_format: str = "png",
         image_quality: int = 85,
@@ -187,7 +187,7 @@ class ScreenCaptureProvider(VisionProvider):
         """
         Analyze image using multimodal LLM.
         
-        Sends image to llama.cpp server with Jan-v2-VL or similar model.
+        Sends image to llama.cpp server with Qwen3-VL or similar model.
         
         Args:
             capture: CaptureResult from capture()

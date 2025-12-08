@@ -5,16 +5,16 @@ This provider supports:
 - Standard text chat (like Ollama)
 - Vision/multimodal models (with images)
 - OpenAI-compatible API
-- "Thinking" models that provide reasoning_content (like Jan-v2-VL)
+- "Thinking" models that provide reasoning_content (like Qwen3-VL)
 
-Perfect for models like Jan-v2-VL that need separate mmproj files.
+Perfect for models like Qwen3-VL that need separate mmproj files.
 
-llama-server command example:
-    llama-server --model Jan-v2-VL-high-Q4_K_M.gguf \
-                 --mmproj mmproj-Jan-v2-VL-high.gguf \
-                 --host 0.0.0.0 --port 8080 \
-                 --ctx-size 8192 --n-gpu-layers 99 \
-                 --jinja --no-context-shift
+# llama-server command example:
+#     llama-server --model Qwen3-VL-8B-Instruct-Q4_K_M.gguf \
+#                  --mmproj mmproj-F16.gguf \
+#                  --host 0.0.0.0 --port 8080 \
+#                  --ctx-size 8192 --n-gpu-layers 99 \
+#                  --jinja --no-context-shift
 """
 
 import httpx
@@ -34,7 +34,7 @@ class LlamaCppProvider(BaseLLM):
     LLM provider using llama.cpp server with OpenAI-compatible API.
     
     This provider supports:
-    - Vision models like Jan-v2-VL, LLaVA, Qwen-VL
+    - Vision models like Qwen3-VL, Jan-v2-VL, LLaVA
     - "Thinking" models that use reasoning_content
     - Streaming and non-streaming responses
     
@@ -44,7 +44,7 @@ class LlamaCppProvider(BaseLLM):
         base_url: URL of the llama-server (default: http://localhost:8080)
         model_name: Name for logging (doesn't affect the loaded model)
         max_tokens: Maximum tokens to generate (thinking models need more)
-        temperature: Sampling temperature (1.0 recommended for Jan-v2-VL)
+        temperature: Sampling temperature (1.0 default)
         top_p: Top-p sampling parameter
         presence_penalty: Presence penalty for repetition control
     """
@@ -52,7 +52,7 @@ class LlamaCppProvider(BaseLLM):
     def __init__(
         self,
         base_url: str = "http://localhost:8080",
-        model_name: str = "jan-v2-vl-high",
+        model_name: str = "qwen3-vl-8b-instruct",
         timeout: float = 180.0,
         max_tokens: int = 2048,
         temperature: float = 1.0,
@@ -67,11 +67,11 @@ class LlamaCppProvider(BaseLLM):
             base_url: URL where llama-server is running
             model_name: Display name for the model
             timeout: Request timeout in seconds (thinking models need longer)
-            max_tokens: Maximum tokens to generate (Jan-v2-VL needs 1000+ for thinking)
-            temperature: Sampling temperature (1.0 recommended for Jan-v2-VL)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
             top_p: Top-p sampling
             top_k: Top-k sampling
-            presence_penalty: Repetition penalty (1.5 recommended for Jan-v2-VL)
+            presence_penalty: Repetition penalty
         """
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
@@ -199,7 +199,7 @@ class LlamaCppProvider(BaseLLM):
         data = response.json()
         message = data["choices"][0]["message"]
         
-        # Handle "thinking" models (Jan-v2-VL, DeepSeek, etc.)
+        # Handle "thinking" models (Qwen3-VL, DeepSeek, Jan-v2-VL, etc.)
         # They put reasoning in reasoning_content and final answer in content
         content = message.get("content", "")
         reasoning = message.get("reasoning_content", "")
@@ -339,7 +339,7 @@ class LlamaCppProvider(BaseLLM):
 
 def create_llamacpp_llm(
     base_url: str = "http://localhost:8080",
-    model_name: str = "jan-v2-vl-high",
+    model_name: str = "qwen3-vl-8b-instruct",
     max_tokens: int = 2048,
     temperature: float = 1.0,
     top_p: float = 0.95,
@@ -349,16 +349,16 @@ def create_llamacpp_llm(
     """
     Factory function to create a LlamaCppProvider.
     
-    Default parameters are optimized for Jan-v2-VL thinking model.
+    Default parameters are optimized for Qwen3-VL.
     
     Args:
         base_url: URL of the llama-server
         model_name: Display name for the model
         max_tokens: Max tokens (2048+ recommended for thinking models)
-        temperature: Sampling temperature (1.0 for Jan-v2-VL)
-        top_p: Top-p sampling (0.95 for Jan-v2-VL)
+        temperature: Sampling temperature (0.7 for Qwen3-VL)
+        top_p: Top-p sampling (0.9 for Qwen3-VL)
         top_k: Top-k sampling
-        presence_penalty: Repetition penalty (1.5 for Jan-v2-VL)
+        presence_penalty: Repetition penalty (1.1 for Qwen3-VL)
         
     Returns:
         Configured LlamaCppProvider instance

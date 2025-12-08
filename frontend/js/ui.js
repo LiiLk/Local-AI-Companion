@@ -1,17 +1,17 @@
 /**
- * UI Controller - Gestion des interactions de l'interface utilisateur
+ * UI Controller - Manages user interface interactions
  * 
- * Ce module gère :
- * - Le toggle sidebar (desktop/mobile)
- * - Le panneau de paramètres
- * - Le switch de thème (dark/light)
- * - Les mises à jour du statut des modèles
- * - Les animations et transitions
+ * This module handles:
+ * - Sidebar toggling (desktop/mobile)
+ * - The settings panel
+ * - Theme switching (dark/light)
+ * - Model status updates
+ * - Animations and transitions
  */
 
 class UIController {
     constructor() {
-        // Éléments du DOM
+        // DOM elements
         this.sidebar = document.getElementById('sidebar');
         this.settingsPanel = document.getElementById('settings-panel');
         this.overlay = document.getElementById('overlay');
@@ -25,46 +25,46 @@ class UIController {
         this.sendBtn = document.getElementById('send-btn');
         this.newChatBtn = document.getElementById('new-chat-btn');
 
-        // Éléments de statut
+        // Status elements
         this.connectionStatus = document.querySelector('.connection-status');
         this.statusText = this.connectionStatus?.querySelector('.status-text');
         this.modelItems = document.querySelectorAll('.model-item');
 
-        // Éléments de la barre de statut
+        // Status bar elements
         this.statusBar = document.getElementById('status-bar');
         this.statusMessage = document.getElementById('status-message');
         this.progressFill = document.getElementById('progress-fill');
 
-        // État
+        // State
         this.theme = localStorage.getItem('theme') || 'dark';
         this.isSidebarOpen = false;
         this.isSettingsOpen = false;
 
-        // Initialisation
+        // Initialization
         this.init();
     }
 
     /**
-     * Initialisation des événements et de l'état initial
+     * Initialization of events and initial state
      */
     init() {
-        // Appliquer le thème sauvegardé
+        // Apply saved theme
         this.applyTheme(this.theme);
 
         // Event listeners
         this.bindEvents();
 
-        // Observer le scroll pour le bouton "scroll to bottom"
+        // Scroll observer for "scroll to bottom" button
         this.setupScrollObserver();
 
-        // Auto-resize du textarea
+        // Auto-resize textarea
         this.setupTextareaResize();
 
         console.log('[UI] Controller initialisé');
     }
 
     /**
-     * Liaison des événements
+     * Event binding
      */
     bindEvents() {
         // Theme toggle
@@ -77,7 +77,7 @@ class UIController {
         this.settingsBtn?.addEventListener('click', () => this.openSettings());
         this.closeSettingsBtn?.addEventListener('click', () => this.closeSettings());
 
-        // Overlay (ferme sidebar mobile et settings)
+        // Overlay (closes mobile sidebar and settings)
         this.overlay?.addEventListener('click', () => {
             this.closeSidebar();
             this.closeSettings();
@@ -107,7 +107,7 @@ class UIController {
     }
 
     /**
-     * Toggle du thème dark/light
+     * Toggle dark/light theme
      */
     toggleTheme() {
         this.theme = this.theme === 'dark' ? 'light' : 'dark';
@@ -117,13 +117,13 @@ class UIController {
     }
 
     /**
-     * Applique le thème
-     * @param {string} theme - 'dark' ou 'light'
+     * Apply theme
+     * @param {string} theme - 'dark' or 'light'
      */
     applyTheme(theme) {
         document.documentElement.setAttribute('data-theme', theme);
 
-        // Mettre à jour l'icône du toggle
+        // Update toggle icon
         const icon = this.themeToggle?.querySelector('svg');
         if (icon) {
             if (theme === 'dark') {
@@ -156,7 +156,7 @@ class UIController {
     }
 
     /**
-     * Ferme la sidebar
+     * Close sidebar
      */
     closeSidebar() {
         this.isSidebarOpen = false;
@@ -167,7 +167,7 @@ class UIController {
     }
 
     /**
-     * Ouvre le panneau de paramètres
+     * Open settings panel
      */
     openSettings() {
         this.isSettingsOpen = true;
@@ -177,7 +177,7 @@ class UIController {
     }
 
     /**
-     * Ferme le panneau de paramètres
+     * Close settings panel
      */
     closeSettings() {
         this.isSettingsOpen = false;
@@ -188,7 +188,7 @@ class UIController {
     }
 
     /**
-     * Configure l'observer de scroll
+     * Configure scroll observer
      */
     setupScrollObserver() {
         if (!this.messagesContainer) return;
@@ -202,7 +202,7 @@ class UIController {
     }
 
     /**
-     * Scroll vers le bas des messages
+     * Scroll to bottom of messages
      */
     scrollToBottom() {
         if (this.messagesContainer) {
@@ -214,7 +214,7 @@ class UIController {
     }
 
     /**
-     * Configure l'auto-resize du textarea
+     * Configure auto-resize textarea
      */
     setupTextareaResize() {
         if (!this.messageInput) return;
@@ -226,22 +226,22 @@ class UIController {
     }
 
     /**
-     * Gestion des raccourcis clavier
+     * Handle keyboard shortcuts
      * @param {KeyboardEvent} e 
      */
     handleKeyboard(e) {
-        // Escape ferme les panneaux
+        // Escape closes panels
         if (e.key === 'Escape') {
             this.closeSettings();
             this.closeSidebar();
         }
 
-        // Ctrl+Enter envoie le message
+        // Ctrl+Enter sends message
         if (e.ctrlKey && e.key === 'Enter') {
             this.sendBtn?.click();
         }
 
-        // Ctrl+, ouvre les paramètres
+        // Ctrl+, opens settings
         if (e.ctrlKey && e.key === ',') {
             e.preventDefault();
             this.openSettings();
@@ -249,7 +249,7 @@ class UIController {
     }
 
     /**
-     * Met à jour le statut de connexion
+     * Update connection status
      * @param {boolean} connected 
      */
     updateConnectionStatus(connected) {
@@ -264,10 +264,10 @@ class UIController {
     }
 
     /**
-     * Met à jour le statut d'un modèle
-     * @param {string} modelType - 'vad', 'asr', ou 'tts'
+     * Update model status
+     * @param {string} modelType - 'vad', 'asr', or 'tts'
      * @param {string} status - 'idle', 'loading', 'loaded', 'error'
-     * @param {string} [info] - Information supplémentaire
+     * @param {string} [info] - Additional information
      */
     updateModelStatus(modelType, status, info = '') {
         const modelItem = document.querySelector(`.model-item[data-model="${modelType}"]`);
@@ -294,7 +294,7 @@ class UIController {
     }
 
     /**
-     * Affiche la barre de statut
+     * Show status bar
      * @param {string} message 
      * @param {number} [progress] - 0-100
      */
@@ -312,17 +312,17 @@ class UIController {
     }
 
     /**
-     * Cache la barre de statut
+     * Hide status bar
      */
     hideStatusBar() {
         this.statusBar?.classList.add('hidden');
     }
 
     /**
-     * Nouveau chat
+     * Handle new chat
      */
     handleNewChat() {
-        // Vider les messages (garder le welcome)
+        // Clear messages (keep welcome)
         const messages = document.getElementById('messages');
         if (messages) {
             const welcomeMessage = messages.querySelector('.message.assistant');
@@ -332,17 +332,17 @@ class UIController {
             }
         }
 
-        // Fermer la sidebar mobile
+        // Close mobile sidebar
         this.closeSidebar();
 
-        // Focus sur l'input
+        // Focus on input
         this.messageInput?.focus();
 
         console.log('[UI] Nouveau chat');
     }
 
     /**
-     * Sauvegarde les paramètres
+     * Save settings
      */
     saveSettings() {
         const settings = {
@@ -361,23 +361,23 @@ class UIController {
             }
         };
 
-        // Sauvegarder en localStorage
+        // Save to localStorage
         localStorage.setItem('aria-settings', JSON.stringify(settings));
 
-        // Émettre un événement custom pour que app.js puisse réagir
+        // Emit custom event for app.js to react
         window.dispatchEvent(new CustomEvent('settings-changed', { detail: settings }));
 
-        // Fermer le panneau
+        // Close settings panel
         this.closeSettings();
 
-        console.log('[UI] Paramètres sauvegardés:', settings);
+        console.log('[UI] Settings saved:', settings);
     }
 
     /**
-     * Réinitialise les paramètres par défaut
+     * Reset settings to default
      */
     resetSettings() {
-        // Valeurs par défaut
+        // Default values
         document.getElementById('asr-provider').value = 'parakeet';
         document.getElementById('asr-language').value = '';
         document.getElementById('tts-provider').value = 'f5tts';
@@ -386,14 +386,14 @@ class UIController {
         document.getElementById('character-name').value = 'Juri';
         document.getElementById('character-prompt').value = 'You are Juri Han from Street Fighter. You are sarcastic, sadistic, but helpful.';
 
-        // Supprimer du localStorage
+        // Remove from localStorage
         localStorage.removeItem('aria-settings');
 
-        console.log('[UI] Paramètres réinitialisés');
+        console.log('[UI] Settings reset');
     }
 
     /**
-     * Charge les paramètres depuis localStorage
+     * Load settings from localStorage
      */
     loadSettings() {
         const saved = localStorage.getItem('aria-settings');
@@ -402,7 +402,7 @@ class UIController {
         try {
             const settings = JSON.parse(saved);
 
-            // Appliquer aux champs
+            // Apply to fields
             if (settings.asr) {
                 const provider = document.getElementById('asr-provider');
                 const language = document.getElementById('asr-language');
@@ -426,17 +426,17 @@ class UIController {
                 if (personality) personality.value = settings.character.personality || '';
             }
 
-            console.log('[UI] Paramètres chargés:', settings);
+            console.log('[UI] Settings loaded:', settings);
         } catch (e) {
-            console.error('[UI] Erreur chargement paramètres:', e);
+            console.error('[UI] Error loading settings:', e);
         }
     }
 }
 
-// Export pour utilisation dans app.js
+// Export for use in app.js
 window.UIController = UIController;
 
-// Initialisation au chargement du DOM
+// Initialization on DOM load
 document.addEventListener('DOMContentLoaded', () => {
     window.uiController = new UIController();
     window.uiController.loadSettings();

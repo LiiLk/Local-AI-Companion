@@ -5,33 +5,33 @@
 llm:
   # Which LLM provider to use: "ollama" or "llamacpp"
   # - "ollama"   : Simple, pre-packaged models (llama3.2, mistral, etc.)
-  # - "llamacpp" : Flexible, supports vision models (Jan-v2-VL, LLaVA, etc.)
+  # - "llamacpp" : Flexible, supports vision models (Qwen3-VL, LLaVA, etc.)
   provider: "llamacpp"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🦙 LLAMA.CPP SERVER (for Jan-v2-VL and vision models)
+  # 🦙 LLAMA.CPP SERVER (for Qwen3-VL and vision models)
   # ─────────────────────────────────────────────────────────────────────────
-  # Jan-v2-VL-high is a "thinking" model (8B params) that reflects before
-  # responding. It uses Vulkan for GPU (no CUDA Toolkit needed).
+  # Qwen3-VL-8B is a state-of-the-art vision-language model.
+  # It uses Vulkan for GPU (no CUDA Toolkit needed).
   # 
   # Start the server before launching the assistant:
   #   ./scripts/start_llm_server.sh
   # or manually:
   #   cd ~/tools/llama-cpp && LD_LIBRARY_PATH="$PWD" ./llama-server \
-  #     --model ~/models/jan-v2-vl-high/Jan-v2-VL-high-Q4_K_M.gguf \
-  #     --mmproj ~/models/jan-v2-vl-high/mmproj-Jan-v2-VL-high.gguf \
+  #     --model models/qwen3-vl-8b/Qwen3-VL-8B-Instruct-Q4_K_M.gguf \
+  #     --mmproj models/qwen3-vl-8b/mmproj-F16.gguf \
   #     --host 0.0.0.0 --port 8080 --ctx-size 8192 --n-gpu-layers 99 \
   #     --jinja --no-context-shift
   # ─────────────────────────────────────────────────────────────────────────
   llamacpp:
     base_url: "http://localhost:8080"
     model_name: "qwen3-vl-8b-instruct"
-    # Recommended parameters for Jan-v2-VL (thinking model)
-    max_tokens: 4096        # Qwen2.5-VL supports long generation
-    temperature: 1.0        # Recommended by Jan for this model
-    top_p: 0.95             # Top-p sampling
-    top_k: 20               # Top-k sampling  
-    presence_penalty: 1.5   # Reduces repetitions
+    # Recommended parameters for Qwen3-VL
+    max_tokens: 4096        # Qwen3-VL supports long generation
+    temperature: 0.7        # Standard temperature for Qwen models
+    top_p: 0.9              # Top-p sampling
+    top_k: 40               # Top-k sampling  
+    presence_penalty: 1.1   # Reduces repetitions
   
   # Ollama configuration (fallback)
   ollama:
@@ -113,7 +113,7 @@ tts:
   # ─────────────────────────────────────────────────────────────────────────
   # 🎤 XTTS v2 (Voice Cloning) - Best multilingual choice ⭐ RECOMMENDED
   # ─────────────────────────────────────────────────────────────────────────
-  # - ~467M params, ~2.8GB VRAM (coexists with Jan-v2-VL ~7GB = ~10GB total ✅)
+  # - ~467M params, ~2.8GB VRAM (coexists with Qwen3-VL ~7GB = ~10GB total ✅)
   # - Voice cloning with only 6 seconds of audio!
   # - 17 native languages: FR, EN, ES, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO, HI
   # - 58 high-quality built-in speakers
@@ -125,7 +125,7 @@ tts:
     language: "en"
     
     # Device: "cuda" for GPU acceleration (~2.8GB VRAM)
-    # With Jan-v2-VL (~7GB) + XTTS (~2.8GB) = ~10GB total → fits in 12GB!
+    # With Qwen3-VL (~7GB) + XTTS (~2.8GB) = ~10GB total → fits in 12GB!
     # Set to "cpu" if you get OOM errors
     device: "cuda"
     
@@ -176,7 +176,7 @@ asr:
   # - "whisper"  : Local, CPU/GPU compatible, good for many languages with distilled models
   # - "canary"   : NVIDIA Canary 1B v2, best for long audio (6GB+ VRAM required)
   # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, fast and accurate (can run on CPU)
-  # ⚠️ With Jan-v2-VL (~7GB VRAM), use ASR on CPU to avoid OOM
+  # ⚠️ With Qwen3-VL (~7GB VRAM), use ASR on CPU to avoid OOM
   provider: "whisper"
   
   # ─────────────────────────────────────────────────────────────────────────
@@ -232,6 +232,6 @@ asr:
   prompt: "Transcription of a conversation with an AI assistant."
   
   # Device: "cpu" or "cuda" (GPU)
-  # ⚠️ With Jan-v2-VL on GPU, use "cpu" for Whisper to avoid OOM
+  # ⚠️ With Qwen3-VL on GPU, use "cpu" for Whisper to avoid OOM
   # Whisper base on CPU is fast enough (~1-2s per phrase)
   device: "cpu"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script to start the llama.cpp server with Jan-v2-VL-high
+# Script to start the llama.cpp server with Qwen3-VL-8B
 # 
 # This script uses the pre-compiled Vulkan binaries of llama.cpp
 # installed in ~/tools/llama-cpp/
@@ -44,8 +44,7 @@ if [ ! -f "$MODEL_FILE" ]; then
     echo ""
     echo "Download:"
     echo "  mkdir -p $MODEL_DIR && cd $MODEL_DIR"
-    echo "  wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/Jan-v2-VL-high-Q4_K_M.gguf"
-    echo "  wget https://huggingface.co/janhq/Jan-v2-VL-high-gguf/resolve/main/mmproj-Jan-v2-VL-high.gguf"
+    echo "  ./scripts/setup_qwen_vl.sh"
     exit 1
 fi
 
