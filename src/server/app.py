@@ -92,6 +92,11 @@ def create_app() -> FastAPI:
     frontend_path = Path(__file__).parent.parent.parent / "frontend"
     if frontend_path.exists():
         app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
+        
+    # Serve assets (Live2D models, etc.)
+    assets_path = Path(__file__).parent.parent.parent / "assets"
+    if assets_path.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
     
     return app
 

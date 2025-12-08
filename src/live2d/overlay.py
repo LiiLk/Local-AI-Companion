@@ -35,8 +35,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
+# Add project root to path (go up from src/live2d/ to project root)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
@@ -65,7 +65,7 @@ class OverlayConfig:
     transparent: bool = True
     debug: bool = False
     html_path: str = field(default_factory=lambda: str(
-        Path(__file__).parent / 'frontend' / 'live2d' / 'index.html'
+        PROJECT_ROOT / 'frontend' / 'live2d' / 'index.html'
     ))
 
 
@@ -210,8 +210,8 @@ class Live2DOverlay:
             frameless=self.config.frameless,
             easy_drag=True,
             on_top=self.config.on_top,
-            transparent=self.config.transparent,
-            background_color='#00000000'  # Fully transparent
+            transparent=self.config.transparent
+            # Note: background_color not needed when transparent=True
         )
         
         # Set up event handlers

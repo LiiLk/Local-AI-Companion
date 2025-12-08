@@ -92,13 +92,16 @@
                 statusEl.textContent = 'Initializing Live2D...';
                 
                 // Initialize Live2D with March 7th model
+                // The model will load with its natural default appearance
+                // Only expression parameters (detected from .exp3.json) will be modified
                 await Live2DManager.init({
                     canvasId: 'live2d-canvas',
                     modelPath: '../../assets/models/march7th/',
                     modelName: 'march 7th.model3.json',
                     scale: 1.0,
                     position: { x: 0, y: -0.3 },
-                    debug: false
+                    debug: true
+                    // No defaultExpression - let the model show its natural face
                 });
                 
                 statusEl.style.display = 'none';
