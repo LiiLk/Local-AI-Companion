@@ -124,7 +124,7 @@ tts:
   # ─────────────────────────────────────────────────────────────────────────
   xtts:
     # Default language (used when auto_detect_language is false)
-    language: "fr"
+    language: "en"
     
     # Device: "cuda" for GPU acceleration (~2.8GB VRAM)
     # With Qwen3-VL (~7GB) + XTTS (~2.8GB) = ~10GB total → fits in 12GB!
