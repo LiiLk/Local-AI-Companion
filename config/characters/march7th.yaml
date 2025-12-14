@@ -33,11 +33,17 @@ live2d:
 
 # Voice (TTS reference for voice cloning)
 voice:
-  # Reference audio for XTTS voice cloning
-  speaker_wav: "resources/voices/march7th/march7th_optimized.wav"
-  # Alternative voices
-  alternatives:
-    - "resources/voices/march7th/march7th_neutral.wav"
+  # XTTS Built-in speaker (recommended until we get real voice recordings)
+  # "Claribel Dervla" is a clear, natural female voice that sounds great!
+  xtts_speaker: "Claribel Dervla"
+  
+  # Voice cloning: DISABLED (needs real human voice, not TTS-generated audio)
+  # To enable voice cloning with real game audio:
+  # 1. Extract voice files from Honkai: Star Rail game data
+  # 2. Clean and process: 24kHz, mono, 10-30 seconds of clear speech
+  # 3. Uncomment speaker_wav below
+  # speaker_wav: "resources/voices/march7th/march7th_real.wav"
+  
   # Edge TTS fallback voice
   edge_voice: "en-US-JennyNeural"
   # Kokoro fallback voice

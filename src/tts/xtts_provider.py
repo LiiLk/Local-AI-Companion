@@ -25,12 +25,13 @@ import soundfile as sf
 from .base import BaseTTS, TTSResult
 import re
 
-# Emotion map (using March 7th's optimized voice - 22050Hz, normalized)
-EMOTION_REFS = {
-    "neutral": "resources/voices/f5_refs/march7th_optimized.wav",
-    "happy": "resources/voices/f5_refs/march7th_optimized.wav",
-    "sad": "resources/voices/f5_refs/march7th_optimized.wav",
-    "angry": "resources/voices/f5_refs/march7th_optimized.wav"
+# Default emotion references (can be overridden per character)
+# These paths are relative to project root
+DEFAULT_EMOTION_REFS = {
+    "neutral": "resources/voices/march7th/march7th_optimized.wav",
+    "happy": "resources/voices/march7th/march7th_optimized.wav",
+    "sad": "resources/voices/march7th/march7th_optimized.wav",
+    "angry": "resources/voices/march7th/march7th_optimized.wav"
 }
 
 logger = logging.getLogger(__name__)
@@ -255,6 +256,56 @@ class XTTSProvider(BaseTTS):
         
         return detected_emotion, text.strip()
     
+    def _prepare_reference_audio(self, audio_path: Path) -> Path:
+        """
+        Prepare reference audio for XTTS voice cloning.
+        
+        XTTS v2 works best with:
+        - 24kHz sample rate (native rate)
+        - Mono channel
+        - Clean audio without background noise
+        
+        If audio is not at 24kHz, it will be resampled and cached.
+        
+        Args:
+            audio_path: Path to the reference audio
+            
+        Returns:
+            Path to prepared audio (may be same as input if already optimal)
+        """
+        import librosa
+        
+        # Check current sample rate
+        y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+        
+        # XTTS native sample rate
+        target_sr = 24000
+        
+        if sr == target_sr:
+            logger.debug(f"Reference audio already at {target_sr}Hz")
+            return audio_path
+        
+        # Need to resample
+        logger.info(f"🔄 Resampling reference from {sr}Hz to {target_sr}Hz for better voice cloning")
+        
+        # Resample using high-quality kaiser_best
+        y_resampled = librosa.resample(y, orig_sr=sr, target_sr=target_sr, res_type='kaiser_best')
+        
+        # Save to cache file
+        cache_dir = Path("cache/voice_refs")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use hash of original path for cache filename
+        import hashlib
+        path_hash = hashlib.md5(str(audio_path).encode()).hexdigest()[:8]
+        cache_path = cache_dir / f"{audio_path.stem}_{path_hash}_24k.wav"
+        
+        if not cache_path.exists():
+            sf.write(str(cache_path), y_resampled, target_sr, subtype='PCM_16')
+            logger.info(f"✅ Cached resampled audio: {cache_path}")
+        
+        return cache_path
+    
     def _load_model(self):
         """
         Load the XTTS v2 model (lazy loading).
@@ -302,16 +353,21 @@ class XTTSProvider(BaseTTS):
         
         if self.speaker_wav and self.speaker_wav.exists():
             # Voice cloning - compute embedding from audio
-            # Optimized parameters for better voice similarity:
-            # - gpt_cond_len=6: Shorter context for more focused voice capture
-            # - gpt_cond_chunk_len=6: Match the conditioning length
-            # - max_ref_length=30: Use up to 30s of reference (our file is ~12s)
+            # Best practices for XTTS voice cloning (from Open-LLM-VTuber):
+            # - gpt_cond_len=30: Longer context captures more voice characteristics
+            # - gpt_cond_chunk_len=4: Smaller chunks for better attention
+            # - max_ref_length=60: Use full reference audio
+            # - Audio should be 24kHz for best results
             logger.info(f"🔄 Computing speaker embedding from: {self.speaker_wav}")
+            
+            # Ensure audio is at correct sample rate (24kHz)
+            prepared_audio = self._prepare_reference_audio(self.speaker_wav)
+            
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
-                audio_path=str(self.speaker_wav),
-                gpt_cond_len=6,
-                gpt_cond_chunk_len=6,
-                max_ref_length=30
+                audio_path=str(prepared_audio),
+                gpt_cond_len=30,  # Longer for better voice capture
+                gpt_cond_chunk_len=4,  # Smaller chunks
+                max_ref_length=60  # Use full reference
             )
         else:
             # Built-in speaker - get from speaker manager
@@ -359,7 +415,12 @@ class XTTSProvider(BaseTTS):
         # But for emotion, we must use cloning.
         
         # Resolve reference audio for this emotion
-        ref_path = Path(EMOTION_REFS.get(emotion, EMOTION_REFS["neutral"]))
+        # Use configured speaker_wav if available, otherwise fall back to defaults
+        if self.speaker_wav and self.speaker_wav.exists():
+            ref_path = self.speaker_wav
+        else:
+            ref_path = Path(DEFAULT_EMOTION_REFS.get(emotion, DEFAULT_EMOTION_REFS["neutral"]))
+        
         if ref_path.exists():
             # Temporarily switch speaker_wav for this synthesis
             original_wav = self.speaker_wav
@@ -425,21 +486,23 @@ class XTTSProvider(BaseTTS):
                 # Use low-level API with cached embeddings (faster!)
                 xtts_model = model.synthesizer.tts_model
                 
-                # Optimized inference parameters for natural voice cloning:
-                # - temperature=0.75: Slightly higher for more natural variation
-                # - repetition_penalty=5.0: Less aggressive, more natural flow
-                # - top_p=0.8: Allow more variation for expressiveness
-                # - speed=1.0: Normal speed (can adjust 0.8-1.2)
+                # Optimized inference parameters for better voice cloning:
+                # Based on XTTS best practices and Open-LLM-VTuber settings
+                # - temperature=0.65: Lower for more consistent voice reproduction
+                # - repetition_penalty=2.0: Standard value, not too aggressive
+                # - top_p=0.85: Balanced between consistency and naturalness
+                # - top_k=50: Standard value
+                # - speed=1.0: Normal speed
                 out = xtts_model.inference(
                     text=text,
                     language=lang,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
-                    temperature=0.75,
+                    temperature=0.65,  # Lower = more consistent voice
                     length_penalty=1.0,
-                    repetition_penalty=5.0,
+                    repetition_penalty=2.0,  # Standard, not too aggressive
                     top_k=50,
-                    top_p=0.8,
+                    top_p=0.85,
                     speed=1.0,
                     enable_text_splitting=True
                 )
