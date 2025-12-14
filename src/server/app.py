@@ -14,13 +14,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router
 from .websocket import websocket_router
+from ..utils.character_loader import resolve_character_config, get_available_characters
 
 
 def load_config() -> dict:
-    """Load configuration from config.yaml"""
+    """Load configuration from config.yaml and resolve character preset"""
     config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    
+    # Resolve character preset if specified
+    config = resolve_character_config(config)
+    return config
 
 
 @asynccontextmanager
@@ -38,7 +43,19 @@ async def lifespan(app: FastAPI):
     app.state.config = config
     app.state.character = config.get("character", {})
     
-    print(f"   Character: {app.state.character.get('name', 'AI')}")
+    # Show character info
+    character = app.state.character
+    preset = character.get("preset")
+    char_name = character.get("name", "AI")
+    if preset:
+        print(f"   🎭 Character: {char_name} (preset: {preset})")
+    else:
+        print(f"   🎭 Character: {char_name} (custom)")
+    
+    # Show available presets
+    available = get_available_characters()
+    if available:
+        print(f"   📦 Available presets: {', '.join(available)}")
     
     # Display correct LLM info based on provider
     llm_config = config.get("llm", {})
@@ -48,8 +65,8 @@ async def lifespan(app: FastAPI):
     else:
         model_name = llm_config.get("ollama", {}).get("model", "unknown")
         
-    print(f"   LLM: {model_name} ({provider})")
-    print("   Models will be loaded on first request (lazy loading)")
+    print(f"   🧠 LLM: {model_name} ({provider})")
+    print("   ⏳ Models will be loaded on first request (lazy loading)")
     print()
     
     yield

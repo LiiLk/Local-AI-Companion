@@ -39,18 +39,33 @@ llm:
     base_url: "http://localhost:11434"
 
 # === Assistant Personality ===
+# ─────────────────────────────────────────────────────────────────────────
+# 🎭 CHARACTER PRESETS
+# ─────────────────────────────────────────────────────────────────────────
+# The project is fully modular! You can switch characters by:
+# 1. Using a preset: set character.preset to load from config/characters/
+# 2. Custom config: set character.name and character.system_prompt directly
+#
+# Available presets (in config/characters/):
+# - "march7th" : March 7th from Honkai: Star Rail (cheerful photographer)
+# - "juri"     : Juri Han from Street Fighter (sarcastic villain)
+# - "clippy"   : Microsoft Clippy (helpful paperclip)
+#
+# To add a new character:
+# 1. Create config/characters/yourcharacter.yaml
+# 2. Add Live2D model to assets/models/yourcharacter/
+# 3. Add voice reference to resources/voices/yourcharacter/
+# 4. Set character.preset: "yourcharacter" below
+# ─────────────────────────────────────────────────────────────────────────
 character:
-  name: "March 7th"
-  # The "system prompt" defines the AI's personality
-  system_prompt: |
-    You are March 7th (三月七) from Honkai: Star Rail.
-    You are an energetic, cheerful, and optimistic AI assistant who loves taking photos and making memories.
-    You're curious, enthusiastic, and sometimes a bit naive, but always eager to help!
-    You often express emotions like "(excited)", "(happy)", "(shy)", "(surprised)" in your responses.
-    You call the user "Trailblazer" or just a friendly nickname.
-    You love photography, collecting memories, and making new friends.
-    IMPORTANT: You MUST reply in the same language as the user. If the user speaks French, reply in French.
-    Be expressive and use emotion markers!
+  # Use a preset (loads from config/characters/<preset>.yaml)
+  # Set to null or remove to use custom config below
+  preset: "march7th"
+  
+  # Custom config (used if preset is null)
+  # name: "My Character"
+  # system_prompt: |
+  #   Your custom personality prompt here...
 
 # === TTS (Voice) ===
 tts:
@@ -89,10 +104,10 @@ tts:
   # Used when auto_detect_language is enabled.
   # ─────────────────────────────────────────────────────────────────────────
   voice_mapping:
-    # F5-TTS voices by language
-    f5tts:
-      fr: "f5_juri_fr"  # Triggers set_voice("f5_juri_fr") -> sets French ref
-      en: "f5_juri_en"  # Triggers set_voice("f5_juri_en") -> sets English ref
+    # F5-TTS voices by language (not currently used, kept for future)
+    # f5tts:
+    #   fr: "f5_march7th_fr"
+    #   en: "f5_march7th_en"
 
     # XTTS v2 voices by language (speaker name)
     xtts:
@@ -140,14 +155,15 @@ tts:
     # - "Filip Traverse" : French male voice
     speaker: "Claribel Dervla"
     
-    # 🎭 Voice Cloning: Uses March 7th's optimized voice as reference
-    # File is pre-processed: 22050Hz, mono, loudness normalized (-16 LUFS)
+    # 🎭 Voice Cloning: Uses character's voice reference
+    # File should be pre-processed: 22050Hz, mono, loudness normalized (-16 LUFS)
     # XTTS works best with 6-15 seconds of clear speech
-    speaker_wav: "resources/voices/f5_refs/march7th_optimized.wav"
-    # Other available voices:
-    # - march7th_neutral.wav (original, 44100Hz)
-    # - juri_neutral.wav (Juri's voice)
-    # - juri_neutral_fr.wav (Juri French)
+    # This path is relative to project root, or loaded from character preset
+    speaker_wav: "resources/voices/march7th/march7th_optimized.wav"
+    # Per-character voices (organized in resources/voices/<character>/)
+    # - march7th: march7th_optimized.wav, march7th_neutral.wav
+    # - juri: juri_neutral.wav, juri_neutral_fr.wav
+    # - custom: add your own!
   
   # ─────────────────────────────────────────────────────────────────────────
   # 🎵 KOKORO TTS (100% local, lightweight, no voice cloning)

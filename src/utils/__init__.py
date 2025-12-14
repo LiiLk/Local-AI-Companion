@@ -11,6 +11,12 @@ from .emotion_detector import (
     get_expression_for_text,
     strip_emotion_markers
 )
+from .character_loader import (
+    get_available_characters,
+    load_character_preset,
+    resolve_character_config,
+    get_character_info,
+)
 
 __all__ = [
     "detect_language", 
@@ -23,4 +29,9 @@ __all__ = [
     "detect_emotion",
     "get_expression_for_text",
     "strip_emotion_markers",
+    # Character management
+    "get_available_characters",
+    "load_character_preset",
+    "resolve_character_config",
+    "get_character_info",
 ]
