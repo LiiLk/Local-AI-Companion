@@ -88,15 +88,29 @@ def create_app() -> FastAPI:
     app.include_router(router, prefix="/api")
     app.include_router(websocket_router)
     
-    # Serve static files (frontend)
-    frontend_path = Path(__file__).parent.parent.parent / "frontend"
-    if frontend_path.exists():
-        app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
-        
-    # Serve assets (Live2D models, etc.)
+    # Serve assets FIRST (Live2D models, SDK) - must be before frontend catch-all
     assets_path = Path(__file__).parent.parent.parent / "assets"
     if assets_path.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
+        # Specific routes for desktop companion
+        sdk_path = assets_path / "live2d_sdk_web"
+        if sdk_path.exists():
+            app.mount("/live2d-sdk", StaticFiles(directory=str(sdk_path)), name="live2d-sdk")
+        models_path = assets_path / "models"
+        if models_path.exists():
+            app.mount("/live2d-models", StaticFiles(directory=str(models_path)), name="live2d-models")
+    
+    # Serve frontend files (including live2d/live2d.js and js/*.js)
+    frontend_path = Path(__file__).parent.parent.parent / "frontend"
+    if frontend_path.exists():
+        # Mount Live2D JS specifically
+        live2d_path = frontend_path / "live2d"
+        if live2d_path.exists():
+            app.mount("/live2d", StaticFiles(directory=str(live2d_path)), name="live2d")
+        # Mount specific paths first
+        app.mount("/frontend", StaticFiles(directory=str(frontend_path)), name="frontend-static")
+        # Then the HTML catch-all
+        app.mount("/", StaticFiles(directory=str(frontend_path), html=True), name="frontend")
     
     return app
 

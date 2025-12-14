@@ -8,12 +8,14 @@ class App {
         // Managers
         this.ws = null;
         this.audio = new AudioManager();
+        this.live2d = null;  // Live2D integration (optional)
 
         // State
         this.isStreaming = false;
         this.currentStreamContent = '';
         this.isSpeaking = false;
         this._modelsPreloaded = false;
+        this._live2dEnabled = false;
 
         // DOM Elements - Updated for new UI structure
         this.elements = {
@@ -67,6 +69,10 @@ class App {
         this.ws.onModelsReady = (msg) => this._showModelsReady(msg);
         this.ws.onModelsError = (msg) => this._showModelsError(msg);
         this.ws.onError = (error) => this._handleError(error);
+        
+        // Live2D callbacks (if enabled)
+        this.ws.onAudioWithLipSync = (msg) => this._handleAudioWithLipSync(msg);
+        this.ws.onExpressionChange = (msg) => this._handleExpressionChange(msg);
 
         // Audio callbacks
         this.audio.onRecordingStart = () => this._handleRecordingStart();
@@ -77,14 +83,18 @@ class App {
         };
         this.audio.onVolumeChange = (volume) => this._updateVolumeIndicator(volume);
 
-        // Playback events
+        // Playback events (only used when Live2D is not enabled)
         this.audio.onPlaybackStart = () => {
-            this.isSpeaking = true;
-            this._showStatus('🔊 Parole...', 90);
+            if (!this._live2dEnabled) {
+                this.isSpeaking = true;
+                this._showStatus('🔊 Parole...', 90);
+            }
         };
         this.audio.onPlaybackEnd = () => {
-            this.isSpeaking = false;
-            this._hideStatus();
+            if (!this._live2dEnabled) {
+                this.isSpeaking = false;
+                this._hideStatus();
+            }
         };
 
         // Event listeners
@@ -95,6 +105,67 @@ class App {
 
         // Listen for settings changes from UIController
         window.addEventListener('settings-changed', (e) => this._handleSettingsChange(e.detail));
+        
+        // Initialize Live2D if available
+        this._initLive2D();
+    }
+    
+    async _initLive2D() {
+        // Check if Live2D canvas exists and manager is available
+        const canvas = document.getElementById('live2d-canvas');
+        if (!canvas || typeof Live2DManager === 'undefined') {
+            console.log('[App] Live2D not available - running without avatar');
+            return;
+        }
+        
+        try {
+            // Create integration
+            this.live2d = new Live2DIntegration();
+            
+            // Initialize with config
+            const success = await this.live2d.init({
+                canvasId: 'live2d-canvas',
+                modelPath: '/assets/models/march7th/',
+                modelName: 'march 7th.model3.json',
+                scale: 0.85,
+                position: { x: 0.5, y: -0.2 },
+                debug: false
+            });
+            
+            if (success) {
+                this._live2dEnabled = true;
+                
+                // Hook up callbacks
+                this.live2d.onPlaybackStart = () => {
+                    this.isSpeaking = true;
+                    this._showStatus('🔊 Parole...', 90);
+                };
+                this.live2d.onPlaybackEnd = () => {
+                    this.isSpeaking = false;
+                    this._hideStatus();
+                };
+                
+                console.log('[App] ✅ Live2D initialized');
+            }
+        } catch (error) {
+            console.error('[App] Live2D init error:', error);
+        }
+    }
+    
+    _handleAudioWithLipSync(message) {
+        // If Live2D is enabled, use it for audio playback with lip-sync
+        if (this._live2dEnabled && this.live2d) {
+            this.live2d.handleAudioMessage(message);
+        } else {
+            // Fallback to regular audio playback
+            this.audio.playAudio(message.data);
+        }
+    }
+    
+    _handleExpressionChange(message) {
+        if (this._live2dEnabled && this.live2d) {
+            this.live2d.handleExpressionChange(message);
+        }
     }
 
     _setupEventListeners() {

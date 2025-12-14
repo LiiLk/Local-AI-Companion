@@ -26,6 +26,8 @@ from src.llm.base import Message
 from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, F5TTSProvider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
+from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
+from src.utils.emotion_detector import EmotionDetector, strip_emotion_markers
 
 websocket_router = APIRouter()
 
@@ -53,9 +55,12 @@ class ConversationState:
     is_recording: bool = False
     audio_buffer: list = field(default_factory=list)  # Buffer for streaming audio
     current_language: str = "fr"  # Track current language context
+    emotion_detector: Optional[EmotionDetector] = None  # For Live2D expressions
+    current_expression: str = "neutral"  # Current Live2D expression
     
     def __post_init__(self):
         self.config = load_config()
+        self.emotion_detector = EmotionDetector()
         
     async def initialize(self):
         """Initialize models (lazy loading)."""
@@ -276,7 +281,7 @@ class WebSocketManager:
             print(f"⚠️ Voice switch error: {e}")
 
     async def _process_tts_chunk(self, client_id: str, text: str):
-        """Generate and send audio for a text chunk."""
+        """Generate and send audio for a text chunk with lip-sync data."""
         if not text.strip():
             return
         
@@ -285,16 +290,35 @@ class WebSocketManager:
             return  # Client disconnected
         
         try:
-            # Update voice based on language (before cleaning, might capture context better)
+            # 1. Detect emotion BEFORE cleaning text
+            emotion = None
+            expression = None
+            if state.emotion_detector:
+                emotion = state.emotion_detector.detect(text)
+                if emotion:
+                    expression = state.emotion_detector.get_expression(emotion)
+                    if expression != state.current_expression:
+                        state.current_expression = expression
+                        print(f"😊 Expression change: {expression}")
+                        # Send expression change event
+                        await self.send_json(client_id, {
+                            "type": "expression_change",
+                            "expression": expression,
+                            "emotion": emotion
+                        })
+            
+            # 2. Update voice based on language
             await self._update_voice_for_language(state, text)
             
-            # Clean text for TTS (remove emojis, etc.)
+            # 3. Clean text for TTS (remove emojis, emotion markers, etc.)
+            if state.emotion_detector:
+                text = state.emotion_detector.strip_markers(text)
             text = self._clean_text_for_tts(text)
             
             if not text.strip():
                 return
             
-            # Lazy load TTS provider (can raise if dependency missing)
+            # Lazy load TTS provider
             tts = state.get_tts()
         except Exception as e:
             print(f"❌ TTS init error: {e}")
@@ -316,16 +340,38 @@ class WebSocketManager:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, tts.synthesize, text, temp_path)
             
-            # Read and encode audio
+            # Read full WAV file for browser playback
             with open(temp_path, "rb") as f:
                 audio_data = f.read()
             
-            # Send as base64
+            # 4. Extract volume data for lip-sync
+            volumes = []
+            duration_ms = 0
+            try:
+                pcm_data, sample_rate = read_wav_pcm(temp_path)
+                volumes = analyze_audio_volumes(
+                    pcm_data, 
+                    sample_rate=sample_rate,
+                    chunk_ms=50  # 50ms chunks = 20 values per second
+                )
+                duration_ms = calculate_audio_duration_ms(pcm_data, sample_rate)
+            except Exception as e:
+                print(f"⚠️ Volume analysis error: {e}")
+            
+            # 5. Send audio with lip-sync data
             audio_base64 = base64.b64encode(audio_data).decode("utf-8")
             await self.send_json(client_id, {
                 "type": "audio_data",
                 "data": audio_base64,
-                "format": "wav"
+                "format": "wav",
+                # Live2D lip-sync data
+                "lip_sync": {
+                    "volumes": volumes,
+                    "duration_ms": duration_ms,
+                    "chunk_ms": 50
+                },
+                "expression": expression,
+                "text": text
             })
             
             # Cleanup

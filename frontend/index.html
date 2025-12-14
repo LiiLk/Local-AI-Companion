@@ -328,6 +328,22 @@
 
     <!-- Audio elements -->
     <audio id="audio-player" style="display: none;"></audio>
+    
+    <!-- Live2D Container (overlay on right side) -->
+    <div id="live2d-container" class="live2d-container">
+        <canvas id="live2d-canvas"></canvas>
+        <!-- Debug overlay (hidden by default) -->
+        <div id="live2d-debug" class="live2d-debug">
+            <div>FPS: <span id="fps">0</span></div>
+            <div>Expression: <span id="expression-name">neutral</span></div>
+            <div>Lip: <span id="lip-value">0.00</span></div>
+        </div>
+    </div>
+
+    <!-- Live2D Scripts -->
+    <script src="/assets/live2d_sdk_web/Core/live2dcubismcore.min.js"></script>
+    <script src="/frontend/live2d/live2d.js"></script>
+    <script src="/frontend/js/live2d-integration.js"></script>
 
     <!-- Scripts -->
     <script src="js/websocket.js"></script>

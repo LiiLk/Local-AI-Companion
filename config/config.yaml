@@ -140,10 +140,14 @@ tts:
     # - "Filip Traverse" : French male voice
     speaker: "Claribel Dervla"
     
-    # 🎭 Voice Cloning: Uses Juri's voice as reference
-    # Only 6 seconds of clear audio needed!
-    speaker_wav: "resources/voices/f5_refs/juri_neutral.wav"
-    # For French-specific reference, use: juri_neutral_fr.wav
+    # 🎭 Voice Cloning: Uses March 7th's optimized voice as reference
+    # File is pre-processed: 22050Hz, mono, loudness normalized (-16 LUFS)
+    # XTTS works best with 6-15 seconds of clear speech
+    speaker_wav: "resources/voices/f5_refs/march7th_optimized.wav"
+    # Other available voices:
+    # - march7th_neutral.wav (original, 44100Hz)
+    # - juri_neutral.wav (Juri's voice)
+    # - juri_neutral_fr.wav (Juri French)
   
   # ─────────────────────────────────────────────────────────────────────────
   # 🎵 KOKORO TTS (100% local, lightweight, no voice cloning)

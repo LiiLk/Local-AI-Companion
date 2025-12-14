@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Companion</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: transparent;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #live2d-canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        
+        /* Status indicator */
+        #status {
+            position: fixed;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            font-size: 12px;
+            padding: 5px 15px;
+            border-radius: 15px;
+            display: none;
+            z-index: 100;
+        }
+        #status.visible { display: block; }
+        
+        /* Speech bubble - positioned at bottom to not hide avatar */
+        #speech-bubble {
+            position: fixed;
+            bottom: 80px;
+            left: 15px;
+            right: 15px;
+            max-height: 100px;
+            background: rgba(30, 30, 40, 0.85);
+            color: #f0f0f5;
+            font-size: 13px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(99, 102, 241, 0.25);
+            overflow-y: auto;
+            display: none;
+            z-index: 100;
+            box-shadow: 0 2px 15px rgba(0, 0, 0, 0.4);
+            line-height: 1.3;
+            backdrop-filter: blur(5px);
+        }
+        #speech-bubble.visible { display: block; }
+        
+        /* Controls area */
+        #controls {
+            position: fixed;
+            bottom: 15px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            z-index: 100;
+        }
+        
+        #text-input {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            border-radius: 20px;
+            background: rgba(30, 30, 40, 0.9);
+            color: #f0f0f5;
+            font-size: 14px;
+            outline: none;
+        }
+        #text-input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+        }
+        #text-input::placeholder { color: rgba(240, 240, 245, 0.5); }
+        
+        .ctrl-btn {
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .ctrl-btn:hover { transform: scale(1.05); }
+        .ctrl-btn:active { transform: scale(0.95); }
+        .ctrl-btn svg { width: 18px; height: 18px; }
+        
+        #send-btn {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+        }
+        #send-btn svg { fill: white; }
+        
+        #mic-btn {
+            background: rgba(99, 102, 241, 0.2);
+            border: 2px solid #6366f1;
+        }
+        #mic-btn svg { fill: #6366f1; }
+        #mic-btn.recording {
+            background: rgba(239, 68, 68, 0.3);
+            border-color: #ef4444;
+            animation: pulse 1.5s infinite;
+        }
+        #mic-btn.recording svg { fill: #ef4444; }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+        
+        /* Connection indicator */
+        #connection {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ef4444;
+            transition: background 0.3s;
+        }
+        #connection.connected { background: #22c55e; }
+    </style>
+</head>
+<body>
+    <canvas id="live2d-canvas"></canvas>
+    
+    <div id="connection"></div>
+    <div id="speech-bubble"></div>
+    <div id="status">Loading...</div>
+    
+    <!-- Controls -->
+    <div id="controls">
+        <button id="mic-btn" class="ctrl-btn" title="Hold to speak (or click to toggle)">
+            <svg viewBox="0 0 24 24">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
+            </svg>
+        </button>
+        <input type="text" id="text-input" placeholder="Type a message..." autocomplete="off">
+        <button id="send-btn" class="ctrl-btn" title="Send">
+            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+    </div>
+    
+    <!-- Live2D SDK -->
+    <script src="/live2d-sdk/Core/live2dcubismcore.min.js"></script>
+    <script src="/live2d/live2d.js"></script>
+    
+    <script>
+        // Configuration
+        const CONFIG = {
+            modelPath: '/live2d-models/march7th/',
+            modelName: 'march 7th.model3.json'
+        };
+        
+        // State
+        let ws = null;
+        let currentText = '';
+        let isRecording = false;
+        let audioContext = null;
+        let mediaStream = null;
+        let scriptProcessor = null;
+        
+        // Desktop API bridge
+        const DesktopBridge = {
+            get api() {
+                return window.pywebview ? window.pywebview.api : null;
+            },
+            
+            // Audio queue for TTS playback
+            audioQueue: [],
+            isPlaying: false,
+            playbackContext: null,
+            
+            async playAudioWithLipSync(base64Audio, lipSyncData, expression) {
+                this.audioQueue.push({ base64Audio, lipSyncData, expression });
+                if (!this.isPlaying) {
+                    this._playNext();
+                }
+            },
+            
+            async _playNext() {
+                if (this.audioQueue.length === 0) {
+                    this.isPlaying = false;
+                    return;
+                }
+                
+                this.isPlaying = true;
+                const item = this.audioQueue.shift();
+                
+                try {
+                    console.log('🔊 Playing audio, queue length:', this.audioQueue.length);
+                    
+                    // Set expression
+                    if (item.expression && Live2DManager?.setExpression) {
+                        Live2DManager.setExpression(item.expression);
+                    }
+                    
+                    // Decode audio from base64
+                    const audioData = atob(item.base64Audio);
+                    const arrayBuffer = new ArrayBuffer(audioData.length);
+                    const view = new Uint8Array(arrayBuffer);
+                    for (let i = 0; i < audioData.length; i++) {
+                        view[i] = audioData.charCodeAt(i);
+                    }
+                    
+                    console.log('🔊 Audio data size:', arrayBuffer.byteLength, 'bytes');
+                    
+                    // Create or resume AudioContext
+                    if (!this.playbackContext) {
+                        this.playbackContext = new AudioContext();
+                        console.log('🔊 Created AudioContext, state:', this.playbackContext.state);
+                    }
+                    
+                    // Resume if suspended (browser autoplay policy)
+                    if (this.playbackContext.state === 'suspended') {
+                        console.log('🔊 Resuming suspended AudioContext...');
+                        await this.playbackContext.resume();
+                        console.log('🔊 AudioContext resumed, state:', this.playbackContext.state);
+                    }
+                    
+                    const audioBuffer = await this.playbackContext.decodeAudioData(arrayBuffer);
+                    console.log('🔊 Decoded audio:', audioBuffer.duration.toFixed(2), 'seconds');
+                    
+                    const source = this.playbackContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(this.playbackContext.destination);
+                    
+                    // Lip-sync animation
+                    if (item.lipSyncData?.volumes && item.lipSyncData.volumes.length > 0) {
+                        console.log('🔊 Starting lip-sync with', item.lipSyncData.volumes.length, 'frames');
+                        this._animateLipSync(item.lipSyncData);
+                    }
+                    
+                    source.onended = () => {
+                        console.log('🔊 Audio playback ended');
+                        this._playNext();
+                    };
+                    source.start(0);
+                    console.log('🔊 Audio started playing');
+                    
+                } catch (error) {
+                    console.error('❌ Audio playback error:', error);
+                    this._playNext();
+                }
+            },
+            
+            _animateLipSync(data) {
+                const { volumes, chunk_ms = 50 } = data;
+                const startTime = performance.now();
+                
+                const animate = () => {
+                    const elapsed = performance.now() - startTime;
+                    const index = Math.floor(elapsed / chunk_ms);
+                    
+                    if (index >= volumes.length) {
+                        Live2DManager?.setLipSync?.(0);
+                        return;
+                    }
+                    
+                    Live2DManager?.setLipSync?.(volumes[index] || 0);
+                    requestAnimationFrame(animate);
+                };
+                
+                requestAnimationFrame(animate);
+            },
+            
+            showSpeechBubble(text) {
+                const bubble = document.getElementById('speech-bubble');
+                bubble.textContent = text;
+                bubble.classList.add('visible');
+                
+                clearTimeout(this._bubbleTimeout);
+                this._bubbleTimeout = setTimeout(() => {
+                    bubble.classList.remove('visible');
+                }, 8000);
+            },
+            
+            appendSpeechBubble(text) {
+                currentText += text;
+                const bubble = document.getElementById('speech-bubble');
+                bubble.textContent = currentText;
+                bubble.classList.add('visible');
+                
+                // Auto-scroll to bottom
+                bubble.scrollTop = bubble.scrollHeight;
+                
+                clearTimeout(this._bubbleTimeout);
+                this._bubbleTimeout = setTimeout(() => {
+                    bubble.classList.remove('visible');
+                    currentText = '';
+                }, 10000);  // 10s pour avoir le temps de lire
+            },
+            
+            showStatus(text) {
+                const status = document.getElementById('status');
+                status.textContent = text;
+                status.classList.add('visible');
+            },
+            
+            hideStatus() {
+                document.getElementById('status').classList.remove('visible');
+            },
+            
+            setConnected(connected) {
+                document.getElementById('connection').classList.toggle('connected', connected);
+            }
+        };
+        
+        // ============ WebSocket ============
+        function connectWebSocket() {
+            const wsUrl = `ws://${window.location.host}/ws/desktop_${Date.now()}`;
+            console.log('Connecting to:', wsUrl);
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('✅ WebSocket connected');
+                DesktopBridge.setConnected(true);
+                DesktopBridge.hideStatus();
+                
+                // Request model preload
+                ws.send(JSON.stringify({ type: 'preload_models' }));
+            };
+            
+            ws.onclose = () => {
+                console.log('❌ WebSocket disconnected');
+                DesktopBridge.setConnected(false);
+                DesktopBridge.showStatus('Disconnected - Reconnecting...');
+                setTimeout(connectWebSocket, 2000);
+            };
+            
+            ws.onerror = (e) => console.error('WebSocket error:', e);
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error('Message parse error:', e);
+                }
+            };
+        }
+        
+        function handleMessage(data) {
+            console.log('📨 Received:', data.type, data);
+            
+            switch (data.type) {
+                case 'text_start':
+                    currentText = '';
+                    break;
+                    
+                case 'text_chunk':
+                    DesktopBridge.appendSpeechBubble(data.content || '');
+                    break;
+                    
+                case 'text_end':
+                    break;
+                    
+                case 'audio_data':
+                    console.log('🔊 Audio received, lip_sync:', data.lip_sync);
+                    DesktopBridge.playAudioWithLipSync(
+                        data.data,
+                        data.lip_sync || {},
+                        data.expression || ''
+                    );
+                    break;
+                    
+                case 'expression_change':
+                    Live2DManager?.setExpression?.(data.expression);
+                    break;
+                    
+                case 'transcription':
+                    if (data.text) {
+                        DesktopBridge.showSpeechBubble('🎤 ' + data.text);
+                    }
+                    break;
+                    
+                case 'vad_start':
+                    console.log('🎤 VAD start');
+                    break;
+                    
+                case 'vad_end':
+                    console.log('🎤 VAD end');
+                    break;
+                    
+                case 'transcribing':
+                    DesktopBridge.showStatus('Transcribing...');
+                    break;
+                    
+                case 'models_loading':
+                case 'model_loading':
+                    DesktopBridge.showStatus(data.message);
+                    break;
+                    
+                case 'models_ready':
+                case 'model_loaded':
+                    DesktopBridge.hideStatus();
+                    break;
+                    
+                case 'error':
+                    console.error('Server error:', data.message);
+                    DesktopBridge.showStatus('Error: ' + data.message);
+                    setTimeout(() => DesktopBridge.hideStatus(), 3000);
+                    break;
+            }
+        }
+        
+        // ============ Text Input ============
+        function sendText(text) {
+            if (!text.trim()) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                console.error('WebSocket not connected');
+                DesktopBridge.showStatus('Not connected!');
+                return;
+            }
+            
+            console.log('📤 Sending text:', text);
+            ws.send(JSON.stringify({
+                type: 'text',
+                content: text.trim()
+            }));
+            
+            document.getElementById('text-input').value = '';
+        }
+        
+        // ============ Microphone ============
+        async function startMicrophone() {
+            if (isRecording) return;
+            
+            try {
+                // Get microphone access
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+                
+                // Create audio context at 16kHz for VAD
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                
+                // Script processor to get raw audio samples
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                scriptProcessor.onaudioprocess = (e) => {
+                    if (!isRecording || !ws || ws.readyState !== WebSocket.OPEN) return;
+                    
+                    const inputData = e.inputBuffer.getChannelData(0);
+                    // Convert to array for JSON
+                    const samples = Array.from(inputData);
+                    
+                    ws.send(JSON.stringify({
+                        type: 'audio_stream',
+                        samples: samples
+                    }));
+                };
+                
+                source.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+                
+                isRecording = true;
+                document.getElementById('mic-btn').classList.add('recording');
+                console.log('🎤 Microphone started');
+                
+            } catch (error) {
+                console.error('Microphone error:', error);
+                DesktopBridge.showStatus('Mic error: ' + error.message);
+            }
+        }
+        
+        function stopMicrophone() {
+            if (!isRecording) return;
+            
+            isRecording = false;
+            document.getElementById('mic-btn').classList.remove('recording');
+            
+            // Send mic_stop to trigger VAD end
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'mic_stop' }));
+            }
+            
+            // Cleanup audio
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                scriptProcessor = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            
+            console.log('🎤 Microphone stopped');
+        }
+        
+        function toggleMicrophone() {
+            if (isRecording) {
+                stopMicrophone();
+            } else {
+                startMicrophone();
+            }
+        }
+        
+        // ============ Initialize ============
+        document.addEventListener('DOMContentLoaded', async () => {
+            DesktopBridge.showStatus('Loading avatar...');
+            
+            try {
+                await Live2DManager.init({
+                    canvasId: 'live2d-canvas',
+                    modelPath: CONFIG.modelPath,
+                    modelName: CONFIG.modelName,
+                    scale: 0.85,
+                    position: { x: 0, y: -0.15 },
+                    debug: false
+                });
+                
+                console.log('✅ Live2D initialized');
+                DesktopBridge.showStatus('Connecting...');
+                connectWebSocket();
+                
+            } catch (error) {
+                console.error('Init error:', error);
+                DesktopBridge.showStatus('Error: ' + error.message);
+            }
+            
+            // Input handlers
+            const input = document.getElementById('text-input');
+            const sendBtn = document.getElementById('send-btn');
+            const micBtn = document.getElementById('mic-btn');
+            
+            // Pre-initialize AudioContext on first user interaction (bypass autoplay policy)
+            const initAudioOnInteraction = () => {
+                if (!DesktopBridge.playbackContext) {
+                    DesktopBridge.playbackContext = new AudioContext();
+                    console.log('🔊 AudioContext pre-initialized on user interaction');
+                }
+                if (DesktopBridge.playbackContext.state === 'suspended') {
+                    DesktopBridge.playbackContext.resume();
+                }
+                // Remove listeners after first interaction
+                document.removeEventListener('click', initAudioOnInteraction);
+                document.removeEventListener('keydown', initAudioOnInteraction);
+            };
+            document.addEventListener('click', initAudioOnInteraction);
+            document.addEventListener('keydown', initAudioOnInteraction);
+            
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendText(input.value);
+            });
+            
+            sendBtn.addEventListener('click', () => sendText(input.value));
+            
+            // Mic button - click to toggle
+            micBtn.addEventListener('click', toggleMicrophone);
+            
+            // Optional: Hold to talk (mousedown/mouseup)
+            // micBtn.addEventListener('mousedown', startMicrophone);
+            // micBtn.addEventListener('mouseup', stopMicrophone);
+            // micBtn.addEventListener('mouseleave', stopMicrophone);
+        });
+        
+        window.DesktopBridge = DesktopBridge;
+    </script>
+</body>
+</html>

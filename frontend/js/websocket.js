@@ -19,6 +19,10 @@ class WebSocketManager {
         this.onStreamEnd = null;
         this.onAudio = null;
         this.onError = null;
+        
+        // Live2D callbacks
+        this.onAudioWithLipSync = null;  // For Live2D integration
+        this.onExpressionChange = null;  // For Live2D expressions
     }
     
     connect() {
@@ -148,8 +152,19 @@ class WebSocketManager {
                     break;
                     
                 case 'audio_data':
-                    if (this.onAudioData) {
+                    // Check if we have Live2D lip-sync data
+                    if (this.onAudioWithLipSync && message.lip_sync) {
+                        this.onAudioWithLipSync(message);
+                    } else if (this.onAudioData) {
                         this.onAudioData(message.data);
+                    }
+                    break;
+                    
+                case 'expression_change':
+                    // Live2D expression change
+                    console.log('Expression change:', message.expression);
+                    if (this.onExpressionChange) {
+                        this.onExpressionChange(message);
                     }
                     break;
                     

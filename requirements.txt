@@ -28,3 +28,11 @@ torchaudio>=2.1.0      # Needed for XTTS/F5-TTS audio save
 pywebview>=5.0.0       # Transparent window for Live2D avatar
 pynput>=1.7.0          # Global hotkeys (F11, F12)
 numpy>=1.24.0          # Audio analysis for lip-sync
+
+# Desktop Companion (optional)
+pystray>=0.19.0        # System tray icon
+pillow>=10.0.0         # Image handling for tray icon
+
+# Language Detection (for auto voice switching)
+langdetect>=1.0.9      # Language detection
+emoji>=2.0.0           # Emoji removal for TTS

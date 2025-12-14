@@ -27,28 +27,28 @@ class F5TTSProvider(BaseTTS):
         self._model = None
         self.sample_rate = 24000 # F5 default
         
-        # Reference definitions
+        # Reference definitions (March 7th voice)
         self.ref_dir = Path("resources/voices/f5_refs")
         self.refs = {
             "neutral": {
-                "file": self.ref_dir / "juri_neutral.wav",
-                "text": "My kicks will make you feel real good."
+                "file": self.ref_dir / "march7th_neutral.wav",
+                "text": "Hey Trailblazer! Ready for another adventure?"
             },
             "neutral_fr": {
-                "file": self.ref_dir / "juri_neutral_fr.wav",
-                "text": "Salut, je suis Juri. Prête pour le combat ? Ça va faire mal."
+                "file": self.ref_dir / "march7th_neutral.wav",
+                "text": "Salut Pionnier ! Prêt pour une nouvelle aventure ?"
             },
             "happy": {
-                "file": self.ref_dir / "juri_happy.wav",
-                "text": ""
+                "file": self.ref_dir / "march7th_neutral.wav",
+                "text": "This is so exciting! Let's go!"
             },
             "sad": {
-                "file": self.ref_dir / "juri_sad.wav",
-                "text": ""
+                "file": self.ref_dir / "march7th_neutral.wav",
+                "text": "Oh... that's a bit sad."
             },
             "angry": {
-                "file": self.ref_dir / "juri_angry.wav",
-                "text": ""
+                "file": self.ref_dir / "march7th_neutral.wav",
+                "text": "Hey! That's not fair!"
             }
         }
         

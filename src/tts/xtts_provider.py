@@ -25,12 +25,12 @@ import soundfile as sf
 from .base import BaseTTS, TTSResult
 import re
 
-# Emotion map
+# Emotion map (using March 7th's optimized voice - 22050Hz, normalized)
 EMOTION_REFS = {
-    "neutral": "resources/voices/f5_refs/juri_neutral.wav",
-    "happy": "resources/voices/f5_refs/juri_neutral.wav",
-    "sad": "resources/voices/f5_refs/juri_neutral.wav",
-    "angry": "resources/voices/f5_refs/juri_neutral.wav"
+    "neutral": "resources/voices/f5_refs/march7th_optimized.wav",
+    "happy": "resources/voices/f5_refs/march7th_optimized.wav",
+    "sad": "resources/voices/f5_refs/march7th_optimized.wav",
+    "angry": "resources/voices/f5_refs/march7th_optimized.wav"
 }
 
 logger = logging.getLogger(__name__)
@@ -302,12 +302,16 @@ class XTTSProvider(BaseTTS):
         
         if self.speaker_wav and self.speaker_wav.exists():
             # Voice cloning - compute embedding from audio
+            # Optimized parameters for better voice similarity:
+            # - gpt_cond_len=6: Shorter context for more focused voice capture
+            # - gpt_cond_chunk_len=6: Match the conditioning length
+            # - max_ref_length=30: Use up to 30s of reference (our file is ~12s)
             logger.info(f"🔄 Computing speaker embedding from: {self.speaker_wav}")
             gpt_cond_latent, speaker_embedding = xtts_model.get_conditioning_latents(
                 audio_path=str(self.speaker_wav),
-                gpt_cond_len=30,
-                gpt_cond_chunk_len=4,
-                max_ref_length=60
+                gpt_cond_len=6,
+                gpt_cond_chunk_len=6,
+                max_ref_length=30
             )
         else:
             # Built-in speaker - get from speaker manager
@@ -421,16 +425,22 @@ class XTTSProvider(BaseTTS):
                 # Use low-level API with cached embeddings (faster!)
                 xtts_model = model.synthesizer.tts_model
                 
+                # Optimized inference parameters for natural voice cloning:
+                # - temperature=0.75: Slightly higher for more natural variation
+                # - repetition_penalty=5.0: Less aggressive, more natural flow
+                # - top_p=0.8: Allow more variation for expressiveness
+                # - speed=1.0: Normal speed (can adjust 0.8-1.2)
                 out = xtts_model.inference(
                     text=text,
                     language=lang,
                     gpt_cond_latent=gpt_cond_latent,
                     speaker_embedding=speaker_embedding,
-                    temperature=0.7,
+                    temperature=0.75,
                     length_penalty=1.0,
-                    repetition_penalty=10.0,
+                    repetition_penalty=5.0,
                     top_k=50,
-                    top_p=0.85,
+                    top_p=0.8,
+                    speed=1.0,
                     enable_text_splitting=True
                 )
                 
