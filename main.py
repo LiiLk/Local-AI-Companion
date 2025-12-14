@@ -22,7 +22,7 @@ from pathlib import Path
 
 from src.llm import OllamaLLM
 from src.llm.base import Message
-from src.tts import EdgeTTSProvider, KokoroProvider, XTTSProvider
+from src.tts import EdgeTTSProvider, KokoroProvider, XTTSProvider, GPTSoVITSProvider
 from src.tts.base import BaseTTS
 from src.asr import RealtimeWhisperProvider
 from src.asr.base import BaseASR
@@ -73,7 +73,7 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
     Create the appropriate TTS provider.
     
     Args:
-        provider: "xtts", "kokoro" or "edge"
+        provider: "gpt_sovits", "xtts", "kokoro" or "edge"
         tts_config: TTS configuration from config.yaml
         
     Returns:
@@ -83,7 +83,10 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
     auto_detect = tts_config.get("auto_detect_language", False)
     voice_mapping = tts_config.get("voice_mapping", {})
     
-    if provider == "xtts":
+    if provider == "gpt_sovits":
+        # GPT-SoVITS - Best voice cloning quality (requires server)
+        return GPTSoVITSProvider(tts_config)
+    elif provider == "xtts":
         # XTTS v2 - High quality multilingual voice cloning
         from pathlib import Path
         xtts_config = tts_config.get("xtts", {})

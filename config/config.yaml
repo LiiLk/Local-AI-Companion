@@ -70,11 +70,56 @@ character:
 # === TTS (Voice) ===
 tts:
   # Default TTS provider:
-  # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM) ⭐ RECOMMENDED
+  # - "gpt_sovits" : GPT-SoVITS v4 (BEST voice cloning, requires server) ⭐ BEST QUALITY
+  # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM)
   # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
   # - "f5tts"  : F5-TTS (Emotional support, ~4GB VRAM)
   # - "edge"   : Edge TTS (Microsoft cloud, free)
-  provider: "xtts"
+  provider: "gpt_sovits"
+  
+  # ─────────────────────────────────────────────────────────────────────────
+  # 🔥 GPT-SOVITS (Best Voice Cloning) ⭐ RECOMMENDED FOR QUALITY
+  # ─────────────────────────────────────────────────────────────────────────
+  # - Zero-shot voice cloning with ~5 seconds of audio
+  # - V4 model: 48kHz output, fixes metallic artifacts from v3
+  # - RTF: 0.028 on RTX 4060Ti, 0.014 on RTX 4090 (very fast!)
+  # - Languages: Chinese, English, Japanese, Korean, Cantonese, French
+  # - Requires: GPT-SoVITS server running (python api.py -p 9880)
+  # 
+  # SETUP:
+  # 1. Clone GPT-SoVITS: git clone https://github.com/RVC-Boss/GPT-SoVITS
+  # 2. Install: pip install -r requirements.txt
+  # 3. Download models from HuggingFace (see their README)
+  # 4. Start server: python api.py -p 9880
+  # 5. Set provider: "gpt_sovits" above
+  # ─────────────────────────────────────────────────────────────────────────
+  gpt_sovits:
+    # API server URL
+    api_url: "http://127.0.0.1:9880"
+    
+    # API version: "v1" (api.py) or "v2" (api_v2.py)
+    api_version: "v1"
+    
+    # Reference audio for voice cloning (path to .wav file)
+    # Use a clean, 5-30 second recording of the target voice
+    ref_audio_path: "resources/voices/juri_neutral.wav"
+    
+    # Text spoken in the reference audio (optional, improves quality)
+    # Leave empty if unknown
+    ref_text: ""
+    
+    # Language of reference audio: zh, en, ja, ko, yue, fr
+    ref_language: "ja"
+    
+    # Target synthesis language: zh, en, ja, ko, yue, fr
+    language: "fr"
+    
+    # Synthesis parameters
+    speed: 1.0           # Speech speed (0.5 = half, 2.0 = double)
+    top_k: 15            # Top-K sampling
+    top_p: 0.6           # Top-P (nucleus) sampling
+    temperature: 0.6     # Sampling temperature (higher = more varied)
+    sample_steps: 32     # VITS steps for v3/v4 (higher = better quality, slower)
   
   # ─────────────────────────────────────────────────────────────────────────
   # ⚡ STREAMING TTS (sentence-by-sentence)
