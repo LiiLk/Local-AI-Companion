@@ -23,7 +23,7 @@ import yaml
 
 from src.llm import OllamaLLM, LlamaCppProvider
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, F5TTSProvider, GPTSoVITSProvider
+from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, F5TTSProvider, GPTSoVITSProvider, CosyVoice3Provider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
@@ -105,7 +105,12 @@ class ConversationState:
             
             print(f"🔊 Loading TTS provider: {provider} (auto_detect={auto_detect})")
             
-            if provider == "gpt_sovits":
+            if provider == "cosyvoice3":
+                # CosyVoice3 - State-of-the-art zero-shot voice cloning (~2GB VRAM)
+                cv3_config = tts_config.get("cosyvoice3", {})
+                print(f"   CosyVoice3 config: api={cv3_config.get('api_url', 'http://127.0.0.1:9881')}")
+                self.tts = CosyVoice3Provider(config=self.config)
+            elif provider == "gpt_sovits":
                 # GPT-SoVITS - Best voice cloning quality (requires server)
                 sovits_config = tts_config.get("gpt_sovits", {})
                 print(f"   GPT-SoVITS config: api={sovits_config.get('api_url', 'http://127.0.0.1:9880')}")

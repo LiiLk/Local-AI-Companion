@@ -1,7 +1,7 @@
 # TTS Module - Text-to-Speech implementations
 #
 # Providers:
-# - GPTSoVITSProvider : Best voice cloning quality, requires server ⭐ BEST QUALITY
+# - CosyVoice3Provider: State-of-the-art 0.5B model, 9 languages, zero-shot cloning ⭐ BEST QUALITY
 # - XTTSProvider      : Multilingual voice cloning, 17 languages, ~2.8GB VRAM
 # - KokoroProvider    : Lightweight local 82M params, good quality, no voice cloning
 # - EdgeTTSProvider   : Microsoft cloud (free fallback)
@@ -12,7 +12,7 @@ from .edge_tts_provider import EdgeTTSProvider
 from .kokoro_provider import KokoroProvider
 from .xtts_provider import XTTSProvider
 from .f5_tts_provider import F5TTSProvider
-from .gpt_sovits_provider import GPTSoVITSProvider
+from .cosyvoice3_provider import CosyVoice3Provider
 
 __all__ = [
     "BaseTTS", 
@@ -22,5 +22,5 @@ __all__ = [
     "KokoroProvider",
     "XTTSProvider",
     "F5TTSProvider",
-    "GPTSoVITSProvider",
+    "CosyVoice3Provider",
 ]

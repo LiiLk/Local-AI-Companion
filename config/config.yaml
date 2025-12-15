@@ -70,56 +70,49 @@ character:
 # === TTS (Voice) ===
 tts:
   # Default TTS provider:
-  # - "gpt_sovits" : GPT-SoVITS v4 (BEST voice cloning, requires server) ⭐ BEST QUALITY
-  # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM)
-  # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
-  # - "f5tts"  : F5-TTS (Emotional support, ~4GB VRAM)
-  # - "edge"   : Edge TTS (Microsoft cloud, free)
-  provider: "gpt_sovits"
+  # - "cosyvoice3": CosyVoice3 0.5B (BEST quality, 9 languages, zero-shot cloning) ⭐ BEST QUALITY
+  # - "xtts"      : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM)
+  # - "kokoro"    : Kokoro 82M (local, natural, lightweight, no voice cloning)
+  # - "f5tts"     : F5-TTS (Emotional support, ~4GB VRAM)
+  # - "edge"      : Edge TTS (Microsoft cloud, free)
+  provider: "cosyvoice3"
   
   # ─────────────────────────────────────────────────────────────────────────
-  # 🔥 GPT-SOVITS (Best Voice Cloning) ⭐ RECOMMENDED FOR QUALITY
+  # 🎤 COSYVOICE3 0.5B (State-of-the-Art) ⭐ RECOMMENDED FOR QUALITY
   # ─────────────────────────────────────────────────────────────────────────
-  # - Zero-shot voice cloning with ~5 seconds of audio
-  # - V4 model: 48kHz output, fixes metallic artifacts from v3
-  # - RTF: 0.028 on RTX 4060Ti, 0.014 on RTX 4090 (very fast!)
-  # - Languages: Chinese, English, Japanese, Korean, Cantonese, French
-  # - Requires: GPT-SoVITS server running (python api.py -p 9880)
-  # 
+  # - Zero-shot voice cloning with any reference audio
+  # - Only 0.5B params (~2GB VRAM), fits with Qwen3-VL (~7GB) = ~9GB total ✅
+  # - 9 native languages: EN, ZH, JA, KO, DE, ES, FR, IT, RU
+  # - ~150ms latency (faster than XTTS!)
+  # - Apache 2.0 license (commercial use OK)
+  # - Outperforms F5-TTS, XTTS v2 in benchmarks (WER 0.81, Similarity 77.4%)
+  # - Uses RL-tuned model (llm.rl.pt) for better quality ⭐
+  #
   # SETUP:
-  # 1. Clone GPT-SoVITS: git clone https://github.com/RVC-Boss/GPT-SoVITS
-  # 2. Install: pip install -r requirements.txt
-  # 3. Download models from HuggingFace (see their README)
-  # 4. Start server: python api.py -p 9880
-  # 5. Set provider: "gpt_sovits" above
+  # 1. Start server: ./scripts/start_cosyvoice3.sh start
+  # 2. Reference audio prepared at resources/voices/
+  # 3. Server runs in separate conda env (Python 3.10 required)
   # ─────────────────────────────────────────────────────────────────────────
-  gpt_sovits:
-    # API server URL
-    api_url: "http://127.0.0.1:9880"
-    
-    # API version: "v1" (api.py) or "v2" (api_v2.py)
-    api_version: "v1"
-    
+  cosyvoice3:
+    # API URL of the CosyVoice3 server
+    # Start server with: ./scripts/start_cosyvoice3.sh start
+    api_url: "http://127.0.0.1:9881"
+
     # Reference audio for voice cloning (path to .wav file)
-    # Use a clean, 5-30 second recording of the target voice
-    ref_audio_path: "resources/voices/juri_neutral.wav"
-    
-    # Text spoken in the reference audio (optional, improves quality)
-    # Leave empty if unknown
-    ref_text: ""
-    
-    # Language of reference audio: zh, en, ja, ko, yue, fr
-    ref_language: "ja"
-    
-    # Target synthesis language: zh, en, ja, ko, yue, fr
+    # CosyVoice3 works best with clean, clear speech (10-30 seconds)
+    # Using march7th_neutral.wav for consistency with character preset
+    ref_audio_path: "resources/voices/march7th/march7th_neutral.wav"
+
+    # Transcription of the reference audio (for better zero-shot cloning)
+    # This text should match what is said in the reference audio
+    # Improves voice similarity significantly!
+    prompt_text: "Every time I'm done sorting my album and look out the window, I always want to take another picture. Even though I've seen the view a thousand times, I still feel happy looking at the stars like this."
+
+    # Default language: fr, en, ja, ko, de, es, it, ru, zh
     language: "fr"
-    
-    # Synthesis parameters
-    speed: 1.0           # Speech speed (0.5 = half, 2.0 = double)
-    top_k: 15            # Top-K sampling
-    top_p: 0.6           # Top-P (nucleus) sampling
-    temperature: 0.6     # Sampling temperature (higher = more varied)
-    sample_steps: 32     # VITS steps for v3/v4 (higher = better quality, slower)
+
+    # Speech speed factor (default: 1.0)
+    speed: 1.0
   
   # ─────────────────────────────────────────────────────────────────────────
   # ⚡ STREAMING TTS (sentence-by-sentence)

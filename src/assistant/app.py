@@ -103,7 +103,7 @@ class Live2DAssistant:
         """Create ASR, LLM, TTS, and pipeline components."""
         from src.llm import OllamaLLM
         from src.llm.llamacpp_provider import LlamaCppProvider
-        from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, GPTSoVITSProvider
+        from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, GPTSoVITSProvider, CosyVoice3Provider
         from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
         
         llm_config = self.config.get('llm', {})
@@ -136,7 +136,11 @@ class Live2DAssistant:
         
         # Create TTS
         tts_provider = tts_config.get('provider', 'kokoro')
-        if tts_provider == 'gpt_sovits':
+        if tts_provider == 'cosyvoice3':
+            cv3_cfg = tts_config.get('cosyvoice3', {})
+            tts = CosyVoice3Provider(config=config)
+            logger.info(f"🔊 TTS: CosyVoice3 ({cv3_cfg.get('api_url', 'http://127.0.0.1:9881')})")
+        elif tts_provider == 'gpt_sovits':
             sovits_cfg = tts_config.get('gpt_sovits', {})
             tts = GPTSoVITSProvider(tts_config)
             logger.info(f"🔊 TTS: GPT-SoVITS ({sovits_cfg.get('api_url', 'http://127.0.0.1:9880')})")

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=AI Companion
+GenericName=AI Desktop Assistant
+Comment=March 7th - Your AI Desktop Companion with Live2D
+Exec=bash -c "cd /home/lilk/Documents/LLM_Assistant_waifu && ./start.sh"
+Icon=face-smile
+Terminal=true
+Categories=Utility;Chat;
+Keywords=AI;Assistant;Live2D;March;Companion;
+StartupNotify=true
