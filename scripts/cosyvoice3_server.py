@@ -76,8 +76,17 @@ app = FastAPI(
 )
 
 
-def load_model(model_dir: str):
-    """Load CosyVoice3 model with RL weights for better quality."""
+def load_model(model_dir: str, fp16: bool = True):
+    """Load CosyVoice3 model with RL weights for better quality.
+
+    Args:
+        model_dir: Path to model directory
+        fp16: Use half-precision (reduces VRAM from ~4.8GB to ~2.5GB)
+
+    Note:
+        CosyVoice's fp16 flag only enables autocast during inference, not weight conversion.
+        We manually convert weights to FP16 after loading for true memory savings.
+    """
     global model, model_sample_rate
 
     if model is not None:
@@ -89,11 +98,35 @@ def load_model(model_dir: str):
     from cosyvoice.cli.cosyvoice import AutoModel
 
     # Load model (will use llm.rl.pt via symlink llm.pt → llm.rl.pt)
-    # RL model has better quality: WER 0.81 vs 1.21, Similarity 77.4%, Naturalness 69.5%
-    model = AutoModel(model_dir=model_dir)
+    model = AutoModel(model_dir=model_dir, fp16=fp16)
     model_sample_rate = model.sample_rate
 
-    logger.info(f"Model loaded! Sample rate: {model_sample_rate}")
+    # Convert weights to FP16 for actual VRAM reduction
+    # CosyVoice's fp16 flag only enables autocast, weights stay FP32!
+    if fp16 and torch.cuda.is_available():
+        logger.info("Converting model weights to FP16 for VRAM reduction...")
+        vram_before = torch.cuda.memory_allocated() / 1024**3
+
+        # Convert LLM to FP16 (biggest component ~1.9GB -> ~950MB)
+        model.model.llm.half()
+
+        # Convert Flow Matching to FP16 (~1.3GB -> ~650MB)
+        model.model.flow.half()
+
+        # NOTE: Do NOT convert HiFi-GAN (hift) to FP16!
+        # The f0_predictor inside hift uses .cpu() which converts to FP32,
+        # causing type mismatch if weights are in FP16.
+        # hift is only ~80MB anyway, not worth the compatibility issues.
+
+        # Force garbage collection
+        torch.cuda.empty_cache()
+
+        vram_after = torch.cuda.memory_allocated() / 1024**3
+        logger.info(f"FP16 conversion complete! VRAM: {vram_before:.2f}GB -> {vram_after:.2f}GB")
+    elif fp16:
+        logger.warning("FP16 requested but no CUDA available, using FP32")
+
+    logger.info(f"Model loaded! Sample rate: {model_sample_rate}, fp16={fp16}")
     return model
 
 
@@ -221,19 +254,25 @@ async def synthesize_with_ref(
     ref_audio_path: str = Form(...),
     prompt_text: str = Form(""),
     language: str = Form("fr"),
-    speed: float = Form(1.0)
+    speed: float = Form(1.0),
+    mode: str = Form("auto")  # "zero_shot", "cross_lingual", "instruct", or "auto"
 ):
     """
     Synthesize text using a reference audio path on the server.
 
-    This is faster than uploading when the reference is already on the server.
+    Best Practices (from official CosyVoice3 documentation):
+    - Reference audio: 3-10 seconds for best quality
+    - Zero-shot: Use when you have exact transcription of reference
+    - Cross-lingual: Use for different language than reference
+    - Instruct: Use for dialect/emotion/speed control
 
     Args:
         text: Text to synthesize
-        ref_audio_path: Path to reference audio on server
-        prompt_text: Prompt text (optional, for zero-shot)
-        language: Target language
-        speed: Speech speed factor
+        ref_audio_path: Path to reference audio on server (3-10s recommended)
+        prompt_text: Exact transcription of reference audio (improves voice cloning)
+        language: Target language (fr, en, zh, ja, etc.)
+        speed: Speech speed factor (default 1.0)
+        mode: Inference mode ("zero_shot", "cross_lingual", "instruct", "auto")
 
     Returns:
         WAV audio file
@@ -249,14 +288,23 @@ async def synthesize_with_ref(
         raise HTTPException(status_code=400, detail=f"Reference audio not found: {ref_audio_path}")
 
     try:
-        logger.info(f"Synthesizing with ref: '{text[:50]}...' (ref={ref_path.name})")
+        # Determine inference mode
+        # - zero_shot: Best when prompt_text matches reference audio exactly
+        # - cross_lingual: Best for different language synthesis
+        # - instruct: Best for explicit language/dialect/emotion control
+        if mode == "auto":
+            # Auto mode: use zero_shot if prompt_text provided, else cross_lingual
+            mode = "zero_shot" if prompt_text.strip() else "cross_lingual"
+        
+        logger.info(f"Synthesizing: '{text[:50]}...' (mode={mode}, lang={language}, ref={ref_path.name})")
 
         audio_chunks = []
 
-        # Use zero-shot if prompt_text provided, otherwise cross-lingual
-        if prompt_text.strip():
-            # Zero-shot with prompt text
-            full_prompt = f"You are a helpful assistant.<|endofprompt|>{prompt_text}"
+        if mode == "zero_shot" and prompt_text.strip():
+            # Zero-shot: Use exact transcription for best voice cloning
+            # Format: "You are a helpful assistant.<|endofprompt|>[transcription]"
+            full_prompt = f"You are a helpful assistant.<|endofprompt|>{prompt_text.strip()}"
+            logger.info(f"Zero-shot with prompt: '{prompt_text[:50]}...'")
             for output in model.inference_zero_shot(
                 text,
                 full_prompt,
@@ -265,8 +313,36 @@ async def synthesize_with_ref(
                 speed=speed
             ):
                 audio_chunks.append(output['tts_speech'])
+        
+        elif mode == "instruct":
+            # Instruct: Explicit language/dialect control
+            # Format: "You are a helpful assistant. <instruction>.<|endofprompt|>"
+            lang_names = {
+                "fr": "en français",
+                "en": "in English", 
+                "zh": "用中文",
+                "ja": "日本語で",
+                "ko": "한국어로",
+                "de": "auf Deutsch",
+                "es": "en español",
+                "it": "in italiano",
+                "ru": "по-русски"
+            }
+            lang_instruction = lang_names.get(language, f"in {language}")
+            instruct_text = f"You are a helpful assistant. Please speak {lang_instruction}.<|endofprompt|>"
+            logger.info(f"Instruct mode with: '{instruct_text}'")
+            for output in model.inference_instruct2(
+                text,
+                instruct_text,
+                str(ref_path),
+                stream=False,
+                speed=speed
+            ):
+                audio_chunks.append(output['tts_speech'])
+        
         else:
-            # Cross-lingual (no prompt text needed)
+            # Cross-lingual: No prompt text needed, good for different languages
+            logger.info("Cross-lingual mode (no prompt text)")
             for output in model.inference_cross_lingual(
                 text,
                 str(ref_path),
@@ -323,12 +399,26 @@ def main():
         default=9881,
         help="Port to listen on"
     )
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        default=True,
+        help="Use FP16 (half-precision) to reduce VRAM from ~4.8GB to ~3GB"
+    )
+    parser.add_argument(
+        "--no-fp16",
+        action="store_true",
+        help="Disable FP16, use full precision (more VRAM but slightly better quality)"
+    )
 
     args = parser.parse_args()
+    
+    # Determine fp16 setting
+    use_fp16 = args.fp16 and not args.no_fp16
 
     # Load model at startup
     logger.info("Starting CosyVoice3 TTS Server...")
-    load_model(args.model_dir)
+    load_model(args.model_dir, fp16=use_fp16)
 
     # Run server
     logger.info(f"Server running at http://{args.host}:{args.port}")

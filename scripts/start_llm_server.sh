@@ -25,8 +25,8 @@ LOG_FILE="/tmp/llama-server.log"
 # Server parameters
 HOST="0.0.0.0"
 PORT=8080
-CTX_SIZE=8192
-GPU_LAYERS=99  # All layers on GPU
+CTX_SIZE=4096  # Reduced from 8192 to save VRAM (~2GB less)
+GPU_LAYERS=20  # Reduced to fit with CosyVoice3 (~5GB LLM + 4GB TTS = 9GB total, leaves 3GB margin)
 
 # === Checks ===
 if [ ! -d "$LLAMA_CPP_DIR" ]; then

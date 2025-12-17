@@ -83,6 +83,7 @@ class CosyVoice3Provider(BaseTTS):
         prompt_text: str = "",
         language: str = "fr",
         speed: float = 1.0,
+        mode: str = "auto",  # "auto", "zero_shot", "cross_lingual", "instruct"
     ):
         """
         Initialize CosyVoice3 provider.
@@ -91,25 +92,42 @@ class CosyVoice3Provider(BaseTTS):
             config: Configuration dict (from config.yaml). If provided,
                    other args are used as fallbacks.
             api_url: URL of the CosyVoice3 server
-            ref_audio_path: Path to reference audio for voice cloning
-            prompt_text: Transcription of reference audio (for better cloning)
+            ref_audio_path: Path to reference audio for voice cloning (3-10s recommended)
+            prompt_text: Exact transcription of reference audio (for zero-shot mode)
             language: Default language code (fr, en, ja, etc.)
             speed: Speech speed factor (default 1.0)
+            mode: Inference mode ("auto", "zero_shot", "cross_lingual", "instruct")
         """
         # Extract config if provided
         if config:
-            cv3_config = config.get("cosyvoice3", {})
+            # Support both direct config and nested config (config["tts"]["cosyvoice3"])
+            if "cosyvoice3" in config:
+                cv3_config = config.get("cosyvoice3", {})
+            elif "tts" in config:
+                cv3_config = config.get("tts", {}).get("cosyvoice3", {})
+            else:
+                cv3_config = {}
+
             api_url = cv3_config.get("api_url", api_url)
             ref_audio_path = cv3_config.get("ref_audio_path", ref_audio_path)
             prompt_text = cv3_config.get("prompt_text", prompt_text)
             language = cv3_config.get("language", language)
             speed = cv3_config.get("speed", speed)
+            mode = cv3_config.get("mode", mode)
 
         self.api_url = api_url.rstrip("/")
-        self.ref_audio_path = Path(ref_audio_path).expanduser() if ref_audio_path else None
         self.prompt_text = prompt_text
         self.language = language
         self.speed = speed
+        self.mode = mode
+
+        # Resolve reference audio path to absolute path
+        if ref_audio_path:
+            self.ref_audio_path = Path(ref_audio_path).expanduser().resolve()
+            if not self.ref_audio_path.exists():
+                logger.warning(f"Reference audio not found: {self.ref_audio_path}")
+        else:
+            self.ref_audio_path = None
 
         # HTTP client (initialized lazily)
         self.client: httpx.AsyncClient | None = None
@@ -119,8 +137,8 @@ class CosyVoice3Provider(BaseTTS):
 
         logger.info(
             f"CosyVoice3 provider initialized "
-            f"(api={self.api_url}, lang={self.language}, "
-            f"zero_shot={'yes' if prompt_text else 'no'})"
+            f"(api={self.api_url}, lang={self.language}, mode={self.mode}, "
+            f"ref_audio={self.ref_audio_path}, zero_shot={'yes' if prompt_text else 'no'})"
         )
 
     @property
@@ -209,6 +227,7 @@ class CosyVoice3Provider(BaseTTS):
                 "text": text,
                 "language": self.language,
                 "speed": str(self.speed),
+                "mode": self.mode,
             }
 
             # Use reference audio path on server if available
@@ -223,7 +242,7 @@ class CosyVoice3Provider(BaseTTS):
             else:
                 endpoint = f"{self.api_url}/synthesize"
 
-            logger.debug(f"Synthesizing: '{text[:50]}...' via {endpoint}")
+            logger.debug(f"Synthesizing: '{text[:50]}...' via {endpoint} (mode={self.mode})")
 
             # Make request
             response = await self.client.post(endpoint, data=form_data)

@@ -35,7 +35,7 @@ print_header() {
     echo "║           CosyVoice3 TTS Server Manager                        ║"
     echo "║                                                                 ║"
     echo "║   State-of-the-art multilingual TTS with voice cloning        ║"
-    echo "║   Model: Fun-CosyVoice3-0.5B (~2GB VRAM)                       ║"
+    echo "║   Model: Fun-CosyVoice3-0.5B (~2.5GB VRAM with FP16)          ║"
     echo "╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 }
@@ -148,6 +148,7 @@ start_server() {
         --host "$HOST" \
         --port "$PORT" \
         --model-dir "$COSYVOICE_DIR/pretrained_models/Fun-CosyVoice3-0.5B" \
+        --fp16 \
         > "$LOG_FILE" 2>&1 &
 
     local pid=$!

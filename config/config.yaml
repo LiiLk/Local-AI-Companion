@@ -81,12 +81,19 @@ tts:
   # 🎤 COSYVOICE3 0.5B (State-of-the-Art) ⭐ RECOMMENDED FOR QUALITY
   # ─────────────────────────────────────────────────────────────────────────
   # - Zero-shot voice cloning with any reference audio
-  # - Only 0.5B params (~2GB VRAM), fits with Qwen3-VL (~7GB) = ~9GB total ✅
+  # - LLM 0.5B + Flow 1.3GB + HiFi-GAN → ~2.5GB VRAM in FP16 ⚠️
+  #   (Note: "0.5B params" is only the LLM, total model is ~4GB on disk)
+  # - Fits with Qwen3-VL (~7GB) = ~9.5GB total ✅
   # - 9 native languages: EN, ZH, JA, KO, DE, ES, FR, IT, RU
   # - ~150ms latency (faster than XTTS!)
   # - Apache 2.0 license (commercial use OK)
   # - Outperforms F5-TTS, XTTS v2 in benchmarks (WER 0.81, Similarity 77.4%)
   # - Uses RL-tuned model (llm.rl.pt) for better quality ⭐
+  #
+  # BEST PRACTICES (from official documentation):
+  # - Reference audio: 3-10 seconds of clean speech
+  # - prompt_text: Exact transcription of reference for zero-shot mode
+  # - Modes: "zero_shot" (best cloning), "cross_lingual" (different lang), "instruct" (control)
   #
   # SETUP:
   # 1. Start server: ./scripts/start_cosyvoice3.sh start
@@ -99,14 +106,23 @@ tts:
     api_url: "http://127.0.0.1:9881"
 
     # Reference audio for voice cloning (path to .wav file)
-    # CosyVoice3 works best with clean, clear speech (10-30 seconds)
-    # Using march7th_neutral.wav for consistency with character preset
-    ref_audio_path: "resources/voices/march7th/march7th_neutral.wav"
+    # CosyVoice3 works best with 3-10 seconds of clean speech ⭐
+    # Using march7th_short.wav (5.5s, 24kHz) for optimal quality
+    ref_audio_path: "resources/voices/march7th/march7th_short.wav"
 
     # Transcription of the reference audio (for better zero-shot cloning)
-    # This text should match what is said in the reference audio
-    # Improves voice similarity significantly!
-    prompt_text: "Every time I'm done sorting my album and look out the window, I always want to take another picture. Even though I've seen the view a thousand times, I still feel happy looking at the stars like this."
+    # This text MUST match exactly what is said in the reference audio!
+    # The transcription enables "zero_shot" mode which gives best voice similarity
+    prompt_text: "Every time I'm done sorting my album and look out the window, I always want to take another picture."
+
+    # Inference mode: "auto", "zero_shot", "cross_lingual", or "instruct"
+    # - auto: Uses zero_shot if prompt_text provided, else cross_lingual
+    # - zero_shot: Best voice cloning when prompt_text matches reference exactly
+    # - cross_lingual: Best for different language than reference (ref=EN, output=FR)
+    # - instruct: Explicit language/dialect/emotion control
+    #
+    # TIP: Use "cross_lingual" when reference audio language differs from output
+    mode: "cross_lingual"
 
     # Default language: fr, en, ja, ko, de, es, it, ru, zh
     language: "fr"

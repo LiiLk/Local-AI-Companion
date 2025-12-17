@@ -23,7 +23,8 @@ import yaml
 
 from src.llm import OllamaLLM, LlamaCppProvider
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, F5TTSProvider, GPTSoVITSProvider, CosyVoice3Provider
+from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider, F5TTSProvider, CosyVoice3Provider
+from src.tts.gpt_sovits_provider import GPTSoVITSProvider
 from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
 from src.vad import SileroVAD
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
