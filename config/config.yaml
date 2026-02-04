@@ -4,7 +4,7 @@
 # === MODE ===
 # "pipeline" : Classic ASR → LLM → TTS pipeline (separate models)
 # "omni"     : Single omni model handles speech-to-speech (MiniCPM-o)
-mode: "pipeline"
+mode: "omni"
 
 # === OMNI MODEL (speech-to-speech) ===
 # Used when mode: "omni"
