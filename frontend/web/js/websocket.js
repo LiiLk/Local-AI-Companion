@@ -23,6 +23,10 @@ class WebSocketManager {
         // Live2D callbacks
         this.onAudioWithLipSync = null;  // For Live2D integration
         this.onExpressionChange = null;  // For Live2D expressions
+
+        // Omni mode callbacks
+        this.onModeInfo = null;          // Called with mode info on connect
+        this.onOmniAudioChunk = null;    // Called with streaming audio chunk from omni mode
     }
     
     connect() {
@@ -115,6 +119,14 @@ class WebSocketManager {
         // Request server to preload VAD, ASR, TTS models
         return this.send({
             type: 'preload_models'
+        });
+    }
+
+    sendDuplexAudio(samples) {
+        // Send continuous audio for full-duplex omni mode
+        return this.send({
+            type: 'duplex_audio',
+            samples: samples
         });
     }
     
@@ -249,6 +261,19 @@ class WebSocketManager {
                     }
                     break;
                     
+                case 'mode_info':
+                    console.log('Mode:', message.mode);
+                    if (this.onModeInfo) {
+                        this.onModeInfo(message);
+                    }
+                    break;
+
+                case 'omni_audio_chunk':
+                    if (this.onOmniAudioChunk) {
+                        this.onOmniAudioChunk(message);
+                    }
+                    break;
+
                 default:
                     console.warn('Unknown message type:', message.type);
             }

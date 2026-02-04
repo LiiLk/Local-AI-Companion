@@ -18,6 +18,7 @@ class HealthResponse(BaseModel):
 
 
 class ConfigResponse(BaseModel):
+    mode: str
     character_name: str
     llm_model: str
     tts_provider: str
@@ -48,17 +49,31 @@ async def get_config(request: Request):
     Returns character, LLM, TTS, and ASR settings.
     """
     config = getattr(request.app.state, 'config', {})
+    mode = config.get("mode", "pipeline")
     character = config.get("character", {})
-    llm = config.get("llm", {}).get("ollama", {})
     tts = config.get("tts", {})
     asr = config.get("asr", {})
-    
+
+    if mode == "omni":
+        omni_config = config.get("omni", {}).get("minicpmo", {})
+        llm_model = omni_config.get("model_id", "openbmb/MiniCPM-o-4_5")
+        tts_provider = "minicpmo"
+        tts_voice = "minicpmo"
+        asr_model = "minicpmo"
+    else:
+        llm = config.get("llm", {}).get("ollama", {})
+        llm_model = llm.get("model", "unknown")
+        tts_provider = tts.get("provider", "kokoro")
+        tts_voice = tts.get("kokoro_voice", "ff_siwis")
+        asr_model = asr.get("model_size", "base")
+
     return ConfigResponse(
+        mode=mode,
         character_name=character.get("name", "AI"),
-        llm_model=llm.get("model", "unknown"),
-        tts_provider=tts.get("provider", "kokoro"),
-        tts_voice=tts.get("kokoro_voice", "ff_siwis"),
-        asr_model=asr.get("model_size", "base")
+        llm_model=llm_model,
+        tts_provider=tts_provider,
+        tts_voice=tts_voice,
+        asr_model=asr_model
     )
 
 
