@@ -9,7 +9,6 @@ pyyaml>=6.0
 # Text-to-Speech
 edge-tts>=6.1.0      # Edge TTS (Microsoft cloud, fallback)
 kokoro>=0.9.4        # Kokoro TTS (local, high quality)
-f5-tts>=0.2.0        # F5-TTS voice cloning (Juri voice)
 soundfile>=0.12.0    # For saving WAV files
 
 # Speech-to-Text (ASR)
@@ -17,12 +16,19 @@ faster-whisper>=1.0.0  # Optimized Whisper (4x faster)
 sounddevice>=0.4.0     # Microphone audio capture
 huggingface_hub>=0.20.0  # For downloading optimized French models
 
+# Omni Model (MiniCPM-o 4.5 - unified ASR/LLM/TTS)
+transformers==4.51.0           # Version-locked for MiniCPM-o compatibility
+accelerate>=0.26.0             # Model loading utilities
+minicpmo-utils[all]>=1.0.2    # MiniCPM-o utilities (TTS, streaming)
+bitsandbytes>=0.43.0           # int4/int8 quantization for MiniCPM-o
+librosa>=0.10.0                # Audio loading/resampling for MiniCPM-o
+
 # Web Server
 fastapi>=0.104.0       # Async web framework
 uvicorn>=0.24.0        # ASGI server
 websockets>=12.0       # WebSocket support
 python-multipart>=0.0.6  # For file uploads
-torchaudio>=2.1.0      # Needed for XTTS/F5-TTS audio save
+torchaudio>=2.1.0      # Audio processing for TTS
 
 # Live2D Avatar Overlay
 pywebview>=5.0.0       # Transparent window for Live2D avatar

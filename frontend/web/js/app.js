@@ -16,6 +16,10 @@ class App {
         this.isSpeaking = false;
         this._modelsPreloaded = false;
         this._live2dEnabled = false;
+        this._mode = 'pipeline';  // 'pipeline' or 'omni', updated by server
+
+        // Streaming audio player for omni mode
+        this.streamingPlayer = new StreamingAudioPlayer();
 
         // DOM Elements - Updated for new UI structure
         this.elements = {
@@ -74,6 +78,10 @@ class App {
         this.ws.onAudioWithLipSync = (msg) => this._handleAudioWithLipSync(msg);
         this.ws.onExpressionChange = (msg) => this._handleExpressionChange(msg);
 
+        // Omni mode callbacks
+        this.ws.onModeInfo = (msg) => this._handleModeInfo(msg);
+        this.ws.onOmniAudioChunk = (msg) => this._handleOmniAudioChunk(msg);
+
         // Audio callbacks
         this.audio.onRecordingStart = () => this._handleRecordingStart();
         this.audio.onRecordingStop = () => this._handleRecordingStop();
@@ -95,6 +103,16 @@ class App {
                 this.isSpeaking = false;
                 this._hideStatus();
             }
+        };
+
+        // Streaming player events (omni mode)
+        this.streamingPlayer.onPlaybackStart = () => {
+            this.isSpeaking = true;
+            this._showStatus('🔊 Parole...', 90);
+        };
+        this.streamingPlayer.onPlaybackEnd = () => {
+            this.isSpeaking = false;
+            this._hideStatus();
         };
 
         // Event listeners
@@ -134,7 +152,7 @@ class App {
             
             if (success) {
                 this._live2dEnabled = true;
-                
+
                 // Hook up callbacks
                 this.live2d.onPlaybackStart = () => {
                     this.isSpeaking = true;
@@ -144,8 +162,15 @@ class App {
                     this.isSpeaking = false;
                     this._hideStatus();
                 };
-                
-                console.log('[App] ✅ Live2D initialized');
+
+                // Wire streaming player lip-sync to Live2D
+                this.streamingPlayer.onLipSync = (value) => {
+                    if (window.Live2DManager) {
+                        Live2DManager.setLipSync(value);
+                    }
+                };
+
+                console.log('[App] Live2D initialized');
             }
         } catch (error) {
             console.error('[App] Live2D init error:', error);
@@ -166,6 +191,20 @@ class App {
         if (this._live2dEnabled && this.live2d) {
             this.live2d.handleExpressionChange(message);
         }
+    }
+
+    _handleModeInfo(message) {
+        this._mode = message.mode || 'pipeline';
+        console.log('[App] Server mode:', this._mode);
+    }
+
+    _handleOmniAudioChunk(message) {
+        // Enqueue streaming audio from omni mode
+        this.streamingPlayer.enqueue(
+            message.data,
+            message.lip_sync || null,
+            message.expression || null
+        );
     }
 
     _setupEventListeners() {
@@ -508,6 +547,7 @@ class App {
                 this.elements.messages.appendChild(welcomeMsg);
             }
         }
+        this.streamingPlayer.stop();
         this.ws.sendClear();
     }
 }

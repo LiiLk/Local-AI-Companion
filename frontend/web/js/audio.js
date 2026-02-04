@@ -267,5 +267,120 @@ class AudioManager {
     }
 }
 
+/* ===========================================
+   Streaming Audio Player
+   Handles sequential playback of audio chunks
+   from omni mode (MiniCPM-o streaming responses)
+   =========================================== */
+
+class StreamingAudioPlayer {
+    constructor() {
+        this.audioContext = null;
+        this.queue = [];
+        this.isPlaying = false;
+
+        // Callbacks
+        this.onPlaybackStart = null;
+        this.onPlaybackEnd = null;
+        this.onLipSync = null;
+    }
+
+    _ensureContext() {
+        if (!this.audioContext) {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (this.audioContext.state === 'suspended') {
+            this.audioContext.resume();
+        }
+        return this.audioContext;
+    }
+
+    enqueue(base64Audio, lipSync, expression) {
+        this.queue.push({ base64Audio, lipSync, expression });
+        if (!this.isPlaying) {
+            this._playNext();
+        }
+    }
+
+    async _playNext() {
+        if (this.queue.length === 0) {
+            this.isPlaying = false;
+            if (this.onPlaybackEnd) {
+                this.onPlaybackEnd();
+            }
+            return;
+        }
+
+        if (!this.isPlaying && this.onPlaybackStart) {
+            this.onPlaybackStart();
+        }
+        this.isPlaying = true;
+
+        const item = this.queue.shift();
+
+        try {
+            const ctx = this._ensureContext();
+
+            // Decode base64
+            const binaryString = atob(item.base64Audio);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+
+            // Lip-sync via volumes array
+            if (item.lipSync && item.lipSync.volumes && this.onLipSync) {
+                const volumes = item.lipSync.volumes;
+                const chunkMs = item.lipSync.chunk_ms || 50;
+                let index = 0;
+
+                const interval = setInterval(() => {
+                    if (index < volumes.length) {
+                        this.onLipSync(volumes[index]);
+                        index++;
+                    } else {
+                        clearInterval(interval);
+                        this.onLipSync(0);
+                    }
+                }, chunkMs);
+
+                source.onended = () => {
+                    clearInterval(interval);
+                    this.onLipSync(0);
+                    this._playNext();
+                };
+            } else {
+                source.onended = () => {
+                    this._playNext();
+                };
+            }
+
+            source.start(0);
+        } catch (error) {
+            console.error('StreamingAudioPlayer: playback error:', error);
+            this._playNext();
+        }
+    }
+
+    stop() {
+        this.queue = [];
+        this.isPlaying = false;
+    }
+
+    cleanup() {
+        this.stop();
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
+        }
+    }
+}
+
 // Export
 window.AudioManager = AudioManager;
+window.StreamingAudioPlayer = StreamingAudioPlayer;

@@ -29,14 +29,9 @@ live2d:
     embarrassed: "tch"
     surprised: "interested"
 
-# Voice (TTS reference for voice cloning)
+# Voice (TTS settings per provider)
 voice:
-  # Reference audio for XTTS voice cloning
-  speaker_wav: "resources/voices/juri/juri_neutral.wav"
-  # Alternative voices
-  alternatives:
-    - "resources/voices/juri/juri_neutral_fr.wav"
-  # Edge TTS fallback voice (deeper, edgier)
+  # Edge TTS voice (deeper, edgier)
   edge_voice: "en-US-AriaNeural"
-  # Kokoro fallback voice
+  # Kokoro voice
   kokoro_voice: "af_aoede"

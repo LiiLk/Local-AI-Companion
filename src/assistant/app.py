@@ -36,6 +36,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.assistant.audio_service import AudioService, AudioServiceConfig, MicState
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
+from src.utils.character_loader import resolve_character_config
 
 # Conditional imports
 try:
@@ -81,7 +82,8 @@ class Live2DAssistant:
         # Load config
         self.config_path = config_path or PROJECT_ROOT / "config" / "config.yaml"
         self.config = load_config(self.config_path)
-        
+        self.config = resolve_character_config(self.config)
+
         # State
         self._running = False
         self._window: Optional[webview.Window] = None
@@ -101,71 +103,84 @@ class Live2DAssistant:
     
     def _create_components(self):
         """Create ASR, LLM, TTS, and pipeline components."""
-        from src.llm import OllamaLLM
-        from src.llm.llamacpp_provider import LlamaCppProvider
-        from src.tts import KokoroProvider, EdgeTTSProvider, XTTSProvider
-        from src.asr import WhisperProvider, CanaryProvider, ParakeetProvider
-        
-        llm_config = self.config.get('llm', {})
-        tts_config = self.config.get('tts', {})
-        asr_config = self.config.get('asr', {})
         character_config = self.config.get('character', {})
-        
+        mode = self.config.get('mode', 'pipeline')
+
         logger.info("=" * 50)
-        logger.info("🚀 STACK CONFIGURATION")
+        logger.info("STACK CONFIGURATION")
         logger.info("=" * 50)
-        
-        # Create LLM
-        llm_provider = llm_config.get('provider', 'ollama')
-        if llm_provider == 'llamacpp':
-            llamacpp_cfg = llm_config.get('llamacpp', {})
-            llm = LlamaCppProvider(
-                base_url=llamacpp_cfg.get('base_url', 'http://localhost:8080'),
-                model_name=llamacpp_cfg.get('model_name', 'qwen3-vl-8b'),
-                max_tokens=llamacpp_cfg.get('max_tokens', 4096),
-                temperature=llamacpp_cfg.get('temperature', 0.7),
+        logger.info(f"Mode: {mode}")
+
+        if mode == "omni":
+            from src.omni import MiniCPMoProvider, OmniPipeline
+
+            omni_config = self.config.get('omni', {}).get('minicpmo', {})
+
+            # Resolve ref_audio_path from character preset or omni config
+            voice_config = character_config.get('voice', {})
+            ref_audio = (
+                voice_config.get('omni_ref_audio')
+                or omni_config.get('ref_audio_path')
             )
-            logger.info(f"🧠 LLM: Qwen3-VL-8B via llama.cpp ({llamacpp_cfg.get('base_url')})")
+
+            self._omni_model = MiniCPMoProvider(
+                model_name=omni_config.get('model_id', 'openbmb/MiniCPM-o-4_5'),
+                device=omni_config.get('device', 'cuda'),
+                quantization=omni_config.get('quantization'),
+                ref_audio_path=ref_audio,
+            )
+            logger.info(f"Omni: MiniCPM-o ({omni_config.get('model_id')}, q={omni_config.get('quantization', 'none')})")
+
+            pipeline_config = ConversationConfig(
+                character_name=character_config.get('name', 'AI'),
+                system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
+            )
+            self._omni_pipeline = OmniPipeline(
+                omni=self._omni_model,
+                config=pipeline_config,
+            )
+
+            # Wire callbacks (same interface as ConversationPipeline)
+            self._omni_pipeline.on_transcription = self._on_transcription
+            self._omni_pipeline.on_response_start = self._on_response_start
+            self._omni_pipeline.on_response_chunk = self._on_response_chunk
+            self._omni_pipeline.on_response_end = self._on_response_end
+            self._omni_pipeline.on_audio_ready = self._on_audio_ready
+            self._omni_pipeline.on_expression_change = self._on_expression_change
+
+            # Pipeline is not used in omni mode
+            self.pipeline = None
+
         else:
+            from src.llm import OllamaLLM
+            from src.tts import KokoroProvider, EdgeTTSProvider
+            from src.asr import WhisperProvider
+
+            llm_config = self.config.get('llm', {})
+            tts_config = self.config.get('tts', {})
+            asr_config = self.config.get('asr', {})
+
+            # Create LLM
             ollama_cfg = llm_config.get('ollama', {})
             llm = OllamaLLM(
                 model=ollama_cfg.get('model', 'llama3.2:3b'),
                 base_url=ollama_cfg.get('base_url', 'http://localhost:11434')
             )
-            logger.info(f"🧠 LLM: Ollama ({ollama_cfg.get('model')})")
-        
-        # Create TTS
-        tts_provider = tts_config.get('provider', 'kokoro')
-        if tts_provider == 'xtts':
-            xtts_cfg = tts_config.get('xtts', {})
-            speaker_wav = xtts_cfg.get('speaker_wav')
-            tts = XTTSProvider(
-                language=xtts_cfg.get('language', 'fr'),
-                speaker=xtts_cfg.get('speaker', 'Claribel Dervla'),
-                speaker_wav=speaker_wav,
-                device=xtts_cfg.get('device', 'cuda'),
-            )
-            voice_info = f"voice clone: {speaker_wav}" if speaker_wav else f"speaker: {xtts_cfg.get('speaker')}"
-            logger.info(f"🔊 TTS: XTTS v2 on {xtts_cfg.get('device', 'cuda')} ({voice_info})")
-        elif tts_provider == 'kokoro':
-            voice = tts_config.get('kokoro_voice', 'ff_siwis')
-            tts = KokoroProvider(voice=voice)
-            logger.info(f"🔊 TTS: Kokoro ({voice})")
-        else:
-            voice = tts_config.get('voice', 'en-US-JennyNeural')
-            tts = EdgeTTSProvider(voice=voice)
-            logger.info(f"🔊 TTS: Edge ({voice})")
-        
-        # Create ASR
-        asr_provider = asr_config.get('provider', 'whisper')
-        device = asr_config.get('device', 'cpu')
-        if asr_provider == 'canary':
-            asr = CanaryProvider(device=device)
-            logger.info(f"🎤 ASR: Canary on {device}")
-        elif asr_provider == 'parakeet':
-            asr = ParakeetProvider(device=device)
-            logger.info(f"🎤 ASR: Parakeet on {device}")
-        else:
+            logger.info(f"LLM: Ollama ({ollama_cfg.get('model')})")
+
+            # Create TTS
+            tts_provider = tts_config.get('provider', 'kokoro')
+            if tts_provider == 'kokoro':
+                voice = tts_config.get('kokoro_voice', 'ff_siwis')
+                tts = KokoroProvider(voice=voice)
+                logger.info(f"TTS: Kokoro ({voice})")
+            else:
+                voice = tts_config.get('voice', 'en-US-JennyNeural')
+                tts = EdgeTTSProvider(voice=voice)
+                logger.info(f"TTS: Edge ({voice})")
+
+            # Create ASR
+            device = asr_config.get('device', 'cpu')
             model_size = asr_config.get('model_size', 'base')
             prompt = asr_config.get('prompt')
             asr = WhisperProvider(
@@ -173,34 +188,34 @@ class Live2DAssistant:
                 device=device,
                 initial_prompt=prompt
             )
-            logger.info(f"🎤 ASR: Whisper {model_size} on {device}")
-        
+            logger.info(f"ASR: Whisper {model_size} on {device}")
+
+            # Create pipeline
+            pipeline_config = ConversationConfig(
+                character_name=character_config.get('name', 'AI'),
+                system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
+                stream_tts=tts_config.get('stream_tts', True),
+                auto_detect_language=tts_config.get('auto_detect_language', True),
+            )
+
+            self.pipeline = ConversationPipeline(
+                llm=llm,
+                tts=tts,
+                asr=asr,
+                config=pipeline_config
+            )
+
+            # Set pipeline callbacks
+            self.pipeline.on_transcription = self._on_transcription
+            self.pipeline.on_response_start = self._on_response_start
+            self.pipeline.on_response_chunk = self._on_response_chunk
+            self.pipeline.on_response_end = self._on_response_end
+            self.pipeline.on_audio_ready = self._on_audio_ready
+            self.pipeline.on_expression_change = self._on_expression_change
+
         logger.info("=" * 50)
-        
-        # Create pipeline
-        pipeline_config = ConversationConfig(
-            character_name=character_config.get('name', 'AI'),
-            system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
-            stream_tts=tts_config.get('stream_tts', True),
-            auto_detect_language=tts_config.get('auto_detect_language', True),
-        )
-        
-        self.pipeline = ConversationPipeline(
-            llm=llm,
-            tts=tts,
-            asr=asr,
-            config=pipeline_config
-        )
-        
-        # Set pipeline callbacks
-        self.pipeline.on_transcription = self._on_transcription
-        self.pipeline.on_response_start = self._on_response_start
-        self.pipeline.on_response_chunk = self._on_response_chunk
-        self.pipeline.on_response_end = self._on_response_end
-        self.pipeline.on_audio_ready = self._on_audio_ready
-        self.pipeline.on_expression_change = self._on_expression_change
-        
-        # Create audio service
+
+        # Create audio service (shared by both modes)
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=False,
@@ -208,8 +223,8 @@ class Live2DAssistant:
         self.audio_service = AudioService(audio_config)
         self.audio_service.on_speech_detected = self._on_speech_detected
         self.audio_service.on_state_change = self._on_mic_state_change
-        
-        logger.info("✅ All components created")
+
+        logger.info("All components created")
     
     # ==================== Callbacks ====================
     
@@ -218,27 +233,34 @@ class Live2DAssistant:
         if self._loop:
             # Set processing state (mute mic while AI responds)
             self.audio_service.set_processing(True)
-            
-            logger.info(f"🎯 Processing {len(audio_bytes)} bytes of speech...")
-            
+
+            logger.info(f"Processing {len(audio_bytes)} bytes of speech...")
+
+            # Route to the active pipeline (omni or classic)
+            active_pipeline = getattr(self, '_omni_pipeline', None) or self.pipeline
+            if active_pipeline is None:
+                logger.error("No pipeline available!")
+                self._on_response_complete()
+                return
+
             # Process in event loop
             future = asyncio.run_coroutine_threadsafe(
-                self.pipeline.process_speech(audio_bytes),
+                active_pipeline.process_speech(audio_bytes),
                 self._loop
             )
-            
+
             def on_done(f):
                 try:
                     result = f.result()
-                    logger.info(f"✅ Pipeline completed: {result[:50] if result else 'No result'}...")
+                    logger.info(f"Pipeline completed: {result[:50] if result else 'No result'}...")
                 except Exception as e:
-                    logger.error(f"❌ Pipeline error: {e}", exc_info=True)
+                    logger.error(f"Pipeline error: {e}", exc_info=True)
                 finally:
                     self._on_response_complete()
-            
+
             future.add_done_callback(on_done)
         else:
-            logger.error("❌ Event loop not available!")
+            logger.error("Event loop not available!")
     
     def _on_response_complete(self):
         """Called when pipeline finishes processing."""

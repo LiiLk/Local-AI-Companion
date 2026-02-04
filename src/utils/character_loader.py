@@ -101,19 +101,16 @@ def resolve_character_config(config: dict) -> dict:
     # Also update TTS voice if preset has voice config
     voice_config = preset.get("voice", {})
     if voice_config:
+        # Store voice config in character for provider-specific lookups
+        resolved_character["voice"] = voice_config
+
         tts_config = config.get("tts", {})
-        
-        # Update XTTS speaker_wav if specified in preset
-        speaker_wav = voice_config.get("speaker_wav")
-        if speaker_wav and "xtts" in tts_config:
-            tts_config.setdefault("xtts", {})["speaker_wav"] = speaker_wav
-            logger.info(f"🎤 Using voice: {speaker_wav}")
-        
+
         # Update Edge TTS voice if specified
         edge_voice = voice_config.get("edge_voice")
         if edge_voice:
             tts_config["voice"] = edge_voice
-        
+
         # Update Kokoro voice if specified
         kokoro_voice = voice_config.get("kokoro_voice")
         if kokoro_voice:

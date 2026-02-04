@@ -32,11 +32,9 @@ live2d:
     thinking: "tilting"
     winking: "wink"
 
-# Voice (TTS reference for voice cloning)
+# Voice (TTS settings per provider)
 voice:
-  # No voice cloning for Clippy - use synthetic voice
-  speaker_wav: null
   # Edge TTS voice (friendly, helpful)
   edge_voice: "en-US-GuyNeural"
-  # Kokoro fallback voice
+  # Kokoro voice
   kokoro_voice: "am_adam"
