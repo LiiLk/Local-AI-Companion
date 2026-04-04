@@ -10,6 +10,7 @@ class WebSocketManager {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.reconnectDelay = 1000;
+        this.pendingAudioMeta = [];
         
         // Event callbacks
         this.onStatusChange = null;
@@ -36,8 +37,10 @@ class WebSocketManager {
         }
         
         this._updateStatus('connecting');
-        
+        this.pendingAudioMeta = [];
+
         this.ws = new WebSocket(this.url);
+        this.ws.binaryType = 'arraybuffer';
         
         this.ws.onopen = () => {
             console.log('WebSocket connected');
@@ -59,7 +62,11 @@ class WebSocketManager {
         };
         
         this.ws.onmessage = (event) => {
-            this._handleMessage(event.data);
+            if (typeof event.data === 'string') {
+                this._handleMessage(event.data);
+            } else {
+                this._handleBinaryMessage(event.data);
+            }
         };
     }
     
@@ -68,6 +75,7 @@ class WebSocketManager {
             this.ws.close(1000, 'User disconnected');
             this.ws = null;
         }
+        this.pendingAudioMeta = [];
     }
     
     send(message) {
@@ -87,11 +95,12 @@ class WebSocketManager {
     }
     
     sendAudioStream(samples) {
-        // Send raw PCM samples for server-side VAD
-        return this.send({
-            type: 'audio_stream',
-            samples: samples
-        });
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(samples);
+            return true;
+        }
+        console.error('WebSocket not connected');
+        return false;
     }
     
     sendMicStop() {
@@ -170,6 +179,10 @@ class WebSocketManager {
                     } else if (this.onAudioData) {
                         this.onAudioData(message.data);
                     }
+                    break;
+
+                case 'audio_meta':
+                    this.pendingAudioMeta.push(message);
                     break;
                     
                 case 'expression_change':
@@ -280,6 +293,25 @@ class WebSocketManager {
             
         } catch (error) {
             console.error('Failed to parse message:', error);
+        }
+    }
+
+    _handleBinaryMessage(data) {
+        const meta = this.pendingAudioMeta.shift();
+        if (!meta) {
+            console.warn('Received binary audio without pending metadata');
+            return;
+        }
+
+        const message = {
+            ...meta,
+            buffer: data
+        };
+
+        if (this.onAudioWithLipSync && meta.lip_sync) {
+            this.onAudioWithLipSync(message);
+        } else if (this.onAudioData) {
+            this.onAudioData(data);
         }
     }
     

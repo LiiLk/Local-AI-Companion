@@ -135,7 +135,17 @@ class ConversationState:
     def get_vad(self):
         """Get or create VAD engine (lazy loading)."""
         if self.vad is None:
-            self.vad = SileroVAD()
+            from src.vad.silero_vad import VADConfig
+
+            gemma_config = self.config.get("gemma", {}) if self.mode == "gemma-omni" else {}
+            vad_config = VADConfig(
+                sample_rate=16000,
+                prob_threshold=gemma_config.get("vad_prob_threshold", 0.5),
+                db_threshold=gemma_config.get("vad_db_threshold", -50),
+                required_hits=gemma_config.get("vad_required_hits", 3),
+                required_misses=gemma_config.get("vad_required_misses", 30),
+            )
+            self.vad = SileroVAD(config=vad_config)
         return self.vad
 
     def get_omni(self):
@@ -201,6 +211,8 @@ class ConversationState:
                 quantization=gemma_config.get("quantization", "int4"),
                 max_new_tokens=gemma_config.get("max_new_tokens", 256),
                 temperature=gemma_config.get("temperature", 0.7),
+                top_p=gemma_config.get("top_p", 0.95),
+                context_max_turns=gemma_config.get("context_max_turns", 10),
             )
             self.gemma_model.preload()
 
@@ -209,18 +221,24 @@ class ConversationState:
                 ref_audio_path=ref_audio,
                 exaggeration=exaggeration,
                 language=language,
+                prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
             )
             chatterbox._load_model()  # Preload TTS so first response is fast
 
             pipeline_config = ConversationConfig(
                 character_name=character.get("name", "AI"),
                 system_prompt=character.get("system_prompt", "You are a helpful assistant."),
+                stream_tts=tts_config.get("stream_tts", True),
             )
             self.gemma_pipeline = GemmaOmniPipeline(
                 gemma=self.gemma_model,
                 tts=chatterbox,
                 config=pipeline_config,
             )
+
+            screen_config = gemma_config.get("screen", {})
+            if screen_config.get("enabled", False):
+                self.gemma_pipeline.enable_screen_capture(screen_config)
             print("Gemma + Chatterbox loaded successfully")
 
         return self.gemma_model, self.gemma_pipeline
@@ -276,6 +294,14 @@ class WebSocketManager:
                 await self.active_connections[client_id].send_json(data)
             except Exception as e:
                 print(f"Failed to send to {client_id}: {e}")
+
+    async def send_audio_bytes(self, client_id: str, audio_bytes: bytes):
+        """Send raw audio bytes to a client."""
+        if client_id in self.active_connections:
+            try:
+                await self.active_connections[client_id].send_bytes(audio_bytes)
+            except Exception as e:
+                print(f"Failed to send audio to {client_id}: {e}")
 
     def _get_state(self, client_id: str) -> Optional[ConversationState]:
         """Safely get client state, returns None if client disconnected."""
@@ -608,8 +634,7 @@ class WebSocketManager:
 
         async def on_audio_ready(payload):
             await send_json({
-                "type": "audio_data",
-                "data": payload.audio_base64,
+                "type": "audio_meta",
                 "format": "wav",
                 "lip_sync": {
                     "volumes": payload.volumes,
@@ -619,6 +644,8 @@ class WebSocketManager:
                 "expression": payload.expression,
                 "text": payload.text,
             })
+            if payload.wav_bytes:
+                await self.send_audio_bytes(client_id, payload.wav_bytes)
 
         async def on_expression_change(expr):
             await send_json({"type": "expression_change", "expression": expr})
@@ -645,31 +672,44 @@ class WebSocketManager:
 
         _, pipeline = state.get_gemma_omni()
         self._wire_gemma_callbacks(client_id, pipeline)
+        from src.utils.sentence_splitter import SentenceSplitter
 
         await self.send_json(client_id, {"type": "text_start"})
         await self.send_json(client_id, {"type": "audio_start"})
 
         full_response = ""
         try:
-            response = await pipeline.gemma.chat(
+            splitter = SentenceSplitter()
+            async for chunk in pipeline.gemma.chat_stream(
                 text=content,
                 history=[{"role": "system", "content": [{"type": "text", "text": pipeline.system_prompt}]}] + pipeline.history,
-            )
-
-            if response:
-                full_response = response
+            ):
+                if not chunk:
+                    continue
+                full_response += chunk
+                splitter.feed(chunk)
                 await self.send_json(client_id, {
                     "type": "text_chunk",
-                    "content": response
+                    "content": chunk
                 })
-                await pipeline._synthesize_and_send(response)
 
+                for sentence in splitter.get_sentences():
+                    await pipeline._synthesize_and_send(sentence)
+
+            remaining = splitter.flush()
+            if remaining:
+                await pipeline._synthesize_and_send(remaining)
+
+            if full_response:
                 pipeline.history.append(
                     {"role": "user", "content": [{"type": "text", "text": content}]}
                 )
                 pipeline.history.append(
-                    {"role": "assistant", "content": [{"type": "text", "text": response}]}
+                    {"role": "assistant", "content": [{"type": "text", "text": full_response}]}
                 )
+                max_msgs = pipeline.gemma.context_max_turns * 2
+                if len(pipeline.history) > max_msgs:
+                    pipeline.history = pipeline.history[-max_msgs:]
 
         except Exception as e:
             print(f"Gemma text error: {e}")
@@ -926,6 +966,14 @@ class WebSocketManager:
                 "type": "error",
                 "message": f"VAD error: {str(e)}"
             })
+
+    async def handle_audio_stream_bytes(self, client_id: str, audio_bytes: bytes):
+        """Handle PCM16 streaming audio frames sent as binary WebSocket messages."""
+        if not audio_bytes:
+            return
+
+        audio_samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
+        await self.handle_audio_stream(client_id, audio_samples)
 
     async def _transcribe_and_respond(self, client_id: str, audio_bytes: bytes):
         """Transcribe audio bytes and generate response. Pipeline mode only."""
@@ -1293,7 +1341,20 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     try:
         while True:
-            data = await websocket.receive_json()
+            message = await websocket.receive()
+
+            if message.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect()
+
+            if message.get("bytes") is not None:
+                await manager.handle_audio_stream_bytes(client_id, message["bytes"])
+                continue
+
+            raw_text = message.get("text")
+            if raw_text is None:
+                continue
+
+            data = json.loads(raw_text)
             msg_type = data.get("type", "text")
 
             if msg_type == "text":

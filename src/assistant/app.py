@@ -201,6 +201,7 @@ class Live2DAssistant:
                 exaggeration=exaggeration,
                 cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
                 language=language,
+                prefer_full_gpu=chatterbox_config.get('prefer_full_gpu', True),
             )
             logger.info(f"TTS: Chatterbox (ref={ref_audio}, exag={exaggeration})")
 
@@ -296,9 +297,14 @@ class Live2DAssistant:
         logger.info("=" * 50)
 
         # Create audio service (shared by both modes)
+        gemma_vad_config = self.config.get('gemma', {}) if mode == 'gemma-omni' else {}
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=False,
+            vad_prob_threshold=gemma_vad_config.get('vad_prob_threshold', 0.5),
+            vad_db_threshold=gemma_vad_config.get('vad_db_threshold', -50),
+            vad_required_hits=gemma_vad_config.get('vad_required_hits', 3),
+            vad_required_misses=gemma_vad_config.get('vad_required_misses', 30),
         )
         self.audio_service = AudioService(audio_config)
         self.audio_service.on_speech_detected = self._on_speech_detected
@@ -379,8 +385,12 @@ class Live2DAssistant:
     async def _on_audio_ready(self, payload: AudioPayload):
         """Called when TTS audio is ready with volume data."""
         # Send audio to frontend for playback
+        audio_base64 = payload.audio_base64
+        if not audio_base64 and payload.wav_bytes:
+            audio_base64 = base64.b64encode(payload.wav_bytes).decode("utf-8")
+
         data = {
-            'audio': payload.audio_base64,
+            'audio': audio_base64,
             'volumes': payload.volumes,
             'duration': payload.duration_ms,
             'text': payload.text,
