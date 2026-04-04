@@ -45,6 +45,7 @@ emoji>=2.0.0           # Emoji removal for TTS
 silero-vad
 
 # Gemma-Omni Avatar (Phase 1)
+soxr                           # Audio resampling (required by transformers 5.x)
 torchao                        # TorchAO int4 quantization for Gemma E4B
 onnxruntime-gpu>=1.18.0        # ONNX Runtime with CUDA for Chatterbox
 chatterbox-onnx                # Chatterbox ONNX inference package
