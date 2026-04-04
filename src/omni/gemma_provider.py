@@ -311,4 +311,5 @@ class GemmaProvider:
                 torch.cuda.empty_cache()
         except ImportError:
             pass
+        self._executor.shutdown(wait=False)
         logger.info("GemmaProvider cleaned up")

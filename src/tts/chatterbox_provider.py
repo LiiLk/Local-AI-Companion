@@ -16,6 +16,7 @@ import asyncio
 import io
 import logging
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -71,11 +72,15 @@ class ChatterboxTTSProvider(BaseTTS):
         self._model = None
         self._ref_audio_data = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts")
+        self._load_lock = threading.Lock()
 
     def _load_model(self):
-        """Load Chatterbox ONNX Q4 model (lazy)."""
+        """Load Chatterbox ONNX Q4 model (lazy, thread-safe)."""
         if self._model is not None:
             return
+        with self._load_lock:
+            if self._model is not None:
+                return
 
         logger.info(f"Loading Chatterbox from {self.model_id}...")
 
@@ -209,4 +214,5 @@ class ChatterboxTTSProvider(BaseTTS):
             del self._model
             self._model = None
         self._ref_audio_data = None
+        self._executor.shutdown(wait=False)
         logger.info("ChatterboxTTSProvider cleaned up")

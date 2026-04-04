@@ -173,7 +173,7 @@ class GemmaOmniPipeline:
 
             # Update history
             self.history.append(
-                {"role": "user", "content": [{"type": "audio", "audio": audio_bytes}]}
+                {"role": "user", "content": [{"type": "text", "text": "[audio input]"}]}
             )
             self.history.append(
                 {"role": "assistant", "content": [{"type": "text", "text": full_response}]}
@@ -360,7 +360,7 @@ class GemmaOmniPipeline:
 
             # Step 7: Update history
             self.history.append(
-                {"role": "user", "content": [{"type": "audio", "audio": audio_bytes}]}
+                {"role": "user", "content": [{"type": "text", "text": "[audio input]"}]}
             )
             self.history.append(
                 {"role": "assistant", "content": [{"type": "text", "text": response}]}
