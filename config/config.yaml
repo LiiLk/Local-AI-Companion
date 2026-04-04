@@ -53,7 +53,8 @@ gemma:
   quantization: "int4"           # TorchAO int4 (~4.1 GB VRAM)
   device: "cuda"
   dtype: "bfloat16"
-  max_new_tokens: 256
+  max_new_tokens: 96
+  turn_timeout_sec: 75
   temperature: 0.7
   top_p: 0.95
   context_max_turns: 10
@@ -189,7 +190,7 @@ tts:
     quantized: true
     exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
     cfg_weight: 0.5        # Classifier-free guidance weight
-    prefer_full_gpu: true  # Use CUDA for all ONNX sessions when available
+    prefer_full_gpu: false # Keep Chatterbox hybrid to avoid VRAM contention with Gemma
 
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)

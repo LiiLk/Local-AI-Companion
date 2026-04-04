@@ -29,6 +29,7 @@ import base64
 import json
 import logging
 import signal
+import time
 import sys
 import threading
 from pathlib import Path
@@ -96,6 +97,8 @@ class Live2DAssistant:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._hotkey_listener = None
         self._preload_thread: Optional[threading.Thread] = None
+        self._active_response_future = None
+        self._turn_timeout_sec = int(self.config.get('gemma', {}).get('turn_timeout_sec', 75))
         
         # Components (initialized in start())
         self.audio_service: Optional[AudioService] = None
@@ -165,6 +168,7 @@ class Live2DAssistant:
             self._omni_pipeline.on_response_end = self._on_response_end
             self._omni_pipeline.on_audio_ready = self._on_audio_ready
             self._omni_pipeline.on_expression_change = self._on_expression_change
+            self._omni_pipeline.on_error = self._on_error
 
             # Pipeline is not used in omni mode
             self.pipeline = None
@@ -230,6 +234,7 @@ class Live2DAssistant:
             self._gemma_pipeline.on_response_end = self._on_response_end
             self._gemma_pipeline.on_audio_ready = self._on_audio_ready
             self._gemma_pipeline.on_expression_change = self._on_expression_change
+            self._gemma_pipeline.on_error = self._on_error
 
             self.pipeline = None
 
@@ -294,6 +299,7 @@ class Live2DAssistant:
             self.pipeline.on_response_end = self._on_response_end
             self.pipeline.on_audio_ready = self._on_audio_ready
             self.pipeline.on_expression_change = self._on_expression_change
+            self.pipeline.on_error = self._on_error
 
         logger.info("=" * 50)
 
@@ -317,45 +323,62 @@ class Live2DAssistant:
     
     def _on_speech_detected(self, audio_bytes: bytes):
         """Called when VAD detects complete speech."""
-        if self._loop:
-            # Set processing state (mute mic while AI responds)
-            self.audio_service.set_processing(True)
-
-            logger.info(f"Processing {len(audio_bytes)} bytes of speech...")
-
-            # Route to the active pipeline (omni or classic)
-            active_pipeline = (
-                getattr(self, '_gemma_pipeline', None)
-                or getattr(self, '_omni_pipeline', None)
-                or self.pipeline
-            )
-            if active_pipeline is None:
-                logger.error("No pipeline available!")
-                self._on_response_complete()
-                return
-
-            # Process in event loop
-            future = asyncio.run_coroutine_threadsafe(
-                active_pipeline.process_speech(audio_bytes),
-                self._loop
-            )
-
-            def on_done(f):
-                try:
-                    result = f.result()
-                    logger.info(f"Pipeline completed: {result[:50] if result else 'No result'}...")
-                except Exception as e:
-                    logger.error(f"Pipeline error: {e}", exc_info=True)
-                finally:
-                    self._on_response_complete()
-
-            future.add_done_callback(on_done)
-        else:
+        if not self._loop:
             logger.error("Event loop not available!")
+            return
+
+        if self._active_response_future and not self._active_response_future.done():
+            logger.warning("A response is already in progress, ignoring new speech")
+            return
+
+        self.audio_service.set_processing(True)
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(f"Processing {len(audio_bytes)} bytes of speech (~{audio_ms} ms)...")
+
+        active_pipeline = (
+            getattr(self, '_gemma_pipeline', None)
+            or getattr(self, '_omni_pipeline', None)
+            or self.pipeline
+        )
+        if active_pipeline is None:
+            logger.error("No pipeline available!")
+            self._on_response_complete()
+            return
+
+        async def run_pipeline_with_timeout():
+            return await asyncio.wait_for(
+                active_pipeline.process_speech(audio_bytes),
+                timeout=self._turn_timeout_sec,
+            )
+
+        started_at = time.perf_counter()
+        future = asyncio.run_coroutine_threadsafe(run_pipeline_with_timeout(), self._loop)
+        self._active_response_future = future
+
+        def on_done(f):
+            elapsed = time.perf_counter() - started_at
+            try:
+                result = f.result()
+                if result:
+                    preview = result[:80].replace("\n", " ")
+                    logger.info("Pipeline completed in %.1fs: %s...", elapsed, preview)
+                else:
+                    logger.warning("Pipeline completed in %.1fs without a spoken response", elapsed)
+            except asyncio.TimeoutError:
+                logger.error("Pipeline timed out after %.1fs", elapsed)
+            except Exception as e:
+                logger.error(f"Pipeline error after {elapsed:.1f}s: {e}", exc_info=True)
+            finally:
+                if self._active_response_future is f:
+                    self._active_response_future = None
+                self._on_response_complete()
+
+        future.add_done_callback(on_done)
     
     def _on_response_complete(self):
         """Called when pipeline finishes processing."""
-        # Re-enable listening
+        if self._active_response_future and self._active_response_future.done():
+            self._active_response_future = None
         if self.audio_service:
             self.audio_service.set_processing(False)
     
@@ -385,6 +408,7 @@ class Live2DAssistant:
     
     async def _on_audio_ready(self, payload: AudioPayload):
         """Called when TTS audio is ready with volume data."""
+        logger.info("Audio payload ready (%sms, text=%r)", payload.duration_ms, (payload.text or '')[:80])
         # Send audio to frontend for playback
         audio_base64 = payload.audio_base64
         if not audio_base64 and payload.wav_bytes:
@@ -403,6 +427,12 @@ class Live2DAssistant:
     async def _on_expression_change(self, expression: str):
         """Called when emotion is detected."""
         self._evaluate_js(f"Live2DManager?.setExpression?.('{expression}')")
+
+    async def _on_error(self, error_msg: str):
+        """Called when the active pipeline surfaces an error."""
+        logger.error(f"Pipeline surfaced error: {error_msg}")
+        escaped = error_msg.replace("\\", "\\\\").replace("\'", "\\\'").replace("\n", "\\n")
+        self._evaluate_js(f"window.onError?.('{escaped}')")
     
     def _evaluate_js(self, code: str):
         """Evaluate JavaScript in the webview window."""
@@ -461,8 +491,12 @@ class Live2DAssistant:
                     logger.info(status)
                     
                 elif key == keyboard.Key.f3:
-                    # Interrupt (TODO: implement interruption)
-                    logger.info("⏹️ Interrupt requested")
+                    if self._active_response_future and not self._active_response_future.done():
+                        self._active_response_future.cancel()
+                        logger.info("⏹️ Interrupt requested: current response cancelled")
+                        self._on_response_complete()
+                    else:
+                        logger.info("⏹️ Interrupt requested (no active response)")
                     
                 elif key == keyboard.Key.f12:
                     # Toggle visibility

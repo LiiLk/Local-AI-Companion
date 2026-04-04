@@ -61,7 +61,7 @@ class ChatterboxTTSProvider(BaseTTS):
         exaggeration: float = 0.5,
         cfg_weight: float = 0.5,
         language: str = "fr",
-        prefer_full_gpu: bool = True,
+        prefer_full_gpu: bool = False,
     ):
         self.model_id = model_id
         self.ref_audio_path = Path(ref_audio_path) if ref_audio_path else None
@@ -107,17 +107,20 @@ class ChatterboxTTSProvider(BaseTTS):
 
         def _hybrid_session(self_inner, filename: str) -> onnxruntime.InferenceSession:
             from huggingface_hub import hf_hub_download
+            local_files_only = os.environ.get('HF_HUB_OFFLINE') == '1'
             path = hf_hub_download(
                 repo_id=self_inner.model_id,
                 filename=filename,
                 local_dir=self_inner.output_dir,
-                subfolder='onnx'
+                subfolder='onnx',
+                local_files_only=local_files_only,
             )
             hf_hub_download(
                 repo_id=self_inner.model_id,
                 filename=filename.replace(".onnx", ".onnx_data"),
                 local_dir=self_inner.output_dir,
-                subfolder='onnx'
+                subfolder='onnx',
+                local_files_only=local_files_only,
             )
             if self.prefer_full_gpu and can_use_cuda:
                 providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -165,6 +168,7 @@ class ChatterboxTTSProvider(BaseTTS):
 
         ref_path = str(self.ref_audio_path) if self.ref_audio_path and self.ref_audio_path.exists() else None
 
+        logger.info("Chatterbox synth start (%s chars)", len(text))
         self._model.synthesize(
             text=text,
             target_voice_path=ref_path,

@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncGenerator, Optional
 
@@ -25,6 +26,12 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault(
     "PYTORCH_CUDA_ALLOC_CONF",
     "expandable_segments:True,garbage_collection_threshold:0.8",
+)
+
+REALTIME_AUDIO_REPLY_PROMPT = (
+    "Listen to the following speech segment and reply briefly and naturally in the user's language. "
+    "Do not transcribe unless the user explicitly asks for a transcription. "
+    "Keep the answer short, conversational, and suitable for real-time voice chat."
 )
 
 
@@ -282,6 +289,9 @@ class GemmaProvider:
             for _ in image_inputs:
                 content_parts.append({"type": "image"})
 
+        if audio_waveform is not None and not text:
+            text = REALTIME_AUDIO_REPLY_PROMPT
+
         if text:
             content_parts.append({"type": "text", "text": text})
 
@@ -313,6 +323,15 @@ class GemmaProvider:
         ).to(self._model.device)
 
         input_len = inputs["input_ids"].shape[-1]
+        logger.info(
+            "Gemma generate start (stream=%s, max_new_tokens=%s, input_tokens=%s, has_audio=%s, has_images=%s)",
+            stream,
+            self.max_new_tokens,
+            input_len,
+            audio_inputs is not None,
+            bool(image_inputs),
+        )
+        started_at = time.perf_counter()
 
         with torch.no_grad():
             if stream:
@@ -335,9 +354,10 @@ class GemmaProvider:
 
                 # Run generation in a thread so streamer can yield
                 thread = threading.Thread(
-                    target=self._model.generate, kwargs=gen_kwargs
+                    target=self._model.generate, kwargs=gen_kwargs, daemon=True
                 )
                 thread.start()
+                logger.info("Gemma stream generation thread started")
                 return streamer, thread
             else:
                 output = self._model.generate(
@@ -347,9 +367,11 @@ class GemmaProvider:
                     top_p=self.top_p,
                     do_sample=self.temperature > 0,
                 )
-                return self._processor.decode(
+                decoded = self._processor.decode(
                     output[0][input_len:], skip_special_tokens=True
                 )
+                logger.info("Gemma generate finished in %.1fs", time.perf_counter() - started_at)
+                return decoded
 
     async def chat(
         self,
