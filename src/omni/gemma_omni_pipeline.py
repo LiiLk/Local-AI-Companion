@@ -144,12 +144,14 @@ class GemmaOmniPipeline:
             first_audio_sent = False
 
             images = self._get_screen_context()
-            async for token in self.gemma.chat_stream(
+            stream_kwargs = dict(
                 text="",
                 history=history_with_system,
                 audio=audio_bytes,
                 images=images if images else None,
-            ):
+            )
+
+            async for token in self.gemma.chat_stream(**stream_kwargs):
                 full_response += token
                 splitter.feed(token)
 
@@ -183,6 +185,19 @@ class GemmaOmniPipeline:
             return full_response
 
         except Exception as e:
+            # OOM during streaming: clean up VRAM before reporting error
+            _is_oom = "out of memory" in str(e).lower()
+            try:
+                import torch
+                _is_oom = _is_oom or isinstance(e, torch.cuda.OutOfMemoryError)
+                if _is_oom:
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+            if _is_oom:
+                gc.collect()
+                logger.warning("OOM during streaming Gemma inference — cleared VRAM cache")
+
             logger.error(f"Streaming pipeline error: {e}", exc_info=True)
             if self.on_error:
                 await self._call_async(self.on_error, str(e))
@@ -252,12 +267,41 @@ class GemmaOmniPipeline:
                 await self._call_async(self.on_response_start)
 
             images = self._get_screen_context()
-            response = await self.gemma.chat(
+            chat_kwargs = dict(
                 text="",
                 history=history_with_system,
                 audio=audio_bytes,
                 images=images if images else None,
             )
+
+            try:
+                response = await self.gemma.chat(**chat_kwargs)
+            except Exception as e:
+                # Check if this is a CUDA OOM error
+                _is_oom = "out of memory" in str(e).lower()
+                if not _is_oom:
+                    try:
+                        import torch
+                        _is_oom = isinstance(e, torch.cuda.OutOfMemoryError)
+                    except ImportError:
+                        pass
+                if not _is_oom:
+                    raise
+
+                logger.warning("OOM during Gemma inference — reducing tokens and retrying")
+                try:
+                    import torch
+                    torch.cuda.empty_cache()
+                except ImportError:
+                    pass
+                gc.collect()
+
+                original_max = self.gemma.max_new_tokens
+                self.gemma.max_new_tokens = min(128, original_max)
+                try:
+                    response = await self.gemma.chat(**chat_kwargs)
+                finally:
+                    self.gemma.max_new_tokens = original_max
 
             if not response:
                 logger.warning("Empty response from Gemma")
