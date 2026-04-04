@@ -77,6 +77,10 @@ class GemmaOmniPipeline:
         # State
         self._is_processing = False
 
+        # VRAM monitoring
+        from src.utils.vram_monitor import VRAMMonitor
+        self._vram = VRAMMonitor()
+
         logger.info(
             f"GemmaOmniPipeline initialized "
             f"(character={self.config.character_name})"
@@ -95,16 +99,131 @@ class GemmaOmniPipeline:
     def preload(self):
         """Pre-load both models."""
         logger.info("Pre-loading Gemma + Chatterbox...")
+        self._vram.log("before_gemma_load")
         self.gemma.preload()
+        self._vram.log("after_gemma_load")
         self.tts._load_model()
+        self._vram.log("after_chatterbox_load")
         logger.info("Both models loaded")
 
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
-        """
-        Process speech audio through the full pipeline.
+        """Process speech — uses streaming if configured."""
+        if getattr(self.config, 'stream_tts', False):
+            return await self.process_speech_streaming(audio_bytes)
+        return await self._process_speech_basic(audio_bytes)
 
-        This is the main entry point, called by AudioService when
-        VAD detects end-of-speech.
+    async def process_speech_streaming(self, audio_bytes: bytes) -> Optional[str]:
+        """
+        Streaming variant: sentences are sent to TTS as they complete.
+        Gemma continues generating while Chatterbox synthesizes.
+        """
+        if self._is_processing:
+            logger.warning("Already processing, skipping")
+            return None
+
+        self._is_processing = True
+
+        try:
+            from src.utils.sentence_splitter import SentenceSplitter
+
+            system_msg = {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]}
+            history_with_system = [system_msg] + self.history
+
+            if self.on_response_start:
+                await self._call_async(self.on_response_start)
+
+            if self.on_transcription:
+                await self._call_async(self.on_transcription, "[audio input]")
+
+            # Stream tokens from Gemma
+            splitter = SentenceSplitter()
+            full_response = ""
+            first_audio_sent = False
+
+            async for token in self.gemma.chat_stream(
+                text="",
+                history=history_with_system,
+                audio=audio_bytes,
+            ):
+                full_response += token
+                splitter.feed(token)
+
+                if self.on_response_chunk:
+                    await self._call_async(self.on_response_chunk, token)
+
+                # Check for complete sentences
+                for sentence in splitter.get_sentences():
+                    await self._synthesize_and_send(sentence, first_audio_sent)
+                    first_audio_sent = True
+
+            # Flush remaining text
+            remaining = splitter.flush()
+            if remaining:
+                await self._synthesize_and_send(remaining, first_audio_sent)
+
+            if self.on_response_end:
+                await self._call_async(self.on_response_end, full_response)
+
+            # Update history
+            self.history.append(
+                {"role": "user", "content": [{"type": "audio", "audio": audio_bytes}]}
+            )
+            self.history.append(
+                {"role": "assistant", "content": [{"type": "text", "text": full_response}]}
+            )
+            max_msgs = MAX_HISTORY_TURNS * 2
+            if len(self.history) > max_msgs:
+                self.history = self.history[-max_msgs:]
+
+            return full_response
+
+        except Exception as e:
+            logger.error(f"Streaming pipeline error: {e}", exc_info=True)
+            if self.on_error:
+                await self._call_async(self.on_error, str(e))
+            return None
+        finally:
+            self._is_processing = False
+
+    async def _synthesize_and_send(self, text: str, is_continuation: bool = False) -> None:
+        """Synthesize a sentence and fire audio callback."""
+        # Emotion detection
+        emotion, expression = self.emotion_detector.detect_and_get_expression(text)
+
+        if expression != "neutral" and self.on_expression_change:
+            await self._call_async(self.on_expression_change, expression)
+
+        # Clean for TTS
+        tts_text = self.emotion_detector.strip_markers_for_tts(text)
+        if not tts_text.strip():
+            return
+
+        # Synthesize
+        tts_result = await self.tts.synthesize(tts_text)
+        self._vram.log("after_tts_inference")
+
+        if tts_result.audio_data:
+            pcm_data = self._extract_pcm_from_wav(tts_result.audio_data)
+            volumes = analyze_audio_volumes(pcm_data, self.tts.SAMPLE_RATE, chunk_ms=50)
+            audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
+            duration_ms = int((tts_result.duration or 0) * 1000)
+
+            payload = AudioPayload(
+                audio_bytes=pcm_data,
+                audio_base64=audio_b64,
+                volumes=volumes,
+                duration_ms=duration_ms,
+                sample_rate=self.tts.SAMPLE_RATE,
+                text=tts_text,
+                expression=expression,
+            )
+
+            if self.on_audio_ready:
+                await self._call_async(self.on_audio_ready, payload)
+
+    async def _process_speech_basic(self, audio_bytes: bytes) -> Optional[str]:
+        """
+        Non-streaming speech processing pipeline.
 
         Args:
             audio_bytes: Raw PCM 16-bit 16kHz mono audio from VAD.
