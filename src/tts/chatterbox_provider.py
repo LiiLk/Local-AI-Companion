@@ -84,10 +84,10 @@ class ChatterboxTTSProvider(BaseTTS):
 
         logger.info(f"Loading Chatterbox from {self.model_id}...")
 
-        # Import and load the ONNX model
-        from chatterbox_onnx import ChatterboxONNX
+        # Import and load the ONNX model (Q4 quantized by default)
+        from chatterbox_onnx import ChatterboxOnnx
 
-        self._model = ChatterboxONNX.from_pretrained(self.model_id)
+        self._model = ChatterboxOnnx(quantized=True)
 
         # Pre-load reference audio if configured
         if self.ref_audio_path and self.ref_audio_path.exists():
@@ -112,24 +112,25 @@ class ChatterboxTTSProvider(BaseTTS):
         """Synchronous synthesis. Returns (audio_array, sample_rate)."""
         self._load_model()
 
-        kwargs = {
-            "text": text,
-            "exaggeration": self.exaggeration,
-            "cfg_weight": self.cfg_weight,
-        }
+        # Chatterbox ONNX API: synthesize(text, target_voice_path, ..., output_file_name)
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp.close()
 
-        if self._ref_audio_data is not None:
-            kwargs["audio_prompt"] = self._ref_audio_data
+        ref_path = str(self.ref_audio_path) if self.ref_audio_path and self.ref_audio_path.exists() else None
 
-        audio = self._model.generate(**kwargs)
+        self._model.synthesize(
+            text=text,
+            target_voice_path=ref_path,
+            exaggeration=self.exaggeration,
+            output_file_name=tmp.name,
+        )
 
-        # audio is a numpy array at 24kHz
-        if isinstance(audio, (list, tuple)):
-            audio = audio[0]
-        if hasattr(audio, "numpy"):
-            audio = audio.numpy()
+        # Read back the generated WAV
+        audio, sr = sf.read(tmp.name, dtype="float32")
+        import os
+        os.unlink(tmp.name)
 
-        return audio.astype(np.float32), self.SAMPLE_RATE
+        return audio, sr
 
     async def synthesize(
         self,
