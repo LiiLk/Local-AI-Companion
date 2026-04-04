@@ -68,13 +68,13 @@ async def main():
     test_audio = np.zeros(16000 * 2, dtype=np.int16).tobytes()
 
     # Run pipeline
-    print("\n[1/1] Full pipeline: audio → Gemma → Chatterbox → audio")
+    print("\n[1/1] Full pipeline: audio -> Gemma -> Chatterbox -> audio")
     t0 = time.time()
     response = await pipeline.process_speech(test_audio)
     elapsed = time.time() - t0
 
     print(f"\n  Total time: {elapsed:.1f}s")
-    print(f"  Response: {response}")
+    print(f"  Response: {response.encode('ascii', 'replace').decode()}")
     assert response is not None, "No response from pipeline"
     assert "audio" in results, "No audio output generated"
     assert results["audio"].duration_ms > 0, "Audio has zero duration"
