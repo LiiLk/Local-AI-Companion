@@ -29,14 +29,10 @@ import wave
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
-# Set offline mode EARLY and FORCEFULLY to prevent any HuggingFace network requests
-# This must be done before importing transformers or huggingface_hub
-# Using direct assignment (not setdefault) to override any existing values
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+# NOTE: Offline mode is set in _get_model() to avoid affecting other providers
+# (e.g., GemmaProvider needs to download models on first use)
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 import numpy as np
 
@@ -146,6 +142,10 @@ class MiniCPMoProvider:
 
     def _load_model_impl(self):
         """Internal model loading implementation."""
+        # Force offline mode for MiniCPM-o only (already downloaded)
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
         import torch
         from transformers import AutoModel
 
