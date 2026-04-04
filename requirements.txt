@@ -20,7 +20,7 @@ huggingface_hub>=0.20.0  # For downloading optimized French models
 transformers>=5.0.0            # Gemma 4 requires transformers 5.x+
 accelerate>=0.26.0             # Model loading utilities
 minicpmo-utils[all]>=1.0.2    # MiniCPM-o utilities (TTS, streaming)
-bitsandbytes>=0.43.0           # int4/int8 quantization for MiniCPM-o
+bitsandbytes>=0.45.0           # NF4 quantization (MiniCPM-o + Gemma E4B)
 # librosa is installed by minicpmo-utils (==0.9.0)
 
 # Web Server
@@ -46,7 +46,6 @@ silero-vad
 
 # Gemma-Omni Avatar (Phase 1)
 soxr                           # Audio resampling (required by transformers 5.x)
-torchao                        # TorchAO int4 quantization for Gemma E4B
 onnxruntime-gpu>=1.18.0        # ONNX Runtime with CUDA for Chatterbox
 chatterbox-onnx                # Chatterbox ONNX inference package
 mss>=9.0.0                     # Fast screen capture
