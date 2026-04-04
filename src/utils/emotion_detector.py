@@ -62,14 +62,17 @@ class EmotionConfig:
 class EmotionDetector:
     """
     Detects emotions from text and maps to Live2D expressions.
-    
+
     Usage:
         detector = EmotionDetector()
         emotion = detector.detect("I'm so (happy) to see you!")
         expression = detector.get_expression(emotion)  # Returns "星星"
         clean_text = detector.strip_markers(text)  # For TTS
     """
-    
+
+    # Chatterbox emotion tags to preserve in TTS text
+    CHATTERBOX_TAGS = {"laugh", "chuckle", "cough", "sigh"}
+
     def __init__(self, config: Optional[EmotionConfig] = None):
         self.config = config or EmotionConfig()
         self._compiled_patterns = [
@@ -151,6 +154,35 @@ class EmotionDetector:
         for pattern in self._compiled_patterns:
             result = pattern.sub('', result)
         
+        # Clean up extra whitespace
+        result = re.sub(r'\s+', ' ', result).strip()
+        return result
+
+    def strip_markers_for_tts(self, text: str) -> str:
+        """
+        Remove emotion markers but KEEP Chatterbox tags for TTS.
+
+        Chatterbox natively interprets [laugh], [chuckle], [cough], [sigh].
+        These must be preserved in the text sent to TTS.
+        All other markers are stripped.
+
+        Args:
+            text: Input text with emotion markers
+
+        Returns:
+            Clean text with only Chatterbox tags remaining
+        """
+        result = text
+        # Remove (happy), *excited*, <blush>
+        result = re.sub(r'\((\w+)\)', '', result)
+        result = re.sub(r'\*(\w+)\*', '', result)
+        result = re.sub(r'<(\w+)>', '', result)
+        # Remove [brackets] EXCEPT Chatterbox tags
+        result = re.sub(
+            r'\[(\w+)\]',
+            lambda m: m.group(0) if m.group(1).lower() in self.CHATTERBOX_TAGS else '',
+            result,
+        )
         # Clean up extra whitespace
         result = re.sub(r'\s+', ' ', result).strip()
         return result
