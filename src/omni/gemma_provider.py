@@ -14,10 +14,7 @@ import asyncio
 import logging
 import os
 import threading
-import wave
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -235,17 +232,36 @@ class GemmaProvider:
         """Pre-load model (call at startup to avoid first-request latency)."""
         self._load_model()
 
+    def _normalize_audio(
+        self,
+        audio: bytes | np.ndarray | None,
+    ) -> Optional[np.ndarray]:
+        """Convert raw PCM16 audio bytes into the waveform Gemma's processor expects."""
+        if audio is None:
+            return None
+
+        if isinstance(audio, np.ndarray):
+            waveform = audio.astype(np.float32, copy=False)
+        else:
+            pcm = np.frombuffer(bytes(audio), dtype=np.int16)
+            waveform = pcm.astype(np.float32) / 32768.0
+
+        if waveform.ndim > 1:
+            waveform = waveform.reshape(-1)
+        return waveform
+
     def _build_messages(
         self,
         text: str,
         history: list[dict] | None = None,
         audio: bytes | None = None,
         images: list | None = None,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], Optional[np.ndarray], Optional[list]]:
         """
         Build chat messages in Gemma's expected format.
 
-        Audio and images are placed as special tokens before text.
+        Audio and images are added as placeholders in the prompt while the raw
+        waveform / image objects are passed separately to the processor.
         """
         messages = []
 
@@ -256,57 +272,27 @@ class GemmaProvider:
 
         # Build user content parts
         content_parts = []
+        audio_waveform = self._normalize_audio(audio)
+        image_inputs = list(images) if images else None
 
-        if audio is not None:
-            import io
-            import numpy as np
-            import tempfile
-            import wave
+        if audio_waveform is not None:
+            content_parts.append({"type": "audio"})
 
-            # Convert to PCM16 bytes if numpy array
-            if isinstance(audio, np.ndarray):
-                if audio.dtype == np.float32 or audio.dtype == np.float64:
-                    pcm_bytes = (audio * 32768).clip(-32768, 32767).astype(np.int16).tobytes()
-                else:
-                    pcm_bytes = audio.astype(np.int16).tobytes()
-            else:
-                pcm_bytes = bytes(audio)
-
-            # Write temp WAV file (processor needs path with sample rate metadata)
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            with wave.open(tmp.name, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(16000)
-                wf.writeframes(pcm_bytes)
-            content_parts.append({"type": "audio", "audio": tmp.name})
-            # Store path for cleanup after generation
-            self._tmp_audio_path = tmp.name
-
-        if images:
-            for img in images:
-                content_parts.append({"type": "image", "image": img})
+        if image_inputs:
+            for _ in image_inputs:
+                content_parts.append({"type": "image"})
 
         if text:
             content_parts.append({"type": "text", "text": text})
 
         messages.append({"role": "user", "content": content_parts})
-        return messages
-
-    def _cleanup_tmp_audio(self):
-        """Remove temporary audio file if it exists."""
-        path = getattr(self, "_tmp_audio_path", None)
-        if path:
-            import os
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
-            self._tmp_audio_path = None
+        return messages, audio_waveform, image_inputs
 
     def _generate(
         self,
         messages: list[dict],
+        audio_inputs: Optional[np.ndarray] = None,
+        image_inputs: Optional[list] = None,
         stream: bool = False,
     ):
         """Synchronous generation (runs in executor thread)."""
@@ -314,16 +300,17 @@ class GemmaProvider:
 
         self._load_model()
 
-        try:
-            inputs = self._processor.apply_chat_template(
-                messages,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                add_generation_prompt=True,
-            ).to(self._model.device)
-        finally:
-            self._cleanup_tmp_audio()
+        prompt = self._processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = self._processor(
+            text=prompt,
+            audio=audio_inputs,
+            images=image_inputs,
+            return_tensors="pt",
+        ).to(self._model.device)
 
         input_len = inputs["input_ids"].shape[-1]
 
@@ -383,10 +370,10 @@ class GemmaProvider:
         Returns:
             Generated response text.
         """
-        messages = self._build_messages(text, history, audio, images)
+        messages, audio_inputs, image_inputs = self._build_messages(text, history, audio, images)
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
-            self._executor, self._generate, messages, False
+            self._executor, self._generate, messages, audio_inputs, image_inputs, False
         )
         return result
 
@@ -409,10 +396,10 @@ class GemmaProvider:
         Yields:
             Token strings as they're generated.
         """
-        messages = self._build_messages(text, history, audio, images)
+        messages, audio_inputs, image_inputs = self._build_messages(text, history, audio, images)
         loop = asyncio.get_running_loop()
         streamer, thread = await loop.run_in_executor(
-            self._executor, self._generate, messages, True
+            self._executor, self._generate, messages, audio_inputs, image_inputs, True
         )
 
         try:

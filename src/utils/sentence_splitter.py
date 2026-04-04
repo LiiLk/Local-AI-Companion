@@ -14,6 +14,7 @@ ABBREVIATIONS = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "etc", "vs",
 # Sentence-ending pattern: punctuation followed by space or end-of-string
 # We look for .!? followed by at least one whitespace character
 SENTENCE_BOUNDARY = re.compile(r'([.!?]+)(\s+)')
+CLAUSE_BOUNDARY = re.compile(r'([,;:])(\s+)')
 
 
 class SentenceSplitter:
@@ -32,10 +33,17 @@ class SentenceSplitter:
             send_to_tts(remaining)
     """
 
-    def __init__(self, min_length: int = 1):
+    def __init__(
+        self,
+        min_length: int = 1,
+        min_clause_length: int = 48,
+        min_clause_words: int = 6,
+    ):
         self._buffer = ""
         self._pending: list[str] = []
         self._min_length = min_length
+        self._min_clause_length = min_clause_length
+        self._min_clause_words = min_clause_words
 
     def feed(self, text: str) -> None:
         """Add text to the buffer and extract complete sentences."""
@@ -86,6 +94,25 @@ class SentenceSplitter:
             # Advance the buffer past the consumed portion
             self._buffer = self._buffer[consume_end:]
             search_start = 0  # Reset since buffer changed
+
+        while True:
+            match = CLAUSE_BOUNDARY.search(self._buffer)
+            if not match:
+                break
+
+            clause_end = match.start() + len(match.group(1))
+            consume_end = match.end()
+            candidate = self._buffer[:clause_end].strip()
+            word_count = len(candidate.split())
+
+            if (
+                len(candidate) < self._min_clause_length
+                or word_count < self._min_clause_words
+            ):
+                break
+
+            self._pending.append(candidate)
+            self._buffer = self._buffer[consume_end:]
 
         # Handle sentence at end of buffer (punctuation at very end, no trailing space).
         # Only emit if the buffer ends with sentence-ending punctuation.

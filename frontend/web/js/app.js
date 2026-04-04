@@ -183,7 +183,7 @@ class App {
             this.live2d.handleAudioMessage(message);
         } else {
             // Fallback to regular audio playback
-            this.audio.playAudio(message.data);
+            this.audio.playAudio(message.buffer || message.data);
         }
     }
     
@@ -201,7 +201,7 @@ class App {
     _handleOmniAudioChunk(message) {
         // Enqueue streaming audio from omni mode
         this.streamingPlayer.enqueue(
-            message.data,
+            message.buffer || message.data,
             message.lip_sync || null,
             message.expression || null
         );

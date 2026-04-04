@@ -14,7 +14,6 @@ Flow:
 """
 
 import asyncio
-import base64
 import gc
 import io
 import logging
@@ -76,6 +75,7 @@ class GemmaOmniPipeline:
 
         # Screen capture (optional)
         self.screen_buffer: Optional['ScreenBuffer'] = None
+        self._include_screen_in_conversation = False
 
         # State
         self._is_processing = False
@@ -225,12 +225,12 @@ class GemmaOmniPipeline:
         if tts_result.audio_data:
             pcm_data = self._extract_pcm_from_wav(tts_result.audio_data)
             volumes = analyze_audio_volumes(pcm_data, self.tts.SAMPLE_RATE, chunk_ms=50)
-            audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
             duration_ms = int((tts_result.duration or 0) * 1000)
 
             payload = AudioPayload(
                 audio_bytes=pcm_data,
-                audio_base64=audio_b64,
+                audio_base64=None,
+                wav_bytes=tts_result.audio_data,
                 volumes=volumes,
                 duration_ms=duration_ms,
                 sample_rate=self.tts.SAMPLE_RATE,
@@ -340,14 +340,12 @@ class GemmaOmniPipeline:
                     pcm_data, self.tts.SAMPLE_RATE, chunk_ms=50
                 )
 
-                # Base64 encode the full WAV for browser playback
-                audio_b64 = base64.b64encode(audio_data).decode("utf-8")
-
                 duration_ms = int((tts_result.duration or 0) * 1000)
 
                 payload = AudioPayload(
                     audio_bytes=pcm_data,
-                    audio_base64=audio_b64,
+                    audio_base64=None,
+                    wav_bytes=audio_data,
                     volumes=volumes,
                     duration_ms=duration_ms,
                     sample_rate=self.tts.SAMPLE_RATE,
@@ -429,6 +427,7 @@ class GemmaOmniPipeline:
         """Start screen capture if configured."""
         from src.vision.screen_buffer import ScreenBuffer
 
+        self._include_screen_in_conversation = config.get("include_in_conversation", False)
         self.screen_buffer = ScreenBuffer(
             capture_interval=config.get("interval", 2.0),
             max_buffer=config.get("max_buffer", 30),
@@ -439,7 +438,7 @@ class GemmaOmniPipeline:
 
     def _get_screen_context(self) -> list:
         """Get current screen frame(s) for vision context."""
-        if not self.screen_buffer:
+        if not self.screen_buffer or not self._include_screen_in_conversation:
             return []
 
         frame = self.screen_buffer.get_latest()

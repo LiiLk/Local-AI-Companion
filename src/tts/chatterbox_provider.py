@@ -61,12 +61,14 @@ class ChatterboxTTSProvider(BaseTTS):
         exaggeration: float = 0.5,
         cfg_weight: float = 0.5,
         language: str = "fr",
+        prefer_full_gpu: bool = True,
     ):
         self.model_id = model_id
         self.ref_audio_path = Path(ref_audio_path) if ref_audio_path else None
         self.exaggeration = exaggeration
         self.cfg_weight = cfg_weight
         self.language = language
+        self.prefer_full_gpu = prefer_full_gpu
         self._speed = 1.0
 
         self._model = None
@@ -86,8 +88,53 @@ class ChatterboxTTSProvider(BaseTTS):
 
         # Import and load the ONNX model (Q4 quantized by default)
         from chatterbox_onnx import ChatterboxOnnx
+        import onnxruntime
+        import os
 
-        self._model = ChatterboxOnnx(quantized=True)
+        # Add PyTorch CUDA DLLs to PATH so ONNX Runtime can find them
+        import torch
+        torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if torch_lib not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+            logger.info(f"Added PyTorch CUDA libs to PATH: {torch_lib}")
+
+        available_providers = set(onnxruntime.get_available_providers())
+        can_use_cuda = "CUDAExecutionProvider" in available_providers
+
+        # Prefer full GPU on cards like the RTX 4070, while keeping a CPU fallback
+        # so the provider still works when CUDA EP is unavailable.
+        _original_get_session = ChatterboxOnnx._download_and_get_session
+
+        def _hybrid_session(self_inner, filename: str) -> onnxruntime.InferenceSession:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                repo_id=self_inner.model_id,
+                filename=filename,
+                local_dir=self_inner.output_dir,
+                subfolder='onnx'
+            )
+            hf_hub_download(
+                repo_id=self_inner.model_id,
+                filename=filename.replace(".onnx", ".onnx_data"),
+                local_dir=self_inner.output_dir,
+                subfolder='onnx'
+            )
+            if self.prefer_full_gpu and can_use_cuda:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            elif can_use_cuda and "language_model" in filename:
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                providers = ["CPUExecutionProvider"]
+            logger.info(f"Loading {filename} with providers: {providers}")
+            return onnxruntime.InferenceSession(path, providers=providers)
+
+        ChatterboxOnnx._download_and_get_session = _hybrid_session
+
+        try:
+            self._model = ChatterboxOnnx(quantized=True)
+        finally:
+            # Restore original method
+            ChatterboxOnnx._download_and_get_session = _original_get_session
 
         # Pre-load reference audio if configured
         if self.ref_audio_path and self.ref_audio_path.exists():

@@ -59,12 +59,13 @@ class ConversationConfig:
 class AudioPayload:
     """Payload containing audio data with lip-sync info."""
     audio_bytes: bytes
-    audio_base64: str
     volumes: list[float]  # Volume per chunk for lip-sync
     duration_ms: int
     sample_rate: int
     text: str  # The text that was spoken
     expression: Optional[str] = None  # Detected expression
+    audio_base64: Optional[str] = None
+    wav_bytes: Optional[bytes] = None
 
 
 class EmotionDetector:
@@ -402,6 +403,7 @@ class ConversationPipeline:
             payload = AudioPayload(
                 audio_bytes=audio_bytes,
                 audio_base64=audio_base64,
+                wav_bytes=full_wav_bytes,
                 volumes=volumes,
                 duration_ms=duration_ms,
                 sample_rate=sample_rate,

@@ -5,7 +5,7 @@
 # "pipeline"    : Classic ASR → LLM → TTS pipeline (separate models)
 # "omni"        : Single omni model handles speech-to-speech (MiniCPM-o)
 # "gemma-omni"  : Gemma E4B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
-mode: "omni"
+mode: "gemma-omni"
 
 # === OMNI MODEL (speech-to-speech) ===
 # Used when mode: "omni"
@@ -63,14 +63,14 @@ gemma:
     detail_token_budget: 1120    # Tokens per image (detail mode)
   # VAD tuning (Silero VAD end-of-speech sensitivity)
   # Lower = faster response, higher = more tolerant of pauses
-  # Default: 30 (~960ms), recommended for conversation: 15 (~480ms)
-  vad_required_misses: 15
+  # Default: 30 (~960ms), tuned here for snappier real-time replies (~320ms)
+  vad_required_misses: 10
   screen:
     enabled: true
     interval: 2.0                # Seconds between captures
     max_buffer: 30               # Circular buffer size
     change_threshold: 0.05       # Pixel diff threshold
-    include_in_conversation: true
+    include_in_conversation: false
 
 # === LLM (Brain) ===
 # Used when mode: "pipeline"
@@ -189,6 +189,7 @@ tts:
     quantized: true
     exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
     cfg_weight: 0.5        # Classifier-free guidance weight
+    prefer_full_gpu: true  # Use CUDA for all ONNX sessions when available
 
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)

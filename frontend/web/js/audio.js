@@ -8,6 +8,7 @@ class AudioManager {
     constructor() {
         this.stream = null;
         this.audioContext = null;
+        this.playbackContext = null;
         this.processor = null;
         this.source = null;
         this.isRecording = false;
@@ -70,9 +71,8 @@ class AudioManager {
         // Create source from microphone
         this.source = this.audioContext.createMediaStreamSource(this.stream);
 
-        // Create script processor for raw audio access
-        // Buffer size of 4096 gives us ~85ms chunks at 48kHz
-        const bufferSize = 4096;
+        // Keep capture chunks small enough to reduce end-to-end latency.
+        const bufferSize = 1024;
         this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
 
         // Resampler state
@@ -97,10 +97,9 @@ class AudioManager {
             // Resample to 16kHz
             const resampled = this._resample(inputData, nativeSampleRate, this.targetSampleRate);
 
-            // Send samples to server
+            // Send PCM16 bytes to the server to avoid JSON float array overhead.
             if (this.onAudioSamples) {
-                // Convert Float32Array to regular array for JSON
-                this.onAudioSamples(Array.from(resampled));
+                this.onAudioSamples(this._floatToPcm16Buffer(resampled));
             }
         };
 
@@ -142,6 +141,15 @@ class AudioManager {
         return result;
     }
 
+    _floatToPcm16Buffer(floatData) {
+        const pcm16 = new Int16Array(floatData.length);
+        for (let i = 0; i < floatData.length; i++) {
+            const sample = Math.max(-1, Math.min(1, floatData[i]));
+            pcm16[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        }
+        return pcm16.buffer;
+    }
+
     stopRecording() {
         if (!this.isRecording) {
             console.warn('Not recording');
@@ -175,9 +183,9 @@ class AudioManager {
         }
     }
 
-    async playAudio(base64Audio) {
+    async playAudio(audioInput) {
         // Add to queue
-        this.audioQueue.push(base64Audio);
+        this.audioQueue.push(audioInput);
 
         // Start playing if not already
         if (!this.isPlaying) {
@@ -203,20 +211,11 @@ class AudioManager {
         }
 
         this.isPlaying = true;
-        const base64Audio = this.audioQueue.shift();
+        const audioInput = this.audioQueue.shift();
 
         try {
-            // Decode base64 to array buffer
-            const audioData = atob(base64Audio);
-            const arrayBuffer = new ArrayBuffer(audioData.length);
-            const uint8Array = new Uint8Array(arrayBuffer);
-
-            for (let i = 0; i < audioData.length; i++) {
-                uint8Array[i] = audioData.charCodeAt(i);
-            }
-
-            // Create separate audio context for playback
-            const playbackContext = new (window.AudioContext || window.webkitAudioContext)();
+            const playbackContext = this._ensurePlaybackContext();
+            const arrayBuffer = this._toArrayBuffer(audioInput);
 
             // Decode and play
             const audioBuffer = await playbackContext.decodeAudioData(arrayBuffer);
@@ -225,7 +224,6 @@ class AudioManager {
             source.connect(playbackContext.destination);
 
             source.onended = () => {
-                playbackContext.close();
                 this._playNext();
             };
 
@@ -254,6 +252,37 @@ class AudioManager {
         this.audioQueue = [];
     }
 
+    _ensurePlaybackContext() {
+        if (!this.playbackContext) {
+            this.playbackContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (this.playbackContext.state === 'suspended') {
+            this.playbackContext.resume();
+        }
+        return this.playbackContext;
+    }
+
+    _toArrayBuffer(audioInput) {
+        if (audioInput instanceof ArrayBuffer) {
+            return audioInput.slice(0);
+        }
+
+        if (ArrayBuffer.isView(audioInput)) {
+            return audioInput.buffer.slice(
+                audioInput.byteOffset,
+                audioInput.byteOffset + audioInput.byteLength
+            );
+        }
+
+        const audioData = atob(audioInput);
+        const arrayBuffer = new ArrayBuffer(audioData.length);
+        const uint8Array = new Uint8Array(arrayBuffer);
+        for (let i = 0; i < audioData.length; i++) {
+            uint8Array[i] = audioData.charCodeAt(i);
+        }
+        return arrayBuffer;
+    }
+
     cleanup() {
         this.stopRecording();
         if (this.stream) {
@@ -263,6 +292,10 @@ class AudioManager {
         if (this.audioContext) {
             this.audioContext.close();
             this.audioContext = null;
+        }
+        if (this.playbackContext) {
+            this.playbackContext.close();
+            this.playbackContext = null;
         }
     }
 }
@@ -295,8 +328,28 @@ class StreamingAudioPlayer {
         return this.audioContext;
     }
 
-    enqueue(base64Audio, lipSync, expression) {
-        this.queue.push({ base64Audio, lipSync, expression });
+    _toArrayBuffer(audioInput) {
+        if (audioInput instanceof ArrayBuffer) {
+            return audioInput.slice(0);
+        }
+
+        if (ArrayBuffer.isView(audioInput)) {
+            return audioInput.buffer.slice(
+                audioInput.byteOffset,
+                audioInput.byteOffset + audioInput.byteLength
+            );
+        }
+
+        const binaryString = atob(audioInput);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    enqueue(audioInput, lipSync, expression) {
+        this.queue.push({ audioInput, lipSync, expression });
         if (!this.isPlaying) {
             this._playNext();
         }
@@ -322,13 +375,7 @@ class StreamingAudioPlayer {
             const ctx = this._ensureContext();
 
             // Decode base64
-            const binaryString = atob(item.base64Audio);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-
-            const audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+            const audioBuffer = await ctx.decodeAudioData(this._toArrayBuffer(item.audioInput));
             const source = ctx.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(ctx.destination);
