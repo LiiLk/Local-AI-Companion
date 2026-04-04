@@ -31,7 +31,7 @@ python-multipart>=0.0.6  # For file uploads
 torchaudio>=2.1.0      # Audio processing for TTS
 
 # Live2D Avatar Overlay
-pywebview>=5.0.0       # Transparent window for Live2D avatar
+pywebview>=6.0.0       # Transparent window for Live2D avatar (6.0+ required for transparency)
 pynput>=1.7.0          # Global hotkeys (F11, F12)
 numpy>=1.24.0          # Audio analysis for lip-sync
 
@@ -43,3 +43,14 @@ pillow>=10.0.0         # Image handling for tray icon
 langdetect>=1.0.9      # Language detection
 emoji>=2.0.0           # Emoji removal for TTS
 silero-vad
+
+# Gemma-Omni Avatar (Phase 1)
+torchao                        # TorchAO int4 quantization for Gemma E4B
+onnxruntime-gpu>=1.18.0        # ONNX Runtime with CUDA for Chatterbox
+chatterbox-onnx                # Chatterbox ONNX inference package
+mss>=9.0.0                     # Fast screen capture
+soundfile>=0.12.0              # Audio file I/O (may already be installed)
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
