@@ -593,33 +593,40 @@ class WebSocketManager:
             except Exception:
                 pass
 
-        def on_transcription(text):
-            asyncio.create_task(send_json({"type": "transcription", "text": text}))
+        async def on_transcription(text):
+            await send_json({"type": "transcription", "text": text})
 
-        def on_response_start():
-            asyncio.create_task(send_json({"type": "text_start"}))
+        async def on_response_start():
+            await send_json({"type": "text_start"})
 
-        def on_response_chunk(text):
-            asyncio.create_task(send_json({"type": "text_chunk", "content": text}))
+        async def on_response_chunk(text):
+            await send_json({"type": "text_chunk", "content": text})
 
-        def on_response_end(text):
-            asyncio.create_task(send_json({"type": "text_end", "full_text": text}))
+        async def on_response_end(text):
+            await send_json({"type": "text_end", "full_text": text})
 
-        def on_audio_ready(payload):
-            asyncio.create_task(send_json({
+        async def on_audio_ready(payload):
+            await send_json({
                 "type": "audio_data",
                 "data": payload.audio_base64,
                 "format": "wav",
-                "lip_sync": payload.volumes,
+                "lip_sync": {
+                    "volumes": payload.volumes,
+                    "duration_ms": payload.duration_ms,
+                    "chunk_ms": 50
+                },
                 "expression": payload.expression,
                 "text": payload.text,
-            }))
+            })
 
-        def on_expression_change(expr):
-            asyncio.create_task(send_json({"type": "expression_change", "expression": expr}))
+        async def on_expression_change(expr):
+            await send_json({"type": "expression_change", "expression": expr})
             state = self._get_state(client_id)
             if state:
                 state.current_expression = expr
+
+        async def on_error(error_msg):
+            await send_json({"type": "error", "message": f"Gemma error: {error_msg}"})
 
         pipeline.on_transcription = on_transcription
         pipeline.on_response_start = on_response_start
@@ -627,6 +634,7 @@ class WebSocketManager:
         pipeline.on_response_end = on_response_end
         pipeline.on_audio_ready = on_audio_ready
         pipeline.on_expression_change = on_expression_change
+        pipeline.on_error = on_error
 
     async def _handle_text_gemma(self, client_id: str, content: str):
         """Handle a text message in gemma-omni mode."""

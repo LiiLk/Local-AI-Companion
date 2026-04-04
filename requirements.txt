@@ -49,7 +49,7 @@ torchao                        # TorchAO int4 quantization for Gemma E4B
 onnxruntime-gpu>=1.18.0        # ONNX Runtime with CUDA for Chatterbox
 chatterbox-onnx                # Chatterbox ONNX inference package
 mss>=9.0.0                     # Fast screen capture
-soundfile>=0.12.0              # Audio file I/O (may already be installed)
+
 
 # Testing
 pytest>=8.0.0
