@@ -17,7 +17,7 @@ sounddevice>=0.4.0     # Microphone audio capture
 huggingface_hub>=0.20.0  # For downloading optimized French models
 
 # Omni Model (MiniCPM-o 4.5 - unified ASR/LLM/TTS)
-transformers==4.51.0           # Version-locked for MiniCPM-o compatibility
+transformers>=5.0.0            # Gemma 4 requires transformers 5.x+
 accelerate>=0.26.0             # Model loading utilities
 minicpmo-utils[all]>=1.0.2    # MiniCPM-o utilities (TTS, streaming)
 bitsandbytes>=0.43.0           # int4/int8 quantization for MiniCPM-o
