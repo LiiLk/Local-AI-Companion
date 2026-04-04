@@ -95,6 +95,7 @@ class Live2DAssistant:
         self._window: Optional[webview.Window] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._hotkey_listener = None
+        self._preload_thread: Optional[threading.Thread] = None
         
         # Components (initialized in start())
         self.audio_service: Optional[AudioService] = None
@@ -411,6 +412,38 @@ class Live2DAssistant:
             except Exception as e:
                 logger.debug(f"JS eval error: {e}")
     
+    def _preload_models_and_start_audio(self):
+        """Load heavy models in the background, then start audio capture."""
+        try:
+            if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
+                logger.info("⏳ Pre-loading omni model in background...")
+                self._omni_pipeline.preload()
+                logger.info("✅ Omni model ready")
+
+            if hasattr(self, '_gemma_pipeline') and self._gemma_pipeline:
+                logger.info("⏳ Pre-loading Gemma + Chatterbox in background...")
+                self._gemma_pipeline.preload()
+                logger.info("✅ Gemma + Chatterbox ready")
+
+            if self.audio_service and self._loop and not self.audio_service._running:
+                self.audio_service.start(self._loop)
+                logger.info("✅ Audio capture enabled after model preload")
+
+        except Exception as e:
+            logger.error(f"Background preload failed: {e}", exc_info=True)
+
+    def _start_background_preload(self):
+        """Start model preload without blocking the UI."""
+        if self._preload_thread and self._preload_thread.is_alive():
+            return
+
+        self._preload_thread = threading.Thread(
+            target=self._preload_models_and_start_audio,
+            daemon=True,
+            name="ModelPreload",
+        )
+        self._preload_thread.start()
+
     # ==================== Hotkeys ====================
     
     def _setup_hotkeys(self):
@@ -619,16 +652,6 @@ class Live2DAssistant:
         # Create components
         self._create_components()
         
-        # Pre-load omni model if using omni mode (avoids first-request latency)
-        if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
-            logger.info("⏳ Pre-loading omni model (this may take 30-60s)...")
-            self._omni_pipeline.preload()
-
-        # Pre-load gemma pipeline if using gemma-omni mode
-        if hasattr(self, '_gemma_pipeline') and self._gemma_pipeline:
-            logger.info("⏳ Pre-loading Gemma + Chatterbox (this may take 30-60s)...")
-            self._gemma_pipeline.preload()
-        
         # Setup hotkeys
         self._setup_hotkeys()
         
@@ -646,8 +669,8 @@ class Live2DAssistant:
         self._loop_thread.start()
         logger.info("✅ Event loop started in background thread")
         
-        # Start audio service (now the loop is running!)
-        self.audio_service.start(self._loop)
+        # Pre-load models without blocking the window, then start audio capture
+        self._start_background_preload()
 
         # Create and start window
         if WEBVIEW_AVAILABLE:
