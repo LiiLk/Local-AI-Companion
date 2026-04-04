@@ -66,6 +66,10 @@ async def lifespan(app: FastAPI):
         model_id = omni_config.get("model_id", "openbmb/MiniCPM-o-4_5")
         device = omni_config.get("device", "cuda")
         print(f"   🧠 Omni: {model_id} on {device}")
+    elif mode == "gemma-omni":
+        gemma_config = config.get("gemma", {})
+        print(f"   🧠 Gemma: {gemma_config.get('model_id', 'google/gemma-4-E4B-it')} on {gemma_config.get('device', 'cuda')}")
+        print(f"   🔊 TTS: Chatterbox Multilingual ONNX Q4")
     else:
         llm_config = config.get("llm", {})
         model_name = llm_config.get("ollama", {}).get("model", "unknown")
