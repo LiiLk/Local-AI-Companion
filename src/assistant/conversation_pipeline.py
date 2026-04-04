@@ -47,6 +47,13 @@ class ConversationConfig:
     stream_tts: bool = True  # Synthesize sentence-by-sentence
     auto_detect_language: bool = True
 
+    # Omni mode (MiniCPM-o)
+    omni_use_single_pass: bool = True  # Single omni call for speech -> response
+    omni_transcribe_for_history: bool = False  # Extra ASR pass for history/UI
+    omni_generate_audio: bool = True  # Generate response audio in omni mode
+    omni_max_tokens: int = 512
+    omni_temperature: float = 0.7
+
 
 @dataclass
 class AudioPayload:

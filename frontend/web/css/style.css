@@ -1109,6 +1109,7 @@ kbd {
     z-index: var(--z-sticky);
     pointer-events: none;
     overflow: hidden;
+    background: transparent;
 }
 
 .live2d-container #live2d-canvas {
