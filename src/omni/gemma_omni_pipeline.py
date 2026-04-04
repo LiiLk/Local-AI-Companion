@@ -17,6 +17,7 @@ import asyncio
 import gc
 import io
 import logging
+import time
 import wave
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -110,9 +111,9 @@ class GemmaOmniPipeline:
         logger.info("Both models loaded")
 
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
-        """Process speech — uses streaming if configured."""
+        """Process speech using the most stable Gemma path for live audio turns."""
         if getattr(self.config, 'stream_tts', False):
-            return await self.process_speech_streaming(audio_bytes)
+            logger.info("Gemma audio turn: using stable non-streaming path")
         return await self._process_speech_basic(audio_bytes)
 
     async def process_speech_streaming(self, audio_bytes: bytes) -> Optional[str]:
@@ -125,6 +126,13 @@ class GemmaOmniPipeline:
             return None
 
         self._is_processing = True
+        turn_started = time.perf_counter()
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(
+            "Gemma speech turn started (audio_ms=%s, history_turns=%s)",
+            audio_ms,
+            len(self.history) // 2,
+        )
 
         try:
             from src.utils.sentence_splitter import SentenceSplitter
@@ -207,6 +215,7 @@ class GemmaOmniPipeline:
 
     async def _synthesize_and_send(self, text: str, is_continuation: bool = False) -> None:
         """Synthesize a sentence and fire audio callback."""
+        tts_started = time.perf_counter()
         # Emotion detection
         emotion, expression = self.emotion_detector.detect_and_get_expression(text)
 
@@ -218,8 +227,11 @@ class GemmaOmniPipeline:
         if not tts_text.strip():
             return
 
+        logger.info("TTS synthesis start (%s chars)", len(tts_text))
+
         # Synthesize
         tts_result = await self.tts.synthesize(tts_text)
+        logger.info("TTS synthesis finished in %.1fs", time.perf_counter() - tts_started)
         self._vram.log("after_tts_inference")
 
         if tts_result.audio_data:
@@ -256,6 +268,13 @@ class GemmaOmniPipeline:
             return None
 
         self._is_processing = True
+        turn_started = time.perf_counter()
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(
+            "Gemma speech turn started (audio_ms=%s, history_turns=%s)",
+            audio_ms,
+            len(self.history) // 2,
+        )
 
         try:
             # Step 1: Build conversation context
@@ -273,9 +292,11 @@ class GemmaOmniPipeline:
                 audio=audio_bytes,
                 images=images if images else None,
             )
+            logger.info("Gemma inference started")
 
             try:
                 response = await self.gemma.chat(**chat_kwargs)
+                logger.info("Gemma inference completed in %.1fs", time.perf_counter() - turn_started)
             except Exception as e:
                 # Check if this is a CUDA OOM error
                 _is_oom = "out of memory" in str(e).lower()
@@ -300,6 +321,7 @@ class GemmaOmniPipeline:
                 self.gemma.max_new_tokens = min(128, original_max)
                 try:
                     response = await self.gemma.chat(**chat_kwargs)
+                    logger.info("Gemma inference completed in %.1fs", time.perf_counter() - turn_started)
                 finally:
                     self.gemma.max_new_tokens = original_max
 
@@ -328,7 +350,9 @@ class GemmaOmniPipeline:
             tts_text = self.emotion_detector.strip_markers_for_tts(response)
 
             # Step 5: Synthesize speech with Chatterbox
+            logger.info("Gemma text ready (%s chars), starting TTS", len(tts_text))
             tts_result = await self.tts.synthesize(tts_text)
+            logger.info("TTS completed, total turn time %.1fs", time.perf_counter() - turn_started)
 
             # Step 6: Build AudioPayload
             if tts_result.audio_data:
@@ -369,6 +393,7 @@ class GemmaOmniPipeline:
             if len(self.history) > max_msgs:
                 self.history = self.history[-max_msgs:]
 
+            logger.info("Gemma speech turn finished in %.1fs", time.perf_counter() - turn_started)
             return response
 
         except Exception as e:
