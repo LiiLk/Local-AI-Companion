@@ -2,8 +2,9 @@
 # You can modify this file without touching the code!
 
 # === MODE ===
-# "pipeline" : Classic ASR → LLM → TTS pipeline (separate models)
-# "omni"     : Single omni model handles speech-to-speech (MiniCPM-o)
+# "pipeline"    : Classic ASR → LLM → TTS pipeline (separate models)
+# "omni"        : Single omni model handles speech-to-speech (MiniCPM-o)
+# "gemma-omni"  : Gemma E4B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
 mode: "omni"
 
 # === OMNI MODEL (speech-to-speech) ===
@@ -20,8 +21,21 @@ omni:
     quantization: "int4"
     # Device: "cuda" for GPU, "cpu" for CPU (GPU strongly recommended)
     device: "cuda"
-    # Maximum new tokens to generate
-    max_tokens: 4096
+    # Precision: "bfloat16" (recommended), "float16", "float32"
+    dtype: "bfloat16"
+    # Attention backend: "sdpa" or "flash_attention_2" (if flash-attn installed)
+    attn_implementation: "sdpa"
+    # Initialize sub-modules (disable vision if not needed to save memory/speed)
+    init_vision: false  # Set to true only if using camera/screen capture
+    init_audio: true
+    init_tts: true
+    # Omni behavior
+    use_single_pass: true          # audio in -> text+audio out in one call
+    transcribe_for_history: false  # extra ASR pass for UI/history
+    generate_audio: true
+    stream_tts: false              # avoid sentence-level TTS in omni mode
+    # Maximum new tokens to generate (512-1024 for conversational responses)
+    max_tokens: 512
     # Sampling parameters
     temperature: 0.7
     # Voice cloning: path to a 6-30s WAV reference file (or null for default voice)
@@ -29,6 +43,30 @@ omni:
     ref_audio_path: null
     # Supported speech languages (EN + ZH only for audio I/O)
     speech_languages: ["en", "zh"]
+
+# === GEMMA-OMNI (Gemma E4B + Chatterbox TTS) ===
+# Used when mode: "gemma-omni"
+# Gemma 4 E4B-it handles audio + vision + reasoning in a single model.
+# Chatterbox Multilingual handles TTS with voice cloning and emotions.
+gemma:
+  model_id: "google/gemma-4-E4B-it"
+  quantization: "int4"           # TorchAO int4 (~4.1 GB VRAM)
+  device: "cuda"
+  dtype: "bfloat16"
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.95
+  context_max_turns: 10
+  vision:
+    enabled: true
+    token_budget: 140            # Tokens per image (passive mode)
+    detail_token_budget: 1120    # Tokens per image (detail mode)
+  screen:
+    enabled: true
+    interval: 2.0                # Seconds between captures
+    max_buffer: 30               # Circular buffer size
+    change_threshold: 0.05       # Pixel diff threshold
+    include_in_conversation: true
 
 # === LLM (Brain) ===
 # Used when mode: "pipeline"
@@ -74,8 +112,9 @@ character:
 # Used when mode: "pipeline" (omni mode handles TTS internally)
 tts:
   # Default TTS provider:
-  # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
-  # - "edge"   : Edge TTS (Microsoft cloud, free)
+  # - "kokoro"     : Kokoro 82M (local, natural, lightweight, no voice cloning)
+  # - "edge"       : Edge TTS (Microsoft cloud, free)
+  # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, emotion tags)
   provider: "kokoro"
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -132,6 +171,20 @@ tts:
   # - en-GB-SoniaNeural (British female)
   # - fr-FR-DeniseNeural (French female)
   # - ja-JP-NanamiNeural (Japanese female)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # CHATTERBOX TTS (local, voice cloning, emotion tags)
+  # ─────────────────────────────────────────────────────────────────────────
+  # - ONNX Q4 quantized (~2 GB VRAM)
+  # - Voice cloning from 5-10s reference audio
+  # - Emotion tags: [laugh], [chuckle], [cough], [sigh]
+  # - 23 languages including French
+  # ─────────────────────────────────────────────────────────────────────────
+  chatterbox:
+    model_id: "onnx-community/chatterbox-multilingual-ONNX"
+    quantized: true
+    exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
+    cfg_weight: 0.5        # Classifier-free guidance weight
 
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)
