@@ -61,6 +61,10 @@ gemma:
     enabled: true
     token_budget: 140            # Tokens per image (passive mode)
     detail_token_budget: 1120    # Tokens per image (detail mode)
+  # VAD tuning (Silero VAD end-of-speech sensitivity)
+  # Lower = faster response, higher = more tolerant of pauses
+  # Default: 30 (~960ms), recommended for conversation: 15 (~480ms)
+  vad_required_misses: 15
   screen:
     enabled: true
     interval: 2.0                # Seconds between captures
