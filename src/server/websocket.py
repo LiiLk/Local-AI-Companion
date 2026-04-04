@@ -210,6 +210,7 @@ class ConversationState:
                 exaggeration=exaggeration,
                 language=language,
             )
+            chatterbox._load_model()  # Preload TTS so first response is fast
 
             pipeline_config = ConversationConfig(
                 character_name=character.get("name", "AI"),
