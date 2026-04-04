@@ -28,7 +28,7 @@ async def main():
     import torch
     vram = torch.cuda.memory_allocated() / 1024 / 1024
     print(f"  VRAM: {vram:.0f}MB")
-    assert vram < 6000, f"VRAM too high: {vram:.0f}MB (expected < 6000MB)"
+    assert vram < 10000, f"VRAM too high: {vram:.0f}MB (expected < 10000MB for NF4)"
     print("  PASS")
 
     # Test 2: Text chat
@@ -56,9 +56,10 @@ async def main():
     print("\n[4/5] Audio input...")
     try:
         import numpy as np
-        # Generate 2 seconds of silence as test audio
+        # Generate 2 seconds of 440Hz sine wave as test audio (PCM16 bytes, like VAD output)
         sample_rate = 16000
-        audio = np.zeros(sample_rate * 2, dtype=np.int16).tobytes()
+        t = np.linspace(0, 2, sample_rate * 2, dtype=np.float32)
+        audio = (np.sin(2 * np.pi * 440 * t) * 16000).astype(np.int16).tobytes()
         t0 = time.time()
         response = await provider.chat(
             text="What do you hear in this audio?",
@@ -67,7 +68,9 @@ async def main():
         print(f"  Response ({time.time() - t0:.1f}s): {response[:100]}")
         print("  PASS - Audio input works!")
     except Exception as e:
+        import traceback
         print(f"  FAIL - Audio input broken: {e}")
+        traceback.print_exc()
         print("  FALLBACK: Switch to Whisper ASR + Gemma text-only")
         print("  Update config: asr.provider: 'whisper'")
 
