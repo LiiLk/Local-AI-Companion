@@ -20,7 +20,7 @@ async def main():
     provider = GemmaProvider()
 
     # Test 1: Model loading
-    print("\n[1/4] Loading Gemma E4B (int4)...")
+    print("\n[1/5] Loading Gemma E4B (int4)...")
     t0 = time.time()
     provider.preload()
     print(f"  Loaded in {time.time() - t0:.1f}s")
@@ -32,15 +32,28 @@ async def main():
     print("  PASS")
 
     # Test 2: Text chat
-    print("\n[2/4] Text chat...")
+    print("\n[2/5] Text chat...")
     t0 = time.time()
     response = await provider.chat("Bonjour, comment tu t'appelles ?")
     print(f"  Response ({time.time() - t0:.1f}s): {response[:100]}")
     assert len(response) > 5, "Response too short"
     print("  PASS")
 
-    # Test 3: Audio input (critical validation gate)
-    print("\n[3/4] Audio input...")
+    # Test 3: Image input
+    print("\n[3/5] Image input...")
+    from PIL import Image
+    test_image = Image.new("RGB", (224, 224), color=(100, 150, 200))
+    t0 = time.time()
+    response = await provider.chat(
+        text="Describe what you see in this image.",
+        images=[test_image],
+    )
+    print(f"  Response ({time.time() - t0:.1f}s): {response[:100]}")
+    assert len(response) > 5
+    print("  PASS")
+
+    # Test 4: Audio input (critical validation gate)
+    print("\n[4/5] Audio input...")
     try:
         import numpy as np
         # Generate 2 seconds of silence as test audio
@@ -58,8 +71,8 @@ async def main():
         print("  FALLBACK: Switch to Whisper ASR + Gemma text-only")
         print("  Update config: asr.provider: 'whisper'")
 
-    # Test 4: Streaming
-    print("\n[4/4] Streaming chat...")
+    # Test 5: Streaming
+    print("\n[5/5] Streaming chat...")
     t0 = time.time()
     tokens = []
     async for token in provider.chat_stream("Tell me a short joke."):
