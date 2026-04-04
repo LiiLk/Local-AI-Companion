@@ -216,6 +216,11 @@ class Live2DAssistant:
                 config=pipeline_config,
             )
 
+            # Enable screen capture if configured
+            screen_config = gemma_config.get('screen', {})
+            if screen_config.get('enabled', False):
+                self._gemma_pipeline.enable_screen_capture(screen_config)
+
             # Wire callbacks (same interface as other pipelines)
             self._gemma_pipeline.on_transcription = self._on_transcription
             self._gemma_pipeline.on_response_start = self._on_response_start

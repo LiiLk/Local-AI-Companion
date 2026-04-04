@@ -74,6 +74,9 @@ class GemmaOmniPipeline:
         self.on_expression_change: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
 
+        # Screen capture (optional)
+        self.screen_buffer: Optional['ScreenBuffer'] = None
+
         # State
         self._is_processing = False
 
@@ -140,10 +143,12 @@ class GemmaOmniPipeline:
             full_response = ""
             first_audio_sent = False
 
+            images = self._get_screen_context()
             async for token in self.gemma.chat_stream(
                 text="",
                 history=history_with_system,
                 audio=audio_bytes,
+                images=images if images else None,
             ):
                 full_response += token
                 splitter.feed(token)
@@ -246,10 +251,12 @@ class GemmaOmniPipeline:
             if self.on_response_start:
                 await self._call_async(self.on_response_start)
 
+            images = self._get_screen_context()
             response = await self.gemma.chat(
                 text="",
                 history=history_with_system,
                 audio=audio_bytes,
+                images=images if images else None,
             )
 
             if not response:
@@ -345,6 +352,8 @@ class GemmaOmniPipeline:
     async def shutdown(self):
         """Clean shutdown of all components."""
         logger.info("Shutting down GemmaOmniPipeline...")
+        if self.screen_buffer:
+            self.screen_buffer.stop()
         self.tts.cleanup()
         self.gemma.cleanup()
         gc.collect()
@@ -371,3 +380,23 @@ class GemmaOmniPipeline:
     def clear_history(self):
         """Clear conversation history."""
         self.history.clear()
+
+    def enable_screen_capture(self, config: dict) -> None:
+        """Start screen capture if configured."""
+        from src.vision.screen_buffer import ScreenBuffer
+
+        self.screen_buffer = ScreenBuffer(
+            capture_interval=config.get("interval", 2.0),
+            max_buffer=config.get("max_buffer", 30),
+            change_threshold=config.get("change_threshold", 0.05),
+        )
+        self.screen_buffer.start()
+        logger.info("Screen capture enabled")
+
+    def _get_screen_context(self) -> list:
+        """Get current screen frame(s) for vision context."""
+        if not self.screen_buffer:
+            return []
+
+        frame = self.screen_buffer.get_latest()
+        return [frame] if frame else []
