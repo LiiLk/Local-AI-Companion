@@ -608,6 +608,11 @@ class Live2DAssistant:
         if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
             logger.info("⏳ Pre-loading omni model (this may take 30-60s)...")
             self._omni_pipeline.preload()
+
+        # Pre-load gemma pipeline if using gemma-omni mode
+        if hasattr(self, '_gemma_pipeline') and self._gemma_pipeline:
+            logger.info("⏳ Pre-loading Gemma + Chatterbox (this may take 30-60s)...")
+            self._gemma_pipeline.preload()
         
         # Setup hotkeys
         self._setup_hotkeys()
@@ -667,6 +672,12 @@ class Live2DAssistant:
         # Shutdown omni pipeline if used
         if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
             self._omni_pipeline.shutdown()
+
+        # Shutdown gemma pipeline if used
+        if hasattr(self, '_gemma_pipeline') and self._gemma_pipeline:
+            asyncio.run_coroutine_threadsafe(
+                self._gemma_pipeline.shutdown(), self._loop
+            ).result(timeout=10)
         
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
