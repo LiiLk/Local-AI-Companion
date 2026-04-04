@@ -578,6 +578,137 @@ class WebSocketManager:
             })
 
     # ------------------------------------------------------------------
+    # Gemma-omni mode handlers
+    # ------------------------------------------------------------------
+
+    def _wire_gemma_callbacks(self, client_id: str, pipeline):
+        """Wire GemmaOmniPipeline callbacks to WebSocket sends."""
+        if pipeline.on_audio_ready is not None:
+            return  # Already wired
+
+        async def send_json(msg):
+            try:
+                if client_id in self.active_connections:
+                    await self.active_connections[client_id].send_json(msg)
+            except Exception:
+                pass
+
+        def on_transcription(text):
+            asyncio.create_task(send_json({"type": "transcription", "text": text}))
+
+        def on_response_start():
+            asyncio.create_task(send_json({"type": "text_start"}))
+
+        def on_response_chunk(text):
+            asyncio.create_task(send_json({"type": "text_chunk", "content": text}))
+
+        def on_response_end(text):
+            asyncio.create_task(send_json({"type": "text_end", "full_text": text}))
+
+        def on_audio_ready(payload):
+            asyncio.create_task(send_json({
+                "type": "audio_data",
+                "data": payload.audio_base64,
+                "format": "wav",
+                "lip_sync": payload.volumes,
+                "expression": payload.expression,
+                "text": payload.text,
+            }))
+
+        def on_expression_change(expr):
+            asyncio.create_task(send_json({"type": "expression_change", "expression": expr}))
+            state = self._get_state(client_id)
+            if state:
+                state.current_expression = expr
+
+        pipeline.on_transcription = on_transcription
+        pipeline.on_response_start = on_response_start
+        pipeline.on_response_chunk = on_response_chunk
+        pipeline.on_response_end = on_response_end
+        pipeline.on_audio_ready = on_audio_ready
+        pipeline.on_expression_change = on_expression_change
+
+    async def _handle_text_gemma(self, client_id: str, content: str):
+        """Handle a text message in gemma-omni mode."""
+        state = self._get_state(client_id)
+        if not state:
+            return
+
+        _, pipeline = state.get_gemma_omni()
+        self._wire_gemma_callbacks(client_id, pipeline)
+
+        await self.send_json(client_id, {"type": "text_start"})
+        await self.send_json(client_id, {"type": "audio_start"})
+
+        full_response = ""
+        try:
+            response = await pipeline.gemma.chat(
+                text=content,
+                history=[{"role": "system", "content": [{"type": "text", "text": pipeline.system_prompt}]}] + pipeline.history,
+            )
+
+            if response:
+                full_response = response
+                await self.send_json(client_id, {
+                    "type": "text_chunk",
+                    "content": response
+                })
+                await pipeline._synthesize_and_send(response)
+
+                pipeline.history.append(
+                    {"role": "user", "content": [{"type": "text", "text": content}]}
+                )
+                pipeline.history.append(
+                    {"role": "assistant", "content": [{"type": "text", "text": response}]}
+                )
+
+        except Exception as e:
+            print(f"Gemma text error: {e}")
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": f"Gemma processing error: {str(e)}"
+            })
+
+        await self.send_json(client_id, {
+            "type": "text_end",
+            "full_text": full_response
+        })
+        await self.send_json(client_id, {"type": "audio_end"})
+
+    async def _handle_audio_gemma(self, client_id: str, audio_bytes: bytes):
+        """Handle audio input in gemma-omni mode (Gemma does ASR+LLM together)."""
+        state = self._get_state(client_id)
+        if not state:
+            return
+
+        _, pipeline = state.get_gemma_omni()
+        self._wire_gemma_callbacks(client_id, pipeline)
+
+        try:
+            audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+            duration_sec = len(audio_int16) / 16000
+            print(f"Gemma audio received: {len(audio_bytes)} bytes, {duration_sec:.2f}s")
+
+            if duration_sec < 0.5:
+                print("Audio too short (< 0.5s), ignored")
+                await self.send_json(client_id, {
+                    "type": "transcription",
+                    "text": "",
+                    "message": "Audio too short"
+                })
+                return
+
+            # Gemma handles ASR + LLM in one pass via process_speech
+            await pipeline.process_speech(audio_bytes)
+
+        except Exception as e:
+            print(f"Gemma audio error: {e}")
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": f"Gemma audio error: {str(e)}"
+            })
+
+    # ------------------------------------------------------------------
     # Pipeline mode handlers
     # ------------------------------------------------------------------
 
@@ -590,6 +721,10 @@ class WebSocketManager:
         # Branch on mode
         if state.mode == "omni":
             await self._handle_text_omni(client_id, content)
+            return
+
+        elif state.mode == "gemma-omni":
+            await self._handle_text_gemma(client_id, content)
             return
 
         # Pipeline mode
@@ -771,6 +906,8 @@ class WebSocketManager:
                 elif len(event) > 100:
                     if state.mode == "omni":
                         asyncio.create_task(self._handle_audio_omni(client_id, event))
+                    elif state.mode == "gemma-omni":
+                        asyncio.create_task(self._handle_audio_gemma(client_id, event))
                     else:
                         asyncio.create_task(self._transcribe_and_respond(client_id, event))
 
@@ -848,6 +985,9 @@ class WebSocketManager:
         if state.omni_pipeline:
             state.omni_pipeline.clear_history()
 
+        if state.gemma_pipeline:
+            state.gemma_pipeline.clear_history()
+
         await self.send_json(client_id, {
             "type": "cleared",
             "message": "Conversation history cleared"
@@ -906,6 +1046,36 @@ class WebSocketManager:
                     await safe_send({
                         "type": "models_error",
                         "message": f"Omni model failed: {str(e)}"
+                    })
+
+                if not state.vad and is_connected():
+                    try:
+                        await loop.run_in_executor(None, state.get_vad)
+                        print(f"   VAD loaded for {client_id}")
+                    except Exception as e:
+                        print(f"   VAD load warning: {e}")
+
+            elif state.mode == "gemma-omni":
+                await safe_send({
+                    "type": "model_loading",
+                    "model": "gemma",
+                    "message": "Loading Gemma E4B + Chatterbox...",
+                    "progress": 10
+                })
+                try:
+                    await loop.run_in_executor(None, state.get_gemma_omni)
+                    print(f"   Gemma + Chatterbox loaded for {client_id}")
+                    await safe_send({
+                        "type": "model_loaded",
+                        "model": "gemma",
+                        "message": "Gemma + Chatterbox ready!",
+                        "progress": 90
+                    })
+                except Exception as e:
+                    print(f"   Gemma load error: {e}")
+                    await safe_send({
+                        "type": "models_error",
+                        "message": f"Gemma model failed: {str(e)}"
                     })
 
                 if not state.vad and is_connected():
@@ -1020,6 +1190,13 @@ class WebSocketManager:
                     "message": "Models already loaded"
                 })
                 return
+        elif state.mode == "gemma-omni":
+            if state.gemma_model and state.vad:
+                await self.send_json(client_id, {
+                    "type": "models_ready",
+                    "message": "Models already loaded"
+                })
+                return
         else:
             if state.vad and state.asr and state.tts:
                 await self.send_json(client_id, {
@@ -1048,6 +1225,18 @@ class WebSocketManager:
                         await loop.run_in_executor(None, state.get_vad)
 
                 await asyncio.gather(load_omni(), load_vad())
+
+            elif state.mode == "gemma-omni":
+                async def load_gemma():
+                    if not state.gemma_model:
+                        await loop.run_in_executor(None, state.get_gemma_omni)
+
+                async def load_vad():
+                    if not state.vad:
+                        await loop.run_in_executor(None, state.get_vad)
+
+                await asyncio.gather(load_gemma(), load_vad())
+
             else:
                 async def load_vad():
                     if not state.vad:
@@ -1123,11 +1312,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     await manager.handle_audio_stream(client_id, audio_samples)
 
             elif msg_type == "duplex_audio":
-                # Full-duplex audio for omni mode
+                # Full-duplex audio for omni/gemma-omni mode
                 audio_samples = data.get("samples", [])
                 if audio_samples:
                     state = manager.states.get(client_id)
-                    if state and state.mode == "omni":
+                    if state and state.mode in ("omni", "gemma-omni"):
                         await manager.handle_audio_stream(client_id, audio_samples)
 
             elif msg_type == "mic_stop":
@@ -1137,6 +1326,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     if audio_bytes:
                         if state.mode == "omni":
                             await manager._handle_audio_omni(client_id, audio_bytes)
+                        elif state.mode == "gemma-omni":
+                            await manager._handle_audio_gemma(client_id, audio_bytes)
                         else:
                             await manager._transcribe_and_respond(client_id, audio_bytes)
 
