@@ -59,9 +59,11 @@ class ConversationState:
     current_language: str = "fr"
     emotion_detector: Optional[EmotionDetector] = None
     current_expression: str = "neutral"
-    mode: str = "pipeline"  # "pipeline" or "omni"
+    mode: str = "pipeline"  # "pipeline", "omni", or "gemma-omni"
     omni_model: Optional[Any] = None
     omni_pipeline: Optional[Any] = None
+    gemma_model: Optional[Any] = None
+    gemma_pipeline: Optional[Any] = None
 
     def __post_init__(self):
         self.config = load_config()
@@ -73,6 +75,9 @@ class ConversationState:
         """Initialize models (lazy loading)."""
         if self.mode == "omni":
             # Omni mode: defer model loading to get_omni()
+            pass
+        elif self.mode == "gemma-omni":
+            # Defer model loading to get_gemma_omni()
             pass
         else:
             # Pipeline mode: initialize LLM
@@ -171,6 +176,53 @@ class ConversationState:
             print("MiniCPM-o loaded successfully")
 
         return self.omni_model, self.omni_pipeline
+
+    def get_gemma_omni(self):
+        """Get or create the Gemma-Omni pipeline (lazy loading)."""
+        if self.gemma_model is None:
+            from src.omni import GemmaProvider, GemmaOmniPipeline
+            from src.tts import ChatterboxTTSProvider
+            from src.assistant.conversation_pipeline import ConversationConfig
+
+            gemma_config = self.config.get("gemma", {})
+            tts_config = self.config.get("tts", {})
+            chatterbox_config = tts_config.get("chatterbox", {})
+            character = self.config.get("character", {})
+            voice_config = character.get("voice", {})
+
+            ref_audio = voice_config.get("chatterbox_ref_audio")
+            exaggeration = voice_config.get("chatterbox_exaggeration", 0.5)
+            language = voice_config.get("chatterbox_language", "fr")
+
+            print("Loading Gemma E4B + Chatterbox...")
+            self.gemma_model = GemmaProvider(
+                model_id=gemma_config.get("model_id", "google/gemma-4-E4B-it"),
+                device=gemma_config.get("device", "cuda"),
+                quantization=gemma_config.get("quantization", "int4"),
+                max_new_tokens=gemma_config.get("max_new_tokens", 256),
+                temperature=gemma_config.get("temperature", 0.7),
+            )
+            self.gemma_model.preload()
+
+            chatterbox = ChatterboxTTSProvider(
+                model_id=chatterbox_config.get("model_id", "onnx-community/chatterbox-multilingual-ONNX"),
+                ref_audio_path=ref_audio,
+                exaggeration=exaggeration,
+                language=language,
+            )
+
+            pipeline_config = ConversationConfig(
+                character_name=character.get("name", "AI"),
+                system_prompt=character.get("system_prompt", "You are a helpful assistant."),
+            )
+            self.gemma_pipeline = GemmaOmniPipeline(
+                gemma=self.gemma_model,
+                tts=chatterbox,
+                config=pipeline_config,
+            )
+            print("Gemma + Chatterbox loaded successfully")
+
+        return self.gemma_model, self.gemma_pipeline
 
     async def cleanup(self):
         """Cleanup resources."""

@@ -17,6 +17,12 @@ Hotkeys:
     Escape: Quit
 """
 
+# Set HuggingFace offline mode BEFORE any imports to prevent network requests
+import os
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
 import argparse
 import asyncio
 import base64
@@ -126,14 +132,25 @@ class Live2DAssistant:
             self._omni_model = MiniCPMoProvider(
                 model_name=omni_config.get('model_id', 'openbmb/MiniCPM-o-4_5'),
                 device=omni_config.get('device', 'cuda'),
+                dtype=omni_config.get('dtype', 'bfloat16'),
                 quantization=omni_config.get('quantization'),
+                attn_implementation=omni_config.get('attn_implementation', 'sdpa'),
                 ref_audio_path=ref_audio,
+                init_vision=omni_config.get('init_vision', True),
+                init_audio=omni_config.get('init_audio', True),
+                init_tts=omni_config.get('init_tts', True),
             )
             logger.info(f"Omni: MiniCPM-o ({omni_config.get('model_id')}, q={omni_config.get('quantization', 'none')})")
 
             pipeline_config = ConversationConfig(
                 character_name=character_config.get('name', 'AI'),
                 system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
+                stream_tts=omni_config.get('stream_tts', False),
+                omni_use_single_pass=omni_config.get('use_single_pass', True),
+                omni_transcribe_for_history=omni_config.get('transcribe_for_history', False),
+                omni_generate_audio=omni_config.get('generate_audio', True),
+                omni_max_tokens=omni_config.get('max_tokens', 512),
+                omni_temperature=omni_config.get('temperature', 0.7),
             )
             self._omni_pipeline = OmniPipeline(
                 omni=self._omni_model,
@@ -149,6 +166,64 @@ class Live2DAssistant:
             self._omni_pipeline.on_expression_change = self._on_expression_change
 
             # Pipeline is not used in omni mode
+            self.pipeline = None
+
+        elif mode == "gemma-omni":
+            from src.omni import GemmaProvider, GemmaOmniPipeline
+            from src.tts import ChatterboxTTSProvider
+
+            gemma_config = self.config.get('gemma', {})
+            tts_config = self.config.get('tts', {})
+            chatterbox_config = tts_config.get('chatterbox', {})
+
+            # Resolve voice config from character preset
+            voice_config = character_config.get('voice', {})
+            ref_audio = voice_config.get('chatterbox_ref_audio')
+            exaggeration = voice_config.get('chatterbox_exaggeration', 0.5)
+            language = voice_config.get('chatterbox_language', 'fr')
+
+            # Create Gemma provider
+            self._gemma_model = GemmaProvider(
+                model_id=gemma_config.get('model_id', 'google/gemma-4-E4B-it'),
+                device=gemma_config.get('device', 'cuda'),
+                quantization=gemma_config.get('quantization', 'int4'),
+                max_new_tokens=gemma_config.get('max_new_tokens', 256),
+                temperature=gemma_config.get('temperature', 0.7),
+                top_p=gemma_config.get('top_p', 0.95),
+                context_max_turns=gemma_config.get('context_max_turns', 10),
+            )
+            logger.info(f"Gemma: {gemma_config.get('model_id')} (q={gemma_config.get('quantization', 'int4')})")
+
+            # Create Chatterbox TTS provider
+            self._chatterbox_tts = ChatterboxTTSProvider(
+                model_id=chatterbox_config.get('model_id', 'onnx-community/chatterbox-multilingual-ONNX'),
+                ref_audio_path=ref_audio,
+                exaggeration=exaggeration,
+                cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
+                language=language,
+            )
+            logger.info(f"TTS: Chatterbox (ref={ref_audio}, exag={exaggeration})")
+
+            # Create pipeline
+            pipeline_config = ConversationConfig(
+                character_name=character_config.get('name', 'AI'),
+                system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
+                stream_tts=tts_config.get('stream_tts', True),
+            )
+            self._gemma_pipeline = GemmaOmniPipeline(
+                gemma=self._gemma_model,
+                tts=self._chatterbox_tts,
+                config=pipeline_config,
+            )
+
+            # Wire callbacks (same interface as other pipelines)
+            self._gemma_pipeline.on_transcription = self._on_transcription
+            self._gemma_pipeline.on_response_start = self._on_response_start
+            self._gemma_pipeline.on_response_chunk = self._on_response_chunk
+            self._gemma_pipeline.on_response_end = self._on_response_end
+            self._gemma_pipeline.on_audio_ready = self._on_audio_ready
+            self._gemma_pipeline.on_expression_change = self._on_expression_change
+
             self.pipeline = None
 
         else:
@@ -237,7 +312,11 @@ class Live2DAssistant:
             logger.info(f"Processing {len(audio_bytes)} bytes of speech...")
 
             # Route to the active pipeline (omni or classic)
-            active_pipeline = getattr(self, '_omni_pipeline', None) or self.pipeline
+            active_pipeline = (
+                getattr(self, '_gemma_pipeline', None)
+                or getattr(self, '_omni_pipeline', None)
+                or self.pipeline
+            )
             if active_pipeline is None:
                 logger.error("No pipeline available!")
                 self._on_response_complete()
@@ -525,6 +604,11 @@ class Live2DAssistant:
         # Create components
         self._create_components()
         
+        # Pre-load omni model if using omni mode (avoids first-request latency)
+        if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
+            logger.info("⏳ Pre-loading omni model (this may take 30-60s)...")
+            self._omni_pipeline.preload()
+        
         # Setup hotkeys
         self._setup_hotkeys()
         
@@ -544,16 +628,18 @@ class Live2DAssistant:
         
         # Start audio service (now the loop is running!)
         self.audio_service.start(self._loop)
-        
+
         # Create and start window
         if WEBVIEW_AVAILABLE:
             self._window = self._create_window()
-            
+
             def on_loaded():
                 self._on_window_loaded()
-            
+
             # Start webview (blocking)
-            webview.start(on_loaded, debug=True)
+            # Use 'edgechromium' (WebView2) for transparency support on Windows
+            # Requires pywebview>=6.0.0 for transparency with mouse events
+            webview.start(on_loaded, debug=True, gui='edgechromium')
         else:
             # No GUI mode - just run the loop
             logger.info("Running in headless mode (no GUI)")
@@ -577,6 +663,10 @@ class Live2DAssistant:
         
         if self._hotkey_listener:
             self._hotkey_listener.stop()
+        
+        # Shutdown omni pipeline if used
+        if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
+            self._omni_pipeline.shutdown()
         
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
