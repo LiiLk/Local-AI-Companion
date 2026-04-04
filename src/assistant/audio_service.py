@@ -26,6 +26,8 @@ import numpy as np
 try:
     import sounddevice as sd
     SOUNDDEVICE_AVAILABLE = True
+    # Reduce overflow warnings (normal during heavy processing)
+    sd.default.extra_settings = sd.WasapiSettings(exclusive=False) if hasattr(sd, 'WasapiSettings') else None
 except ImportError:
     SOUNDDEVICE_AVAILABLE = False
     print("⚠️ sounddevice not installed. Run: pip install sounddevice")
@@ -33,6 +35,9 @@ except ImportError:
 from src.vad import SileroVAD
 
 logger = logging.getLogger(__name__)
+
+# Suppress input overflow warnings (common during model loading/inference)
+logging.getLogger("sounddevice").setLevel(logging.ERROR)
 
 
 class MicState(Enum):
@@ -210,7 +215,11 @@ class AudioService:
         
         def audio_callback(indata, frames, time_info, status):
             if status:
-                logger.warning(f"Audio status: {status}")
+                # Input overflow is common during heavy GPU processing, only log at debug
+                if "overflow" in str(status).lower():
+                    logger.debug(f"Audio status: {status}")
+                else:
+                    logger.warning(f"Audio status: {status}")
             
             # Only process if listening
             if self._state != MicState.LISTENING:

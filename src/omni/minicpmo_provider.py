@@ -21,12 +21,36 @@ Requirements:
 
 import asyncio
 import logging
+import os
 import tempfile
+import threading
+import warnings
 import wave
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
+# Set offline mode EARLY and FORCEFULLY to prevent any HuggingFace network requests
+# This must be done before importing transformers or huggingface_hub
+# Using direct assignment (not setdefault) to override any existing values
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 import numpy as np
+
+# Suppress third-party deprecation warnings (torch, diffusers, etc.)
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
+warnings.filterwarnings("ignore", category=FutureWarning, module="diffusers")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*weights_only.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*use_fast.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*Sliding Window.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*seen_tokens.*")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*clone.*detach.*")
+
+# Suppress noisy INFO logs from transformers modules
+logging.getLogger("transformers_modules").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +70,9 @@ class MiniCPMoProvider:
                       or None for full precision (uses dtype).
         attn_implementation: Attention backend ("sdpa" or "flash_attention_2").
         ref_audio_path: Optional path to a reference WAV for voice cloning TTS.
+        init_vision: Initialize vision components.
+        init_audio: Initialize audio components.
+        init_tts: Initialize TTS components.
     """
 
     def __init__(
@@ -56,6 +83,9 @@ class MiniCPMoProvider:
         quantization: Optional[str] = None,
         attn_implementation: str = "sdpa",
         ref_audio_path: Optional[str] = None,
+        init_vision: bool = True,
+        init_audio: bool = True,
+        init_tts: bool = True,
     ):
         self.model_name = model_name
         self.device = device
@@ -63,15 +93,59 @@ class MiniCPMoProvider:
         self.quantization = quantization
         self.attn_implementation = attn_implementation
         self.ref_audio_path = ref_audio_path
+        self.init_vision = init_vision
+        self.init_audio = init_audio
+        self.init_tts = init_tts
 
         self._model = None
         self._ref_audio: Optional[np.ndarray] = None
+        self._loading_lock = threading.Lock()
+        self._is_loading = False
+        self._is_ready = False
+
+    @property
+    def is_ready(self) -> bool:
+        """Check if the model is loaded and ready for inference."""
+        return self._is_ready
+
+    @property
+    def is_loading(self) -> bool:
+        """Check if the model is currently loading."""
+        return self._is_loading
+
+    def preload(self):
+        """Pre-load the model (blocking). Call this at startup to avoid lazy loading delays."""
+        self._get_model()
+
+    def _is_model_cached(self) -> bool:
+        """Check if the model is already in the Hugging Face cache."""
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            # Check for config.json as a proxy for the full model
+            cached_path = try_to_load_from_cache(self.model_name, "config.json")
+            return cached_path is not None and cached_path != "NOT_FOUND"
+        except Exception:
+            return False
 
     def _get_model(self):
         """Lazy-load the MiniCPM-o model."""
         if self._model is not None:
             return self._model
 
+        # Prevent concurrent loading attempts
+        with self._loading_lock:
+            if self._model is not None:
+                return self._model
+
+            self._is_loading = True
+            try:
+                return self._load_model_impl()
+            finally:
+                self._is_loading = False
+                self._is_ready = self._model is not None
+
+    def _load_model_impl(self):
+        """Internal model loading implementation."""
         import torch
         from transformers import AutoModel
 
@@ -88,39 +162,90 @@ class MiniCPMoProvider:
             from transformers import BitsAndBytesConfig
 
             if self.quantization == "int4":
+                import torch
                 quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=torch_dtype,
+                    bnb_4bit_quant_storage=torch.uint8,  # Per official docs
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
+                    llm_int8_skip_modules=["tts"],  # Keep TTS in full precision for voice quality
                 )
                 logger.info(f"Loading MiniCPM-o 4.5 (int4, ~11GB) on {self.device}...")
-            else:
+            else:  # int8
                 quantization_config = BitsAndBytesConfig(
                     load_in_8bit=True,
+                    llm_int8_skip_modules=["tts"],  # Skip TTS from quantization
                 )
                 logger.info(f"Loading MiniCPM-o 4.5 (int8, ~15GB) on {self.device}...")
         else:
             logger.info(f"Loading MiniCPM-o 4.5 ({self.dtype}) on {self.device}...")
 
+        attn_impl = self.attn_implementation
+        if attn_impl == "flash_attention_2":
+            try:
+                import flash_attn  # noqa: F401
+            except Exception:
+                logger.warning(
+                    "flash_attention_2 requested but flash-attn is not installed; "
+                    "falling back to sdpa"
+                )
+                attn_impl = "sdpa"
+
         load_kwargs = dict(
             trust_remote_code=True,
-            attn_implementation=self.attn_implementation,
+            attn_implementation=attn_impl,
             torch_dtype=torch_dtype,
-            init_vision=True,
-            init_audio=True,
-            init_tts=True,
+            init_vision=self.init_vision,
+            init_audio=self.init_audio,
+            init_tts=self.init_tts,
         )
 
         if quantization_config is not None:
             load_kwargs["quantization_config"] = quantization_config
             load_kwargs["device_map"] = "auto"
+            # Fix: Required for bitsandbytes FP4/NF4 layers to initialize properly
+            # Without this, TTS modules throw AssertionError in LinearFP4
+            load_kwargs["low_cpu_mem_usage"] = False
 
-        self._model = AutoModel.from_pretrained(
-            self.model_name,
-            **load_kwargs,
-        )
+        # Try loading from local cache first to avoid network issues
+        # (HTTP 502, timeouts) when HuggingFace servers are slow
+        use_local = self._is_model_cached()
+        if use_local:
+            logger.info("Model found in cache, loading offline...")
+            load_kwargs["local_files_only"] = True
+            # Also set env var for any sub-components (processor, tokenizer, etc.)
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+        try:
+            self._model = AutoModel.from_pretrained(
+                self.model_name,
+                **load_kwargs,
+            )
+        except Exception as e:
+            # If local load failed, retry with network access
+            if use_local:
+                logger.warning(f"Local load failed ({e}), retrying with network...")
+                load_kwargs["local_files_only"] = False
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                self._model = AutoModel.from_pretrained(
+                    self.model_name,
+                    **load_kwargs,
+                )
+            else:
+                raise
         self._model.eval()
+
+        # Convert TTS modules to bfloat16 to avoid quantization conflicts
+        # Must match the compute dtype (bfloat16) to avoid dtype mismatch with LLM outputs
+        if quantization_config is not None and hasattr(self._model, 'tts'):
+            try:
+                self._model.tts.to(torch_dtype)
+                logger.info(f"TTS modules converted to {torch_dtype} for quantization compatibility")
+            except Exception as e:
+                logger.warning(f"Failed to convert TTS modules to {torch_dtype}: {e}")
 
         # Only manually move to device if not using quantization (device_map handles it)
         if quantization_config is None and self.device == "cuda":
@@ -132,6 +257,9 @@ class MiniCPMoProvider:
         # Pre-load reference audio for voice cloning if provided
         if self.ref_audio_path:
             self._load_ref_audio(self.ref_audio_path)
+        else:
+            logger.info("No voice reference configured - using model's default voice. "
+                       "To enable voice cloning, set omni_ref_audio in character config.")
 
         logger.info("MiniCPM-o 4.5 loaded successfully")
         return self._model
@@ -218,6 +346,8 @@ class MiniCPMoProvider:
         """
         model = self._get_model()
 
+        logger.info(f"LLM chat START - {len(messages)} messages, max_tokens={max_new_tokens}")
+
         result = model.chat(
             msgs=messages,
             do_sample=do_sample,
@@ -226,6 +356,8 @@ class MiniCPMoProvider:
             use_tts_template=False,
             generate_audio=False,
         )
+
+        logger.info(f"LLM chat END - response: {str(result)[:100]}...")
         return result.strip() if isinstance(result, str) else str(result).strip()
 
     def chat_stream(
@@ -238,26 +370,17 @@ class MiniCPMoProvider:
         """
         Stream text tokens from the model.
 
+        NOTE: MiniCPM-o doesn't support streaming via model.chat().
+        Real streaming requires streaming_prefill() + streaming_generate().
+        This method falls back to non-streaming for compatibility.
+
         Yields:
-            Text chunks as they are generated.
+            Text chunks as they are generated (single chunk in non-streaming mode).
         """
-        model = self._get_model()
-
-        gen = model.chat(
-            msgs=messages,
-            do_sample=do_sample,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            use_tts_template=False,
-            generate_audio=False,
-            stream=True,
-        )
-
-        if hasattr(gen, "__iter__"):
-            for chunk in gen:
-                yield chunk
-        else:
-            yield str(gen)
+        # MiniCPM-o streaming requires streaming_prefill() + streaming_generate()
+        # For simplicity, fall back to non-streaming chat
+        result = self.chat(messages, max_new_tokens, temperature, do_sample)
+        yield result
 
     # ------------------------------------------------------------------
     # TTS
@@ -282,6 +405,8 @@ class MiniCPMoProvider:
         """
         model = self._get_model()
 
+        logger.info(f"TTS synthesize START - text: {text[:50]}...")
+
         if output_path is None:
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             output_path = Path(tmp.name)
@@ -291,8 +416,9 @@ class MiniCPMoProvider:
 
         msgs = []
 
-        # Voice cloning via system message with reference audio
+        # Voice cloning OR standard TTS - system message always required
         if self._ref_audio is not None:
+            # Voice cloning mode with reference audio
             msgs.append({
                 "role": "system",
                 "content": [
@@ -300,6 +426,12 @@ class MiniCPMoProvider:
                     self._ref_audio,
                     "Please assist users while maintaining this voice style.",
                 ],
+            })
+        else:
+            # Standard TTS mode without voice cloning - still needs system message
+            msgs.append({
+                "role": "system",
+                "content": ["You are a helpful assistant with a natural speaking voice."],
             })
 
         msgs.append({
@@ -317,6 +449,7 @@ class MiniCPMoProvider:
             output_audio_path=str(output_path),
         )
 
+        logger.info(f"TTS synthesize END - output: {output_path}")
         return output_path
 
     # ------------------------------------------------------------------
@@ -348,17 +481,47 @@ class MiniCPMoProvider:
         if output_audio_path is not None:
             output_audio_path = Path(output_audio_path)
 
-        # Prepend voice-clone system message if reference audio is available
-        full_msgs = list(messages)
+        # Build message list - keep original system prompt, optionally add voice clone
+        full_msgs = []
+
+        # Find and extract the original system prompt
+        original_system = None
+        for m in messages:
+            if m.get("role") == "system":
+                content = m.get("content", [])
+                if isinstance(content, list) and content:
+                    original_system = content[0] if isinstance(content[0], str) else None
+                elif isinstance(content, str):
+                    original_system = content
+                break
+
+        # Build new system message with voice cloning if available
         if self._ref_audio is not None:
-            full_msgs.insert(0, {
-                "role": "system",
-                "content": [
-                    "Clone the voice in the provided audio prompt.",
-                    self._ref_audio,
-                    "Please assist users while maintaining this voice style.",
-                ],
-            })
+            system_content = [
+                "Clone the voice in the provided audio prompt.",
+                self._ref_audio,
+            ]
+            if original_system:
+                system_content.append(original_system)
+            else:
+                system_content.append("Please assist users while maintaining this voice style.")
+            full_msgs.append({"role": "system", "content": system_content})
+            logger.debug("Using voice cloning with reference audio")
+        elif original_system:
+            # No voice cloning, but keep the character system prompt
+            full_msgs.append({"role": "system", "content": [original_system]})
+            logger.debug("No voice cloning - using default voice with character prompt")
+        else:
+            # Fallback: always include a minimal system prompt for stability
+            full_msgs.append({"role": "system", "content": ["You are a helpful AI assistant."]})
+            logger.debug("No voice cloning - using fallback system prompt")
+
+        # Add non-system messages
+        for m in messages:
+            if m.get("role") != "system":
+                full_msgs.append(m)
+
+        logger.info(f"chat_omni: {len(full_msgs)} messages, generate_audio={generate_audio}")
 
         result = model.chat(
             msgs=full_msgs,
@@ -366,6 +529,7 @@ class MiniCPMoProvider:
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             use_tts_template=generate_audio,
+            omni_mode=generate_audio,  # Enable omni mode per official docs
             generate_audio=generate_audio,
             output_audio_path=str(output_audio_path) if output_audio_path else None,
         )
