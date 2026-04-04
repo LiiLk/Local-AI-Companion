@@ -5,6 +5,8 @@ Based on Open-LLM-VTuber's implementation.
 Uses a state machine to detect speech start/end with smoothing.
 """
 
+import logging
+
 import numpy as np
 import torch
 from collections import deque
@@ -12,6 +14,9 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Generator, Optional
 from silero_vad import load_silero_vad
+
+
+logger = logging.getLogger(__name__)
 
 
 class State(Enum):
@@ -42,9 +47,9 @@ class SileroVAD:
     def __init__(self, config: Optional[VADConfig] = None):
         self.config = config or VADConfig()
         
-        print("🔄 Loading Silero VAD model...")
+        logger.info("Loading Silero VAD model...")
         self.model = load_silero_vad()
-        print("✅ Silero VAD loaded!")
+        logger.info("Silero VAD loaded")
         
         # State machine
         self.state = State.IDLE

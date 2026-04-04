@@ -6,6 +6,7 @@ Uses pixel diff to skip unchanged frames.
 Stores frames in a circular buffer for vision pipeline access.
 """
 
+import importlib.util
 import logging
 import threading
 import time
@@ -66,6 +67,9 @@ class ScreenBuffer:
         """Start background capture thread."""
         if self._running:
             return
+        if importlib.util.find_spec("mss") is None:
+            logger.warning("ScreenBuffer disabled: install 'mss' to enable screen capture")
+            return
         self._running = True
         self._thread = threading.Thread(
             target=self._capture_loop, daemon=True, name="screen-buffer"
@@ -86,7 +90,12 @@ class ScreenBuffer:
 
     def _capture_loop(self) -> None:
         """Background capture loop."""
-        import mss
+        try:
+            import mss
+        except ImportError:
+            logger.warning("ScreenBuffer capture skipped: 'mss' is not installed")
+            self._running = False
+            return
 
         with mss.mss() as sct:
             while self._running:
