@@ -63,3 +63,12 @@ CLAUDE.md
 
 .github/
 tmpclaude*
+
+# Claude Code local settings
+.claude/
+
+# Windows NUL artifact
+nul
+
+# Allow voice reference WAVs in resources/
+!resources/voices/**/*.wav
