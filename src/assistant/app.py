@@ -239,21 +239,44 @@ class Live2DAssistant:
             self.pipeline = None
 
         else:
-            from src.llm import OllamaLLM
-            from src.tts import KokoroProvider, EdgeTTSProvider
+            from src.llm import OllamaLLM, GemmaTextVisionLLM
+            from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider
             from src.asr import WhisperProvider
+            from src.omni import GemmaProvider
 
             llm_config = self.config.get('llm', {})
             tts_config = self.config.get('tts', {})
             asr_config = self.config.get('asr', {})
+            gemma_config = self.config.get('gemma', {})
+            voice_config = character_config.get('voice', {})
 
             # Create LLM
-            ollama_cfg = llm_config.get('ollama', {})
-            llm = OllamaLLM(
-                model=ollama_cfg.get('model', 'llama3.2:3b'),
-                base_url=ollama_cfg.get('base_url', 'http://localhost:11434')
-            )
-            logger.info(f"LLM: Ollama ({ollama_cfg.get('model')})")
+            llm_provider = llm_config.get('provider', 'ollama')
+            if llm_provider == 'gemma':
+                gemma_model = GemmaProvider(
+                    model_id=gemma_config.get('model_id', 'google/gemma-4-E4B-it'),
+                    device=gemma_config.get('device', 'cuda'),
+                    quantization=gemma_config.get('quantization', 'int4'),
+                    max_new_tokens=gemma_config.get('max_new_tokens', 96),
+                    temperature=gemma_config.get('temperature', 0.7),
+                    top_p=gemma_config.get('top_p', 0.95),
+                    context_max_turns=gemma_config.get('context_max_turns', 10),
+                )
+                llm = GemmaTextVisionLLM(
+                    gemma=gemma_model,
+                    screen_config=gemma_config.get('screen', {}),
+                )
+                logger.info(
+                    "LLM: Gemma text+vision (%s)",
+                    gemma_config.get('model_id', 'google/gemma-4-E4B-it'),
+                )
+            else:
+                ollama_cfg = llm_config.get('ollama', {})
+                llm = OllamaLLM(
+                    model=ollama_cfg.get('model', 'llama3.2:3b'),
+                    base_url=ollama_cfg.get('base_url', 'http://localhost:11434')
+                )
+                logger.info(f"LLM: Ollama ({ollama_cfg.get('model')})")
 
             # Create TTS
             tts_provider = tts_config.get('provider', 'kokoro')
@@ -261,6 +284,20 @@ class Live2DAssistant:
                 voice = tts_config.get('kokoro_voice', 'ff_siwis')
                 tts = KokoroProvider(voice=voice)
                 logger.info(f"TTS: Kokoro ({voice})")
+            elif tts_provider == 'chatterbox':
+                chatterbox_config = tts_config.get('chatterbox', {})
+                ref_audio = voice_config.get('chatterbox_ref_audio')
+                exaggeration = voice_config.get('chatterbox_exaggeration', 0.5)
+                language = voice_config.get('chatterbox_language', 'fr')
+                tts = ChatterboxTTSProvider(
+                    model_id=chatterbox_config.get('model_id', 'onnx-community/chatterbox-multilingual-ONNX'),
+                    ref_audio_path=ref_audio,
+                    exaggeration=exaggeration,
+                    cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
+                    language=language,
+                    prefer_full_gpu=chatterbox_config.get('prefer_full_gpu', False),
+                )
+                logger.info(f"TTS: Chatterbox (ref={ref_audio}, exag={exaggeration})")
             else:
                 voice = tts_config.get('voice', 'en-US-JennyNeural')
                 tts = EdgeTTSProvider(voice=voice)
@@ -283,6 +320,7 @@ class Live2DAssistant:
                 system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
                 stream_tts=tts_config.get('stream_tts', True),
                 auto_detect_language=tts_config.get('auto_detect_language', True),
+                asr_language=asr_config.get('language', 'auto'),
             )
 
             self.pipeline = ConversationPipeline(
@@ -304,7 +342,8 @@ class Live2DAssistant:
         logger.info("=" * 50)
 
         # Create audio service (shared by both modes)
-        gemma_vad_config = self.config.get('gemma', {}) if mode == 'gemma-omni' else {}
+        llm_provider = self.config.get('llm', {}).get('provider', 'ollama')
+        gemma_vad_config = self.config.get('gemma', {}) if mode == 'gemma-omni' or (mode == 'pipeline' and llm_provider == 'gemma') else {}
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=False,
@@ -454,6 +493,19 @@ class Live2DAssistant:
                 logger.info("⏳ Pre-loading Gemma + Chatterbox in background...")
                 self._gemma_pipeline.preload()
                 logger.info("✅ Gemma + Chatterbox ready")
+
+            if self.pipeline:
+                logger.info("⏳ Pre-loading pipeline models in background...")
+                llm = getattr(self.pipeline, 'llm', None)
+                asr = getattr(self.pipeline, 'asr', None)
+                tts = getattr(self.pipeline, 'tts', None)
+                if hasattr(llm, 'preload'):
+                    llm.preload()
+                if hasattr(asr, '_get_model'):
+                    asr._get_model()
+                if hasattr(tts, '_load_model'):
+                    tts._load_model()
+                logger.info("✅ Pipeline models ready")
 
             if self.audio_service and self._loop and not self.audio_service._running:
                 self.audio_service.start(self._loop)
@@ -750,6 +802,14 @@ class Live2DAssistant:
             asyncio.run_coroutine_threadsafe(
                 self._gemma_pipeline.shutdown(), self._loop
             ).result(timeout=10)
+
+        if self.pipeline:
+            llm = getattr(self.pipeline, 'llm', None)
+            tts = getattr(self.pipeline, 'tts', None)
+            if hasattr(tts, 'cleanup'):
+                tts.cleanup()
+            if hasattr(llm, 'cleanup'):
+                llm.cleanup()
         
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)

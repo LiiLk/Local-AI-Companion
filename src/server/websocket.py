@@ -22,9 +22,9 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import yaml
 
-from src.llm import OllamaLLM
+from src.llm import OllamaLLM, GemmaTextVisionLLM
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider
+from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
@@ -49,7 +49,7 @@ class ConversationState:
     Each connected client has their own state.
     """
     messages: list = field(default_factory=list)
-    llm: Optional[OllamaLLM] = None
+    llm: Optional[Any] = None
     tts: Optional[Any] = None
     asr: Optional[WhisperProvider] = None
     vad: Optional[SileroVAD] = None
@@ -83,11 +83,30 @@ class ConversationState:
             # Pipeline mode: initialize LLM
             if self.llm is None:
                 llm_config = self.config.get("llm", {})
-                ollama_config = llm_config.get("ollama", {})
-                self.llm = OllamaLLM(
-                    model=ollama_config.get("model", "llama3.2:3b"),
-                    base_url=ollama_config.get("base_url", "http://localhost:11434")
-                )
+                llm_provider = llm_config.get("provider", "ollama")
+                if llm_provider == "gemma":
+                    from src.omni import GemmaProvider
+
+                    gemma_config = self.config.get("gemma", {})
+                    gemma_model = GemmaProvider(
+                        model_id=gemma_config.get("model_id", "google/gemma-4-E4B-it"),
+                        device=gemma_config.get("device", "cuda"),
+                        quantization=gemma_config.get("quantization", "int4"),
+                        max_new_tokens=gemma_config.get("max_new_tokens", 96),
+                        temperature=gemma_config.get("temperature", 0.7),
+                        top_p=gemma_config.get("top_p", 0.95),
+                        context_max_turns=gemma_config.get("context_max_turns", 10),
+                    )
+                    self.llm = GemmaTextVisionLLM(
+                        gemma=gemma_model,
+                        screen_config=gemma_config.get("screen", {}),
+                    )
+                else:
+                    ollama_config = llm_config.get("ollama", {})
+                    self.llm = OllamaLLM(
+                        model=ollama_config.get("model", "llama3.2:3b"),
+                        base_url=ollama_config.get("base_url", "http://localhost:11434")
+                    )
 
         # Initialize conversation with system prompt
         if not self.messages:
@@ -108,6 +127,21 @@ class ConversationState:
                 voice = tts_config.get("kokoro_voice", "ff_siwis")
                 print(f"   Kokoro config: voice={voice}")
                 self.tts = KokoroProvider(voice=voice)
+            elif provider == "chatterbox":
+                voice_config = self.config.get("character", {}).get("voice", {})
+                chatterbox_config = tts_config.get("chatterbox", {})
+                ref_audio = voice_config.get("chatterbox_ref_audio")
+                exaggeration = voice_config.get("chatterbox_exaggeration", 0.5)
+                language = voice_config.get("chatterbox_language", "fr")
+                print(f"   Chatterbox config: ref={ref_audio}, language={language}")
+                self.tts = ChatterboxTTSProvider(
+                    model_id=chatterbox_config.get("model_id", "onnx-community/chatterbox-multilingual-ONNX"),
+                    ref_audio_path=ref_audio,
+                    exaggeration=exaggeration,
+                    cfg_weight=chatterbox_config.get("cfg_weight", 0.5),
+                    language=language,
+                    prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", False),
+                )
             else:
                 voice = tts_config.get("voice", "fr-FR-DeniseNeural")
                 print(f"   Edge TTS config: voice={voice}")
@@ -137,7 +171,8 @@ class ConversationState:
         if self.vad is None:
             from src.vad.silero_vad import VADConfig
 
-            gemma_config = self.config.get("gemma", {}) if self.mode == "gemma-omni" else {}
+            llm_provider = self.config.get("llm", {}).get("provider", "ollama")
+            gemma_config = self.config.get("gemma", {}) if self.mode == "gemma-omni" or (self.mode == "pipeline" and llm_provider == "gemma") else {}
             vad_config = VADConfig(
                 sample_rate=16000,
                 prob_threshold=gemma_config.get("vad_prob_threshold", 0.5),
@@ -147,6 +182,15 @@ class ConversationState:
             )
             self.vad = SileroVAD(config=vad_config)
         return self.vad
+
+    def preload_llm(self):
+        """Preload the configured pipeline LLM when it supports it."""
+        if self.llm is None:
+            return None
+        preload = getattr(self.llm, "preload", None)
+        if callable(preload):
+            preload()
+        return self.llm
 
     def get_omni(self):
         """Get or create the omni model and pipeline (lazy loading)."""
@@ -1143,7 +1187,7 @@ class WebSocketManager:
                         print(f"   VAD load warning: {e}")
 
             else:
-                # Pipeline mode: load VAD, TTS, ASR
+                # Pipeline mode: load VAD, brain, TTS, ASR
                 if not state.vad and is_connected():
                     await safe_send({
                         "type": "model_loading",
@@ -1163,12 +1207,36 @@ class WebSocketManager:
                     except Exception as e:
                         print(f"   VAD load warning: {e}")
 
+                llm_provider = state.config.get("llm", {}).get("provider", "ollama")
+                if llm_provider == "gemma" and is_connected():
+                    await safe_send({
+                        "type": "model_loading",
+                        "model": "llm",
+                        "message": "Loading Gemma brain...",
+                        "progress": 20
+                    })
+                    try:
+                        await loop.run_in_executor(None, state.preload_llm)
+                        print(f"   Gemma brain loaded for {client_id}")
+                        await safe_send({
+                            "type": "model_loaded",
+                            "model": "llm",
+                            "message": "Gemma brain ready!",
+                            "progress": 55
+                        })
+                    except Exception as e:
+                        print(f"   LLM load error: {e}")
+                        await safe_send({
+                            "type": "models_error",
+                            "message": f"LLM failed: {str(e)}"
+                        })
+
                 if not state.tts and is_connected():
                     await safe_send({
                         "type": "model_loading",
                         "model": "tts",
                         "message": "Loading TTS (voice synthesis)...",
-                        "progress": 20
+                        "progress": 60
                     })
                     try:
                         await loop.run_in_executor(None, state.get_tts)
@@ -1177,7 +1245,7 @@ class WebSocketManager:
                             "type": "model_loaded",
                             "model": "tts",
                             "message": "TTS ready!",
-                            "progress": 60
+                            "progress": 80
                         })
                     except Exception as e:
                         print(f"   TTS load error: {e}")
@@ -1191,7 +1259,7 @@ class WebSocketManager:
                         "type": "model_loading",
                         "model": "asr",
                         "message": "Loading ASR (speech recognition)...",
-                        "progress": 65
+                        "progress": 82
                     })
                     try:
                         await loop.run_in_executor(None, state.get_asr)
@@ -1255,7 +1323,10 @@ class WebSocketManager:
                 })
                 return
         else:
-            if state.vad and state.asr and state.tts:
+            llm_ready = True
+            if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
+                llm_ready = bool(getattr(getattr(state.llm, "gemma", None), "_model", None))
+            if state.vad and state.asr and state.tts and llm_ready:
                 await self.send_json(client_id, {
                     "type": "models_ready",
                     "message": "Models already loaded"
@@ -1307,7 +1378,11 @@ class WebSocketManager:
                     if not state.tts:
                         await loop.run_in_executor(None, state.get_tts)
 
-                await asyncio.gather(load_vad(), load_asr(), load_tts())
+                async def load_llm():
+                    if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
+                        await loop.run_in_executor(None, state.preload_llm)
+
+                await asyncio.gather(load_vad(), load_asr(), load_tts(), load_llm())
 
             await self.send_json(client_id, {
                 "type": "models_ready",
