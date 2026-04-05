@@ -5,7 +5,7 @@
 # "pipeline"    : Classic ASR → LLM → TTS pipeline (separate models)
 # "omni"        : Single omni model handles speech-to-speech (MiniCPM-o)
 # "gemma-omni"  : Gemma E4B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
-mode: "gemma-omni"
+mode: "pipeline"
 
 # === OMNI MODEL (speech-to-speech) ===
 # Used when mode: "omni"
@@ -45,7 +45,7 @@ omni:
     speech_languages: ["en", "zh"]
 
 # === GEMMA-OMNI (Gemma E4B + Chatterbox TTS) ===
-# Used when mode: "gemma-omni"
+# Used when mode: "pipeline"
 # Gemma 4 E4B-it handles audio + vision + reasoning in a single model.
 # Chatterbox Multilingual handles TTS with voice cloning and emotions.
 gemma:
@@ -76,12 +76,12 @@ gemma:
 # === LLM (Brain) ===
 # Used when mode: "pipeline"
 llm:
-  # Which LLM provider to use: "ollama"
-  provider: "ollama"
+  # Which LLM provider to use: "ollama" or "gemma"
+  provider: "gemma"
 
-  # Ollama configuration
+  # Ollama configuration (kept as fallback)
   ollama:
-    model: "llama3.2:3b"      # Model to use
+    model: "llama3.2:3b"
     base_url: "http://localhost:11434"
 
 # === Assistant Personality ===
@@ -120,7 +120,7 @@ tts:
   # - "kokoro"     : Kokoro 82M (local, natural, lightweight, no voice cloning)
   # - "edge"       : Edge TTS (Microsoft cloud, free)
   # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, emotion tags)
-  provider: "kokoro"
+  provider: "chatterbox"
 
   # ─────────────────────────────────────────────────────────────────────────
   # STREAMING TTS (sentence-by-sentence)
@@ -219,7 +219,7 @@ asr:
   # These models are fine-tuned on 2500+ hours of French by bofenghuang.
   # WER: 8.37% (much better than standard Whisper for French)
   # ─────────────────────────────────────────────────────────────────────────
-  model_size: "small"
+  model_size: "large-v3-turbo"
 
   # Language: "fr", "en", "auto" or empty "" for auto-detection
   language: "auto"

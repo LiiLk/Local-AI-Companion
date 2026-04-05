@@ -13,6 +13,7 @@ Features:
 """
 
 import asyncio
+import io
 import base64
 import logging
 import re
@@ -46,6 +47,7 @@ class ConversationConfig:
     # Behavior
     stream_tts: bool = True  # Synthesize sentence-by-sentence
     auto_detect_language: bool = True
+    asr_language: Optional[str] = None
 
     # Omni mode (MiniCPM-o)
     omni_use_single_pass: bool = True  # Single omni call for speech -> response
@@ -172,6 +174,14 @@ def read_wav_data(wav_path: Path) -> tuple[bytes, int]:
         return frames, sample_rate
 
 
+def read_wav_bytes(wav_bytes: bytes) -> tuple[bytes, int]:
+    """Read raw PCM data from a WAV blob already in memory."""
+    with wave.open(io.BytesIO(wav_bytes), 'rb') as wf:
+        sample_rate = wf.getframerate()
+        frames = wf.readframes(wf.getnframes())
+        return frames, sample_rate
+
+
 class ConversationPipeline:
     """
     Orchestrates the full conversation pipeline.
@@ -290,28 +300,16 @@ class ConversationPipeline:
         # Convert int16 bytes to float32 for Whisper
         audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
         audio_float = audio_int16.astype(np.float32) / 32767.0
-        
-        # Save to temp file (ASR expects file path)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = Path(f.name)
-        
-        try:
-            # Write WAV file
-            with wave.open(str(temp_path), 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)  # 16-bit
-                wf.setframerate(16000)
-                wf.writeframes(audio_bytes)
-            
-            # Transcribe
-            result = self.asr.transcribe(temp_path)
-            
-            if result.text and result.text.strip():
-                return result.text.strip()
-            return None
-            
-        finally:
-            temp_path.unlink(missing_ok=True)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.asr.transcribe(audio_float, language=self.config.asr_language),
+        )
+
+        if result.text and result.text.strip():
+            return result.text.strip()
+        return None
     
     async def _get_full_response(self) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
@@ -362,7 +360,7 @@ class ConversationPipeline:
         """Synthesize text to speech and send payload."""
         if not text.strip():
             return
-        
+
         # 1. Detect emotion
         expression = self.emotion_detector.detect(text)
         if expression and expression != self._current_expression:
@@ -370,56 +368,64 @@ class ConversationPipeline:
             logger.info(f"😊 Expression: {expression}")
             if self.on_expression_change:
                 await self._call_async(self.on_expression_change, expression)
-        
+
         # 2. Clean text for TTS
         clean_text = self.emotion_detector.strip_markers(text)
         if not clean_text.strip():
             return
-        
+
         # 3. Synthesize audio
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = Path(f.name)
-        
-        try:
-            # Run TTS
-            if asyncio.iscoroutinefunction(self.tts.synthesize):
-                await self.tts.synthesize(clean_text, temp_path)
-            else:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self.tts.synthesize, clean_text, temp_path)
-            
-            # 4. Read FULL WAV file (with header) for browser playback
-            with open(temp_path, 'rb') as f:
-                full_wav_bytes = f.read()
-            
-            # Also read raw PCM for volume analysis
-            audio_bytes, sample_rate = read_wav_data(temp_path)
-            volumes = analyze_audio_volumes(audio_bytes, sample_rate, self.config.lip_sync_chunk_ms)
-            
-            # 5. Create payload with FULL WAV (not just PCM)
-            audio_base64 = base64.b64encode(full_wav_bytes).decode('utf-8')
-            duration_ms = int(len(audio_bytes) / (sample_rate * 2) * 1000)  # 16-bit = 2 bytes
-            
-            payload = AudioPayload(
-                audio_bytes=audio_bytes,
-                audio_base64=audio_base64,
-                wav_bytes=full_wav_bytes,
-                volumes=volumes,
-                duration_ms=duration_ms,
-                sample_rate=sample_rate,
-                text=clean_text,
-                expression=expression
-            )
-            
-            logger.info(f"🔊 Audio ready: {duration_ms}ms, {len(volumes)} volume chunks")
-            
-            # 6. Send to callback
-            if self.on_audio_ready:
-                await self._call_async(self.on_audio_ready, payload)
-                
-        finally:
-            temp_path.unlink(missing_ok=True)
-    
+        full_wav_bytes: bytes | None = None
+        audio_bytes: bytes | None = None
+        sample_rate = self.config.tts_sample_rate
+
+        if self.tts.__class__.__name__ == "ChatterboxTTSProvider":
+            tts_result = await self.tts.synthesize(clean_text)
+            full_wav_bytes = tts_result.audio_data
+            if full_wav_bytes:
+                audio_bytes, sample_rate = read_wav_bytes(full_wav_bytes)
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                temp_path = Path(f.name)
+
+            try:
+                if asyncio.iscoroutinefunction(self.tts.synthesize):
+                    await self.tts.synthesize(clean_text, temp_path)
+                else:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, self.tts.synthesize, clean_text, temp_path)
+
+                with open(temp_path, 'rb') as f:
+                    full_wav_bytes = f.read()
+                audio_bytes, sample_rate = read_wav_data(temp_path)
+            finally:
+                temp_path.unlink(missing_ok=True)
+
+        if not full_wav_bytes or audio_bytes is None:
+            return
+
+        volumes = analyze_audio_volumes(audio_bytes, sample_rate, self.config.lip_sync_chunk_ms)
+
+        # 5. Create payload with FULL WAV (not just PCM)
+        audio_base64 = base64.b64encode(full_wav_bytes).decode('utf-8')
+        duration_ms = int(len(audio_bytes) / (sample_rate * 2) * 1000)
+
+        payload = AudioPayload(
+            audio_bytes=audio_bytes,
+            audio_base64=audio_base64,
+            wav_bytes=full_wav_bytes,
+            volumes=volumes,
+            duration_ms=duration_ms,
+            sample_rate=sample_rate,
+            text=clean_text,
+            expression=expression
+        )
+
+        logger.info(f"🔊 Audio ready: {duration_ms}ms, {len(volumes)} volume chunks")
+
+        if self.on_audio_ready:
+            await self._call_async(self.on_audio_ready, payload)
+
     async def _call_async(self, callback: Callable, *args):
         """Call callback, awaiting if async."""
         try:

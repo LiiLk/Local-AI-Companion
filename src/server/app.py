@@ -72,10 +72,15 @@ async def lifespan(app: FastAPI):
         print(f"   🔊 TTS: Chatterbox Multilingual ONNX Q4")
     else:
         llm_config = config.get("llm", {})
-        model_name = llm_config.get("ollama", {}).get("model", "unknown")
+        llm_provider = llm_config.get("provider", "ollama")
+        if llm_provider == "gemma":
+            model_name = config.get("gemma", {}).get("model_id", "google/gemma-4-E4B-it")
+            print(f"   🧠 LLM: {model_name} (gemma text+vision)")
+        else:
+            model_name = llm_config.get("ollama", {}).get("model", "unknown")
+            print(f"   🧠 LLM: {model_name} (ollama)")
         tts_provider = config.get("tts", {}).get("provider", "kokoro")
         asr_provider = config.get("asr", {}).get("provider", "whisper")
-        print(f"   🧠 LLM: {model_name} (ollama)")
         print(f"   🔊 TTS: {tts_provider}")
         print(f"   🎤 ASR: {asr_provider}")
 
