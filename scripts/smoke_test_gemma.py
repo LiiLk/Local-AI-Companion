@@ -2,7 +2,7 @@
 Smoke test for GemmaProvider.
 
 Run: python -m scripts.smoke_test_gemma
-Requires: GPU with >= 6GB VRAM, Gemma E4B model downloaded.
+Requires: GPU with >= 4GB VRAM, Gemma E2B model downloaded.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ async def main():
     provider = GemmaProvider()
 
     # Test 1: Model loading
-    print("\n[1/5] Loading Gemma E4B (int4)...")
+    print("\n[1/5] Loading Gemma E2B (NF4)...")
     t0 = time.time()
     provider.preload()
     print(f"  Loaded in {time.time() - t0:.1f}s")
@@ -28,7 +28,7 @@ async def main():
     import torch
     vram = torch.cuda.memory_allocated() / 1024 / 1024
     print(f"  VRAM: {vram:.0f}MB")
-    assert vram < 10000, f"VRAM too high: {vram:.0f}MB (expected < 10000MB for NF4)"
+    assert vram < 8000, f"VRAM too high: {vram:.0f}MB (expected < 8000MB for E2B NF4)"
     print("  PASS")
 
     # Test 2: Text chat

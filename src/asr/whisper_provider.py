@@ -206,7 +206,7 @@ class WhisperProvider(BaseASR):
                     model_path,
                     device=device,
                     compute_type=compute_type,
-                    cpu_threads=4  # Optimize for CPU
+                    cpu_threads=8
                 )
             except Exception as e:
                 if "cudnn" in str(e).lower() or device == "cuda":
@@ -217,7 +217,7 @@ class WhisperProvider(BaseASR):
                         model_path,
                         device=device,
                         compute_type=compute_type,
-                        cpu_threads=4  # Optimize for CPU
+                        cpu_threads=8
                     )
                 else:
                     raise
@@ -270,24 +270,22 @@ class WhisperProvider(BaseASR):
         # Use provided prompt or instance default
         effective_prompt = initial_prompt or self.initial_prompt
         
-        # Transcribe with faster-whisper (same approach as Open-LLM-VTuber)
+        # Transcribe with faster-whisper
+        # NOTE: vad_filter disabled — Silero VAD already runs upstream in the pipeline.
+        # word_timestamps disabled — not needed for conversational use, saves ~30-50% time.
         segments, info = model.transcribe(
             transcribe_input,
             language=effective_language,
             beam_size=self.BEAM_SIZE,
-            word_timestamps=True,
-            vad_filter=True,  # Filter out silence using Silero VAD
-            vad_parameters=dict(
-                min_silence_duration_ms=500,  # Minimum silence to split
-                speech_pad_ms=400,  # Padding around speech
-            ),
+            word_timestamps=False,
+            vad_filter=False,
             # Anti-hallucination settings:
-            condition_on_previous_text=False,  # Prevents repeated hallucinations
-            initial_prompt=effective_prompt,  # Guides language detection
-            no_speech_threshold=0.6,  # Higher = more strict (default 0.6)
-            log_prob_threshold=-1.0,  # Filter low confidence (default -1.0)
-            compression_ratio_threshold=2.4,  # Filter repetitive text (default 2.4)
-            temperature=0.0,  # Deterministic output (no sampling)
+            condition_on_previous_text=False,
+            initial_prompt=effective_prompt,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
+            temperature=0.0,
         )
         
         # Collect all segments

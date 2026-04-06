@@ -111,9 +111,10 @@ class GemmaOmniPipeline:
         logger.info("Both models loaded")
 
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
-        """Process speech using the most stable Gemma path for live audio turns."""
-        if getattr(self.config, 'stream_tts', False):
-            logger.info("Gemma audio turn: using stable non-streaming path")
+        """Process speech — uses sentence streaming for lower latency."""
+        if getattr(self.config, 'stream_tts', True):
+            logger.info("Gemma audio turn: sentence-streaming path (low latency)")
+            return await self.process_speech_streaming(audio_bytes)
         return await self._process_speech_basic(audio_bytes)
 
     async def process_speech_streaming(self, audio_bytes: bytes) -> Optional[str]:
@@ -146,8 +147,8 @@ class GemmaOmniPipeline:
             if self.on_transcription:
                 await self._call_async(self.on_transcription, "[audio input]")
 
-            # Stream tokens from Gemma
-            splitter = SentenceSplitter()
+            # Stream tokens from Gemma — faster_first_response splits earlier on first sentence
+            splitter = SentenceSplitter(faster_first_response=True)
             full_response = ""
             first_audio_sent = False
 
@@ -159,6 +160,10 @@ class GemmaOmniPipeline:
                 images=images if images else None,
             )
 
+            # Collect all sentences first (Gemma gets full GPU), then TTS sequentially.
+            # On shared GPU, parallel TTS+LLM causes contention and is slower.
+            sentences: list[str] = []
+
             async for token in self.gemma.chat_stream(**stream_kwargs):
                 full_response += token
                 splitter.feed(token)
@@ -166,15 +171,17 @@ class GemmaOmniPipeline:
                 if self.on_response_chunk:
                     await self._call_async(self.on_response_chunk, token)
 
-                # Check for complete sentences
                 for sentence in splitter.get_sentences():
-                    await self._synthesize_and_send(sentence, first_audio_sent)
-                    first_audio_sent = True
+                    sentences.append(sentence)
 
-            # Flush remaining text
             remaining = splitter.flush()
             if remaining:
-                await self._synthesize_and_send(remaining, first_audio_sent)
+                sentences.append(remaining)
+
+            # TTS each sentence — send audio chunks as they complete
+            for sentence in sentences:
+                await self._synthesize_and_send(sentence, first_audio_sent)
+                first_audio_sent = True
 
             if self.on_response_end:
                 await self._call_async(self.on_response_end, full_response)
