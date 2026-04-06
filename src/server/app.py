@@ -68,13 +68,13 @@ async def lifespan(app: FastAPI):
         print(f"   🧠 Omni: {model_id} on {device}")
     elif mode == "gemma-omni":
         gemma_config = config.get("gemma", {})
-        print(f"   🧠 Gemma: {gemma_config.get('model_id', 'google/gemma-4-E4B-it')} on {gemma_config.get('device', 'cuda')}")
+        print(f"   🧠 Gemma: {gemma_config.get('model_id', 'google/gemma-4-E2B-it')} on {gemma_config.get('device', 'cuda')}")
         print(f"   🔊 TTS: Chatterbox Multilingual ONNX Q4")
     else:
         llm_config = config.get("llm", {})
         llm_provider = llm_config.get("provider", "ollama")
         if llm_provider == "gemma":
-            model_name = config.get("gemma", {}).get("model_id", "google/gemma-4-E4B-it")
+            model_name = config.get("gemma", {}).get("model_id", "google/gemma-4-E2B-it")
             print(f"   🧠 LLM: {model_name} (gemma text+vision)")
         else:
             model_name = llm_config.get("ollama", {}).get("model", "unknown")

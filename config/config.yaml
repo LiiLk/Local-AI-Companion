@@ -4,7 +4,7 @@
 # === MODE ===
 # "pipeline"    : Classic ASR → LLM → TTS pipeline (separate models)
 # "omni"        : Single omni model handles speech-to-speech (MiniCPM-o)
-# "gemma-omni"  : Gemma E4B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
+# "gemma-omni"  : Gemma E2B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
 mode: "pipeline"
 
 # === OMNI MODEL (speech-to-speech) ===
@@ -44,16 +44,16 @@ omni:
     # Supported speech languages (EN + ZH only for audio I/O)
     speech_languages: ["en", "zh"]
 
-# === GEMMA-OMNI (Gemma E4B + Chatterbox TTS) ===
-# Used when mode: "pipeline"
-# Gemma 4 E4B-it handles audio + vision + reasoning in a single model.
+# === GEMMA-OMNI (Gemma E2B + Chatterbox TTS) ===
+# Used when mode: "gemma-omni"
+# Gemma 4 E2B-it handles audio + vision + reasoning in a single model.
 # Chatterbox Multilingual handles TTS with voice cloning and emotions.
 gemma:
-  model_id: "google/gemma-4-E4B-it"
-  quantization: "int4"           # TorchAO int4 (~4.1 GB VRAM)
+  model_id: "google/gemma-4-E2B-it"
+  quantization: "int4"           # BitsAndBytes NF4 (~3-4 GB VRAM)
   device: "cuda"
   dtype: "bfloat16"
-  max_new_tokens: 96
+  max_new_tokens: 128
   turn_timeout_sec: 75
   temperature: 0.7
   top_p: 0.95
@@ -190,7 +190,7 @@ tts:
     quantized: true
     exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
     cfg_weight: 0.5        # Classifier-free guidance weight
-    prefer_full_gpu: false # Keep Chatterbox hybrid to avoid VRAM contention with Gemma
+    prefer_full_gpu: true  # Full GPU for Chatterbox (E2B leaves enough VRAM)
 
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)
@@ -219,6 +219,8 @@ asr:
   # These models are fine-tuned on 2500+ hours of French by bofenghuang.
   # WER: 8.37% (much better than standard Whisper for French)
   # ─────────────────────────────────────────────────────────────────────────
+  # "large-v3-turbo" = best quality, fast (4 decoder layers), good on CPU with optimizations
+  # "small" = lighter but lower accuracy, more hallucinations
   model_size: "large-v3-turbo"
 
   # Language: "fr", "en", "auto" or empty "" for auto-detection

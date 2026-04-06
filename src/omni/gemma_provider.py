@@ -1,13 +1,13 @@
 """
-Gemma 4 E4B-it Provider — Unified ASR + LLM + Vision.
+Gemma 4 Provider — Unified ASR + LLM + Vision.
 
-Wraps Gemma 4 E4B with TorchAO int4 quantization.
+Wraps Gemma 4 E2B/E4B with BitsAndBytes NF4 quantization.
 Handles audio, image, and text input natively via multimodal tokens.
 
 Requirements:
-- transformers >= 4.51.0
-- torchao
-- ~4.1 GB VRAM (int4)
+- transformers >= 5.0.0
+- bitsandbytes >= 0.45.0
+- ~3-4 GB VRAM (E2B int4), ~8.9 GB (E4B int4)
 """
 
 import asyncio
@@ -37,24 +37,15 @@ REALTIME_AUDIO_REPLY_PROMPT = (
 
 class GemmaProvider:
     """
-    Unified provider wrapping Gemma 4 E4B-it for ASR + LLM + Vision.
+    Unified provider wrapping Gemma 4 E2B/E4B-it for ASR + LLM + Vision.
 
-    The model is lazily loaded on first use with TorchAO int4 quantization.
+    The model is lazily loaded on first use with BitsAndBytes NF4 quantization.
     Thread-safe via a loading lock (same pattern as MiniCPMoProvider).
-
-    Args:
-        model_id: HuggingFace model ID.
-        device: "cuda" or "cpu".
-        quantization: "int4" or None.
-        max_new_tokens: Max tokens to generate.
-        temperature: Sampling temperature.
-        top_p: Nucleus sampling threshold.
-        context_max_turns: Max conversation turns to keep.
     """
 
     def __init__(
         self,
-        model_id: str = "google/gemma-4-E4B-it",
+        model_id: str = "google/gemma-4-E2B-it",
         device: str = "cuda",
         quantization: str = "int4",
         max_new_tokens: int = 256,
@@ -87,7 +78,7 @@ class GemmaProvider:
             import torch
             from transformers import AutoProcessor
 
-            logger.info(f"Loading Gemma E4B from {self.model_id}...")
+            logger.info(f"Loading Gemma from {self.model_id}...")
 
             self._processor = AutoProcessor.from_pretrained(self.model_id)
 
@@ -128,7 +119,7 @@ class GemmaProvider:
                 )
 
             self._model = model
-            logger.info("Gemma E4B loaded successfully")
+            logger.info("Gemma loaded successfully")
 
             # Fix: BitsAndBytes quantizes audio tower layers to uint8, which breaks
             # torch.finfo() calls in Gemma4AudioFeedForward.forward (line 392).

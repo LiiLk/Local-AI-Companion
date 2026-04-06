@@ -89,7 +89,7 @@ class ConversationState:
 
                     gemma_config = self.config.get("gemma", {})
                     gemma_model = GemmaProvider(
-                        model_id=gemma_config.get("model_id", "google/gemma-4-E4B-it"),
+                        model_id=gemma_config.get("model_id", "google/gemma-4-E2B-it"),
                         device=gemma_config.get("device", "cuda"),
                         quantization=gemma_config.get("quantization", "int4"),
                         max_new_tokens=gemma_config.get("max_new_tokens", 96),
@@ -140,7 +140,7 @@ class ConversationState:
                     exaggeration=exaggeration,
                     cfg_weight=chatterbox_config.get("cfg_weight", 0.5),
                     language=language,
-                    prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", False),
+                    prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
                 )
             else:
                 voice = tts_config.get("voice", "fr-FR-DeniseNeural")
@@ -248,9 +248,9 @@ class ConversationState:
             exaggeration = voice_config.get("chatterbox_exaggeration", 0.5)
             language = voice_config.get("chatterbox_language", "fr")
 
-            print("Loading Gemma E4B + Chatterbox...")
+            print("Loading Gemma E2B + Chatterbox...")
             self.gemma_model = GemmaProvider(
-                model_id=gemma_config.get("model_id", "google/gemma-4-E4B-it"),
+                model_id=gemma_config.get("model_id", "google/gemma-4-E2B-it"),
                 device=gemma_config.get("device", "cuda"),
                 quantization=gemma_config.get("quantization", "int4"),
                 max_new_tokens=gemma_config.get("max_new_tokens", 256),
@@ -1160,7 +1160,7 @@ class WebSocketManager:
                 await safe_send({
                     "type": "model_loading",
                     "model": "gemma",
-                    "message": "Loading Gemma E4B + Chatterbox...",
+                    "message": "Loading Gemma E2B + Chatterbox...",
                     "progress": 10
                 })
                 try:
@@ -1239,7 +1239,12 @@ class WebSocketManager:
                         "progress": 60
                     })
                     try:
-                        await loop.run_in_executor(None, state.get_tts)
+                        def _preload_tts():
+                            tts = state.get_tts()
+                            # Preload ONNX model so first synthesis is fast
+                            if hasattr(tts, '_load_model'):
+                                tts._load_model()
+                        await loop.run_in_executor(None, _preload_tts)
                         print(f"   TTS loaded for {client_id}")
                         await safe_send({
                             "type": "model_loaded",

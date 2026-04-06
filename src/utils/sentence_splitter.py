@@ -38,12 +38,15 @@ class SentenceSplitter:
         min_length: int = 1,
         min_clause_length: int = 48,
         min_clause_words: int = 6,
+        faster_first_response: bool = False,
     ):
         self._buffer = ""
         self._pending: list[str] = []
         self._min_length = min_length
         self._min_clause_length = min_clause_length
         self._min_clause_words = min_clause_words
+        self._faster_first = faster_first_response
+        self._sentence_count = 0
 
     def feed(self, text: str) -> None:
         """Add text to the buffer and extract complete sentences."""
@@ -105,10 +108,15 @@ class SentenceSplitter:
             candidate = self._buffer[:clause_end].strip()
             word_count = len(candidate.split())
 
-            if (
-                len(candidate) < self._min_clause_length
-                or word_count < self._min_clause_words
-            ):
+            # Lower thresholds for the first sentence to reduce time-to-first-audio
+            if self._faster_first and self._sentence_count == 0:
+                clause_min_len = 20
+                clause_min_words = 3
+            else:
+                clause_min_len = self._min_clause_length
+                clause_min_words = self._min_clause_words
+
+            if len(candidate) < clause_min_len or word_count < clause_min_words:
                 break
 
             self._pending.append(candidate)
@@ -131,6 +139,7 @@ class SentenceSplitter:
     def get_sentences(self) -> list[str]:
         """Return and clear all complete sentences found so far."""
         sentences = self._pending
+        self._sentence_count += len(sentences)
         self._pending = []
         return sentences
 
