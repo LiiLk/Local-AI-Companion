@@ -72,3 +72,7 @@ nul
 
 # Allow voice reference WAVs in resources/
 !resources/voices/**/*.wav
+
+# RVC model files (too large for git, download separately)
+resources/voices/**/*.pth
+resources/voices/**/*.index

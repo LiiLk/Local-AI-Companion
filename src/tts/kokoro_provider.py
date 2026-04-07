@@ -163,12 +163,12 @@ class KokoroProvider(BaseTTS):
         if self._pipeline is None:
             from kokoro import KPipeline
             
-            print(f"🔄 Loading Kokoro (lang={self.lang_code})...")
+            print(f"Loading Kokoro (lang={self.lang_code})...")
             self._pipeline = KPipeline(
                 lang_code=self.lang_code,
-                repo_id="hexgrad/Kokoro-82M"  # Explicit to suppress warning
+                repo_id="hexgrad/Kokoro-82M"
             )
-            print("✅ Kokoro loaded!")
+            print(f"Kokoro loaded! (lang={self.lang_code})")
         
         return self._pipeline
     

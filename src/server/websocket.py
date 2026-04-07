@@ -64,6 +64,7 @@ class ConversationState:
     omni_pipeline: Optional[Any] = None
     gemma_model: Optional[Any] = None
     gemma_pipeline: Optional[Any] = None
+    rvc: Optional[Any] = None
 
     def __post_init__(self):
         self.config = load_config()
@@ -148,6 +149,31 @@ class ConversationState:
                 self.tts = EdgeTTSProvider(voice=voice)
 
         return self.tts
+
+    def get_rvc(self):
+        """Get or create RVC voice converter (lazy loading). Returns None if disabled."""
+        if self.rvc is None:
+            rvc_config = self.config.get("tts", {}).get("rvc", {})
+            if not rvc_config.get("enabled", False):
+                return None
+            try:
+                from src.tts.rvc_provider import RVCConverter
+                if not RVCConverter.is_available():
+                    print("   RVC dependencies not installed, skipping voice conversion")
+                    return None
+                self.rvc = RVCConverter(
+                    model_path=rvc_config.get("model_path"),
+                    index_path=rvc_config.get("index_path"),
+                    device=rvc_config.get("device", "cuda:0"),
+                    f0_method=rvc_config.get("f0_method", "rmvpe"),
+                    index_rate=rvc_config.get("index_rate", 0.75),
+                    protect=rvc_config.get("protect", 0.33),
+                )
+                print(f"   RVC loaded: {rvc_config.get('model_path')}")
+            except Exception as e:
+                print(f"   RVC init error (voice conversion disabled): {e}")
+                return None
+        return self.rvc
 
     def get_asr(self):
         """Get or create ASR provider (lazy loading). Pipeline mode only."""
@@ -451,6 +477,19 @@ class WebSocketManager:
             else:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, tts.synthesize, text, temp_path)
+
+            # RVC voice conversion (optional post-processing)
+            rvc = state.get_rvc()
+            if rvc:
+                try:
+                    rvc_out = temp_path.with_suffix(".rvc.wav")
+                    await loop.run_in_executor(
+                        None, rvc.convert_file, temp_path, rvc_out
+                    )
+                    temp_path.unlink(missing_ok=True)
+                    temp_path = rvc_out
+                except Exception as e:
+                    print(f"RVC conversion error (using original): {e}")
 
             with open(temp_path, "rb") as f:
                 audio_data = f.read()

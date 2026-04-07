@@ -117,10 +117,10 @@ character:
 # Used when mode: "pipeline" (omni mode handles TTS internally)
 tts:
   # Default TTS provider:
-  # - "kokoro"     : Kokoro 82M (local, natural, lightweight, no voice cloning)
+  # - "kokoro"     : Kokoro 82M (local, fast ~300ms, multilingual) ← RECOMMENDED
+  # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, slow ~3-5s)
   # - "edge"       : Edge TTS (Microsoft cloud, free)
-  # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, emotion tags)
-  provider: "chatterbox"
+  provider: "kokoro"
 
   # ─────────────────────────────────────────────────────────────────────────
   # STREAMING TTS (sentence-by-sentence)
@@ -191,6 +191,22 @@ tts:
     exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
     cfg_weight: 0.5        # Classifier-free guidance weight
     prefer_full_gpu: true  # Full GPU for Chatterbox (E2B leaves enough VRAM)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # RVC VOICE CONVERSION (post-processing, optional)
+  # ─────────────────────────────────────────────────────────────────────────
+  # Converts TTS output to a target voice using an RVC v2 model.
+  # Pipeline: Kokoro TTS → RVC → final audio with cloned voice.
+  # Requires: rvc-inferpy + fairseq (see README)
+  # ─────────────────────────────────────────────────────────────────────────
+  rvc:
+    enabled: false  # Set to true when RVC model is ready
+    model_path: "resources/voices/march7th/March-7th.pth"
+    index_path: "resources/voices/march7th/March-7th.index"
+    device: "cuda:0"
+    f0_method: "rmvpe"
+    index_rate: 0.75
+    protect: 0.33
 
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)
