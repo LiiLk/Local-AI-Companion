@@ -117,10 +117,11 @@ character:
 # Used when mode: "pipeline" (omni mode handles TTS internally)
 tts:
   # Default TTS provider:
-  # - "kokoro"     : Kokoro 82M (local, fast ~300ms, multilingual) ← RECOMMENDED
+  # - "qwen3"      : Qwen3-TTS (local, best custom voice / low-latency clone)
+  # - "kokoro"     : Kokoro 82M (local, fast ~300ms, multilingual fallback)
   # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, slow ~3-5s)
   # - "edge"       : Edge TTS (Microsoft cloud, free)
-  provider: "kokoro"
+  provider: "qwen3"
 
   # ─────────────────────────────────────────────────────────────────────────
   # STREAMING TTS (sentence-by-sentence)
@@ -160,6 +161,41 @@ tts:
       en: "en-US-JennyNeural"    # American female voice
 
   # ─────────────────────────────────────────────────────────────────────────
+  # QWEN3-TTS (local, low-latency voice cloning)
+  # ─────────────────────────────────────────────────────────────────────────
+  # Recommended stack for the assistant:
+  # - Gemma 4 E2B as the brain
+  # - Faster-Whisper for ASR
+  # - Qwen3-TTS 0.6B Base for fast voice clone
+  #
+  # Important:
+  # - The app runs in offline-first mode, so download the model once before use
+  # - Recommended setup on Windows:
+  #   powershell -ExecutionPolicy Bypass -File scripts/install_qwen3_tts_windows.ps1 -Clean
+  # - The worker backend keeps Qwen's transformers 4.57 isolated in a dedicated venv
+  # - The installer pins a CUDA-enabled torch runtime in that worker venv
+  # - If flash-attn is not installed in the worker, it falls back to sdpa automatically
+  # - With no transcript for the reference clip, x-vector-only cloning still works
+  #   but quality is usually a bit lower
+  # ─────────────────────────────────────────────────────────────────────────
+  qwen3:
+    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    mode: "voice_clone"          # "voice_clone", "custom_voice", "voice_design"
+    language: "auto"
+    speaker: "Ryan"              # Used only in custom_voice mode
+    instruct: ""                 # Used in custom_voice / voice_design modes
+    ref_audio_path: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
+    ref_text: null               # Add the exact transcript for best clone quality
+    x_vector_only_mode: true     # Safe default when ref_text is unknown
+    device: "cuda:0"
+    dtype: "bfloat16"
+    attn_implementation: "flash_attention_2"
+    backend: "worker"
+    python_path: ".\\.venv-qwen3-tts\\Scripts\\python.exe"
+    site_packages_dir: null
+    worker_script: ".\\scripts\\qwen3_tts_worker.py"
+
+  # ─────────────────────────────────────────────────────────────────────────
   # KOKORO TTS (100% local, lightweight, no voice cloning)
   # ─────────────────────────────────────────────────────────────────────────
   # - 82M params, ~300MB, natural quality
@@ -197,16 +233,24 @@ tts:
   # ─────────────────────────────────────────────────────────────────────────
   # Converts TTS output to a target voice using an RVC v2 model.
   # Pipeline: Kokoro TTS → RVC → final audio with cloned voice.
-  # Requires: rvc-inferpy + fairseq (see README)
+  # Recommended on Windows:
+  #   powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1 -Clean
+  # "auto" uses the worker overlay when installed, otherwise falls back to in-process InferRVC.
   # ─────────────────────────────────────────────────────────────────────────
   rvc:
     enabled: false  # Set to true when RVC model is ready
+    backend: "worker"  # "worker" is the most stable option on Windows
+    python_path: ".\\venv\\Scripts\\python.exe"
+    site_packages_dir: null
+    worker_script: ".\\scripts\\rvc_worker.py"
     model_path: "resources/voices/march7th/March-7th.pth"
     index_path: "resources/voices/march7th/March-7th.index"
     device: "cuda:0"
     f0_method: "rmvpe"
-    index_rate: 0.75
+    f0_up_key: 0.0
+    index_rate: 0.0  # Realtime-safe default on Windows. >0 enables the FAISS index but can become very slow.
     protect: 0.33
+    output_freq: null  # Keep native model sample rate unless you explicitly need resampling.
 
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)

@@ -8,6 +8,7 @@ from .base import BaseTTS, TTSResult, Voice
 from .edge_tts_provider import EdgeTTSProvider
 from .kokoro_provider import KokoroProvider
 from .chatterbox_provider import ChatterboxTTSProvider
+from .qwen3_tts_provider import Qwen3TTSProvider
 
 __all__ = [
     "BaseTTS",
@@ -16,4 +17,5 @@ __all__ = [
     "EdgeTTSProvider",
     "KokoroProvider",
     "ChatterboxTTSProvider",
+    "Qwen3TTSProvider",
 ]

@@ -71,6 +71,11 @@ async def get_config(request: Request):
         tts_provider = tts.get("provider", "kokoro")
         if tts_provider == "chatterbox":
             tts_voice = config.get("character", {}).get("voice", {}).get("chatterbox_ref_audio", "chatterbox")
+        elif tts_provider == "qwen3":
+            tts_voice = (
+                config.get("character", {}).get("voice", {}).get("qwen_ref_audio")
+                or tts.get("qwen3", {}).get("ref_audio_path", "qwen3")
+            )
         else:
             tts_voice = tts.get("kokoro_voice", tts.get("voice", "ff_siwis"))
         asr_model = asr.get("model_size", "base")

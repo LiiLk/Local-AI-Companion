@@ -24,12 +24,13 @@ import yaml
 
 from src.llm import OllamaLLM, GemmaTextVisionLLM
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider
+from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider, Qwen3TTSProvider
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
 from src.utils.character_loader import resolve_character_config
 from src.utils.emotion_detector import EmotionDetector, strip_emotion_markers
+from src.utils.rvc_config import build_rvc_runtime_config
 
 websocket_router = APIRouter()
 
@@ -128,6 +129,52 @@ class ConversationState:
                 voice = tts_config.get("kokoro_voice", "ff_siwis")
                 print(f"   Kokoro config: voice={voice}")
                 self.tts = KokoroProvider(voice=voice)
+            elif provider == "qwen3":
+                voice_config = self.config.get("character", {}).get("voice", {})
+                qwen3_config = tts_config.get("qwen3", {})
+                ref_audio = (
+                    voice_config.get("qwen_ref_audio")
+                    or voice_config.get("chatterbox_ref_audio")
+                    or voice_config.get("omni_ref_audio")
+                    or qwen3_config.get("ref_audio_path")
+                )
+                ref_text = voice_config.get("qwen_ref_text") or qwen3_config.get("ref_text")
+                print(
+                    f"   Qwen3-TTS config: model={qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base')}, "
+                    f"ref={ref_audio}"
+                )
+                try:
+                    if not Qwen3TTSProvider.is_available(
+                        backend=qwen3_config.get("backend", "worker"),
+                        python_path=qwen3_config.get("python_path"),
+                        site_packages_dir=qwen3_config.get("site_packages_dir"),
+                        worker_script=qwen3_config.get("worker_script"),
+                    ):
+                        raise RuntimeError(
+                            "Qwen3-TTS runtime is not installed. "
+                            "Run scripts/install_qwen3_tts_windows.ps1 first."
+                        )
+                    self.tts = Qwen3TTSProvider(
+                        model_id=qwen3_config.get("model_id", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+                        mode=qwen3_config.get("mode", "voice_clone"),
+                        language=qwen3_config.get("language", "auto"),
+                        speaker=qwen3_config.get("speaker"),
+                        instruct=qwen3_config.get("instruct"),
+                        ref_audio_path=ref_audio,
+                        ref_text=ref_text,
+                        x_vector_only_mode=qwen3_config.get("x_vector_only_mode"),
+                        device=qwen3_config.get("device", "cuda:0"),
+                        dtype=qwen3_config.get("dtype", "bfloat16"),
+                        attn_implementation=qwen3_config.get("attn_implementation", "flash_attention_2"),
+                        backend=qwen3_config.get("backend", "worker"),
+                        python_path=qwen3_config.get("python_path"),
+                        site_packages_dir=qwen3_config.get("site_packages_dir"),
+                        worker_script=qwen3_config.get("worker_script"),
+                    )
+                except Exception as exc:
+                    print(f"   Qwen3-TTS init failed, falling back to Kokoro: {exc}")
+                    voice = tts_config.get("kokoro_voice", "ff_siwis")
+                    self.tts = KokoroProvider(voice=voice)
             elif provider == "chatterbox":
                 voice_config = self.config.get("character", {}).get("voice", {})
                 chatterbox_config = tts_config.get("chatterbox", {})
@@ -153,12 +200,17 @@ class ConversationState:
     def get_rvc(self):
         """Get or create RVC voice converter (lazy loading). Returns None if disabled."""
         if self.rvc is None:
-            rvc_config = self.config.get("tts", {}).get("rvc", {})
-            if not rvc_config.get("enabled", False):
+            rvc_config = build_rvc_runtime_config(self.config)
+            if not rvc_config:
                 return None
             try:
                 from src.tts.rvc_provider import RVCConverter
-                if not RVCConverter.is_available():
+                if not RVCConverter.is_available(
+                    backend=rvc_config.get("backend", "auto"),
+                    python_path=rvc_config.get("python_path"),
+                    site_packages_dir=rvc_config.get("site_packages_dir"),
+                    worker_script=rvc_config.get("worker_script"),
+                ):
                     print("   RVC dependencies not installed, skipping voice conversion")
                     return None
                 self.rvc = RVCConverter(
@@ -168,6 +220,12 @@ class ConversationState:
                     f0_method=rvc_config.get("f0_method", "rmvpe"),
                     index_rate=rvc_config.get("index_rate", 0.75),
                     protect=rvc_config.get("protect", 0.33),
+                    backend=rvc_config.get("backend", "auto"),
+                    python_path=rvc_config.get("python_path"),
+                    site_packages_dir=rvc_config.get("site_packages_dir"),
+                    worker_script=rvc_config.get("worker_script"),
+                    f0_up_key=rvc_config.get("f0_up_key", 0.0),
+                    output_freq=rvc_config.get("output_freq"),
                 )
                 print(f"   RVC loaded: {rvc_config.get('model_path')}")
             except Exception as e:
@@ -191,6 +249,15 @@ class ConversationState:
             self.asr_language = asr_config.get("language", "")
 
         return self.asr
+
+    def preload_rvc(self):
+        """Preload RVC backend/model when enabled."""
+        rvc = self.get_rvc()
+        if rvc and hasattr(rvc, "preload"):
+            rvc.preload()
+        if rvc and hasattr(rvc, "warmup"):
+            rvc.warmup()
+        return rvc
 
     def get_vad(self):
         """Get or create VAD engine (lazy loading)."""
@@ -317,6 +384,8 @@ class ConversationState:
         """Cleanup resources."""
         if self.llm:
             await self.llm.close()
+        if self.rvc and hasattr(self.rvc, "close"):
+            self.rvc.close()
 
 
 class WebSocketManager:
@@ -1282,7 +1351,15 @@ class WebSocketManager:
                             tts = state.get_tts()
                             # Preload ONNX model so first synthesis is fast
                             if hasattr(tts, '_load_model'):
-                                tts._load_model()
+                                try:
+                                    tts._load_model()
+                                except Exception as exc:
+                                    if tts.__class__.__name__ == "Qwen3TTSProvider":
+                                        fallback_voice = state.config.get("tts", {}).get("kokoro_voice", "ff_siwis")
+                                        print(f"   Qwen3-TTS preload failed, falling back to Kokoro: {exc}")
+                                        state.tts = KokoroProvider(voice=fallback_voice)
+                                    else:
+                                        raise
                         await loop.run_in_executor(None, _preload_tts)
                         print(f"   TTS loaded for {client_id}")
                         await safe_send({
@@ -1320,6 +1397,26 @@ class WebSocketManager:
                             "type": "models_error",
                             "message": f"ASR failed: {str(e)}"
                         })
+
+                rvc_config = state.config.get("tts", {}).get("rvc", {})
+                if rvc_config.get("enabled", False) and is_connected():
+                    await safe_send({
+                        "type": "model_loading",
+                        "model": "rvc",
+                        "message": "Loading RVC voice conversion...",
+                        "progress": 90
+                    })
+                    try:
+                        await loop.run_in_executor(None, state.preload_rvc)
+                        print(f"   RVC loaded for {client_id}")
+                        await safe_send({
+                            "type": "model_loaded",
+                            "model": "rvc",
+                            "message": "RVC ready!",
+                            "progress": 98
+                        })
+                    except Exception as e:
+                        print(f"   RVC load warning: {e}")
 
             if is_connected():
                 await safe_send({
@@ -1370,7 +1467,9 @@ class WebSocketManager:
             llm_ready = True
             if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
                 llm_ready = bool(getattr(getattr(state.llm, "gemma", None), "_model", None))
-            if state.vad and state.asr and state.tts and llm_ready:
+            rvc_enabled = state.config.get("tts", {}).get("rvc", {}).get("enabled", False)
+            rvc_ready = state.rvc is not None or not rvc_enabled
+            if state.vad and state.asr and state.tts and llm_ready and rvc_ready:
                 await self.send_json(client_id, {
                     "type": "models_ready",
                     "message": "Models already loaded"
@@ -1426,7 +1525,11 @@ class WebSocketManager:
                     if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
                         await loop.run_in_executor(None, state.preload_llm)
 
-                await asyncio.gather(load_vad(), load_asr(), load_tts(), load_llm())
+                async def load_rvc():
+                    if state.config.get("tts", {}).get("rvc", {}).get("enabled", False) and not state.rvc:
+                        await loop.run_in_executor(None, state.preload_rvc)
+
+                await asyncio.gather(load_vad(), load_asr(), load_tts(), load_llm(), load_rvc())
 
             await self.send_json(client_id, {
                 "type": "models_ready",

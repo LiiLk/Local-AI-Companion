@@ -17,10 +17,10 @@ Hotkeys:
     Escape: Quit
 """
 
-# Set HuggingFace offline mode BEFORE any imports to prevent network requests
+# Disable Hub telemetry globally, but do not force offline mode here.
+# Some providers (Qwen3-TTS, Chatterbox, Gemma first-run downloads) still need
+# normal Hugging Face access unless they explicitly opt into offline mode.
 import os
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 import argparse
@@ -44,6 +44,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.assistant.audio_service import AudioService, AudioServiceConfig, MicState
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
 from src.utils.character_loader import resolve_character_config
+from src.utils.rvc_config import build_rvc_runtime_config
 
 # Conditional imports
 try:
@@ -240,9 +241,10 @@ class Live2DAssistant:
 
         else:
             from src.llm import OllamaLLM, GemmaTextVisionLLM
-            from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider
+            from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider, Qwen3TTSProvider
             from src.asr import WhisperProvider
             from src.omni import GemmaProvider
+            from src.tts.rvc_provider import RVCConverter
 
             llm_config = self.config.get('llm', {})
             tts_config = self.config.get('tts', {})
@@ -284,6 +286,54 @@ class Live2DAssistant:
                 voice = tts_config.get('kokoro_voice', 'ff_siwis')
                 tts = KokoroProvider(voice=voice)
                 logger.info(f"TTS: Kokoro ({voice})")
+            elif tts_provider == 'qwen3':
+                qwen3_config = tts_config.get('qwen3', {})
+                ref_audio = (
+                    voice_config.get('qwen_ref_audio')
+                    or voice_config.get('chatterbox_ref_audio')
+                    or voice_config.get('omni_ref_audio')
+                    or qwen3_config.get('ref_audio_path')
+                )
+                ref_text = voice_config.get('qwen_ref_text') or qwen3_config.get('ref_text')
+                try:
+                    if not Qwen3TTSProvider.is_available(
+                        backend=qwen3_config.get('backend', 'worker'),
+                        python_path=qwen3_config.get('python_path'),
+                        site_packages_dir=qwen3_config.get('site_packages_dir'),
+                        worker_script=qwen3_config.get('worker_script'),
+                    ):
+                        raise RuntimeError(
+                            "Qwen3-TTS runtime is not installed. "
+                            "Run scripts/install_qwen3_tts_windows.ps1 first."
+                        )
+                    tts = Qwen3TTSProvider(
+                        model_id=qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
+                        mode=qwen3_config.get('mode', 'voice_clone'),
+                        language=qwen3_config.get('language', 'auto'),
+                        speaker=qwen3_config.get('speaker'),
+                        instruct=qwen3_config.get('instruct'),
+                        ref_audio_path=ref_audio,
+                        ref_text=ref_text,
+                        x_vector_only_mode=qwen3_config.get('x_vector_only_mode'),
+                        device=qwen3_config.get('device', 'cuda:0'),
+                        dtype=qwen3_config.get('dtype', 'bfloat16'),
+                        attn_implementation=qwen3_config.get('attn_implementation', 'flash_attention_2'),
+                        backend=qwen3_config.get('backend', 'worker'),
+                        python_path=qwen3_config.get('python_path'),
+                        site_packages_dir=qwen3_config.get('site_packages_dir'),
+                        worker_script=qwen3_config.get('worker_script'),
+                    )
+                    logger.info(
+                        "TTS: Qwen3-TTS (%s, mode=%s, ref=%s)",
+                        qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
+                        qwen3_config.get('mode', 'voice_clone'),
+                        ref_audio,
+                    )
+                except Exception as exc:
+                    logger.warning("Qwen3-TTS init failed, falling back to Kokoro: %s", exc)
+                    voice = tts_config.get('kokoro_voice', 'ff_siwis')
+                    tts = KokoroProvider(voice=voice)
+                    logger.info(f"TTS fallback: Kokoro ({voice})")
             elif tts_provider == 'chatterbox':
                 chatterbox_config = tts_config.get('chatterbox', {})
                 ref_audio = voice_config.get('chatterbox_ref_audio')
@@ -314,6 +364,37 @@ class Live2DAssistant:
             )
             logger.info(f"ASR: Whisper {model_size} on {device}")
 
+            # Create optional RVC post-processor
+            rvc = None
+            rvc_config = build_rvc_runtime_config(self.config)
+            if rvc_config:
+                if RVCConverter.is_available(
+                    backend=rvc_config.get('backend', 'auto'),
+                    python_path=rvc_config.get('python_path'),
+                    site_packages_dir=rvc_config.get('site_packages_dir'),
+                    worker_script=rvc_config.get('worker_script'),
+                ):
+                    try:
+                        rvc = RVCConverter(
+                            model_path=rvc_config.get('model_path'),
+                            index_path=rvc_config.get('index_path'),
+                            device=rvc_config.get('device', 'cuda:0'),
+                            f0_method=rvc_config.get('f0_method', 'rmvpe'),
+                            index_rate=rvc_config.get('index_rate', 0.75),
+                            protect=rvc_config.get('protect', 0.33),
+                            backend=rvc_config.get('backend', 'auto'),
+                            python_path=rvc_config.get('python_path'),
+                            site_packages_dir=rvc_config.get('site_packages_dir'),
+                            worker_script=rvc_config.get('worker_script'),
+                            f0_up_key=rvc_config.get('f0_up_key', 0.0),
+                            output_freq=rvc_config.get('output_freq'),
+                        )
+                        logger.info("RVC: %s", rvc_config.get('model_path'))
+                    except Exception as exc:
+                        logger.warning("RVC init failed, voice conversion disabled: %s", exc)
+                else:
+                    logger.warning("RVC requested but backend is not usable in this environment")
+
             # Create pipeline
             pipeline_config = ConversationConfig(
                 character_name=character_config.get('name', 'AI'),
@@ -327,7 +408,8 @@ class Live2DAssistant:
                 llm=llm,
                 tts=tts,
                 asr=asr,
-                config=pipeline_config
+                config=pipeline_config,
+                rvc=rvc,
             )
 
             # Set pipeline callbacks
@@ -499,12 +581,30 @@ class Live2DAssistant:
                 llm = getattr(self.pipeline, 'llm', None)
                 asr = getattr(self.pipeline, 'asr', None)
                 tts = getattr(self.pipeline, 'tts', None)
+                rvc = getattr(self.pipeline, 'rvc', None)
                 if hasattr(llm, 'preload'):
                     llm.preload()
                 if hasattr(asr, '_get_model'):
                     asr._get_model()
                 if hasattr(tts, '_load_model'):
-                    tts._load_model()
+                    try:
+                        tts._load_model()
+                    except Exception as exc:
+                        if tts.__class__.__name__ == "Qwen3TTSProvider":
+                            from src.tts import KokoroProvider
+
+                            fallback_voice = self.config.get('tts', {}).get('kokoro_voice', 'ff_siwis')
+                            logger.warning("Qwen3-TTS preload failed, falling back to Kokoro: %s", exc)
+                            fallback_tts = KokoroProvider(voice=fallback_voice)
+                            fallback_tts._load_pipeline()
+                            self.pipeline.tts = fallback_tts
+                            tts = fallback_tts
+                        else:
+                            raise
+                if rvc and hasattr(rvc, 'preload'):
+                    rvc.preload()
+                    if hasattr(rvc, 'warmup'):
+                        rvc.warmup()
                 logger.info("✅ Pipeline models ready")
 
             if self.audio_service and self._loop and not self.audio_service._running:
@@ -806,10 +906,13 @@ class Live2DAssistant:
         if self.pipeline:
             llm = getattr(self.pipeline, 'llm', None)
             tts = getattr(self.pipeline, 'tts', None)
+            rvc = getattr(self.pipeline, 'rvc', None)
             if hasattr(tts, 'cleanup'):
                 tts.cleanup()
             if hasattr(llm, 'cleanup'):
                 llm.cleanup()
+            if rvc and hasattr(rvc, 'close'):
+                rvc.close()
         
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
