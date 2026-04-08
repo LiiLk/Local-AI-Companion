@@ -15,6 +15,7 @@ Features:
 
 import asyncio
 import os
+import logging
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, AsyncGenerator, Union
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 
 from .base import BaseASR, BaseRealtimeASR, ASRResult, ASRSegment
 
+logger = logging.getLogger(__name__)
 
 # Directory for locally cached models
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
@@ -131,11 +133,11 @@ class WhisperProvider(BaseASR):
         
         # Check if already downloaded
         if ctranslate2_path.exists() and (ctranslate2_path / "model.bin").exists():
-            print(f"✅ French model already cached: {local_path}")
+            logger.info("French model already cached: %s", local_path)
             return ctranslate2_path
         
-        print(f"📥 Downloading French model from {hf_repo}...")
-        print(f"   (This will only be done once)")
+        logger.info("Downloading French model from %s...", hf_repo)
+        logger.info("This will only be done once.")
         
         # Create models directory
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,7 +150,7 @@ class WhisperProvider(BaseASR):
             local_dir_use_symlinks=False,
         )
         
-        print(f"✅ Model downloaded: {local_path}")
+        logger.info("French model downloaded: %s", local_path)
         return ctranslate2_path
     
     def _get_model(self):
@@ -171,9 +173,9 @@ class WhisperProvider(BaseASR):
             is_french_model = "hf_repo" in model_config
             
             if is_french_model:
-                print(f"🔄 Loading French model ({self.model_size})...")
+                logger.info("Loading French model (%s)...", self.model_size)
             else:
-                print(f"🔄 Loading Whisper ({self.model_size})...")
+                logger.info("Loading Whisper (%s)...", self.model_size)
             
             # Determine device
             if self.device == "auto":
@@ -210,7 +212,7 @@ class WhisperProvider(BaseASR):
                 )
             except Exception as e:
                 if "cudnn" in str(e).lower() or device == "cuda":
-                    print(f"⚠️ CUDA error, falling back to CPU: {e}")
+                    logger.warning("CUDA error, falling back to CPU: %s", e)
                     device = "cpu"
                     compute_type = "int8"
                     self._model = WhisperModel(
@@ -223,7 +225,7 @@ class WhisperProvider(BaseASR):
                     raise
             
             model_name = self.model_size if not is_french_model else f"{self.model_size} 🇫🇷"
-            print(f"✅ {model_name} loaded! (device={device}, compute={compute_type})")
+            logger.info("%s loaded (device=%s, compute=%s)", model_name, device, compute_type)
             
         return self._model
     
@@ -256,11 +258,11 @@ class WhisperProvider(BaseASR):
             # Log audio file info for debugging
             import os
             file_size = os.path.getsize(audio_path)
-            print(f"🎤 Transcribing {audio_path.name} ({file_size/1024:.1f} KB)")
+            logger.info("Transcribing %s (%.1f KB)", audio_path.name, file_size / 1024)
             transcribe_input = str(audio_path)
         else:
             # Numpy array
-            print(f"🎤 Transcribing audio buffer ({len(audio_input)} samples)")
+            logger.info("Transcribing audio buffer (%s samples)", len(audio_input))
             transcribe_input = audio_input
         
         # Normalize language setting
@@ -296,13 +298,18 @@ class WhisperProvider(BaseASR):
             # Log each segment for debugging
             avg_logprob = getattr(segment, 'avg_logprob', 0)
             no_speech_prob = getattr(segment, 'no_speech_prob', 0)
-            print(f"   📝 [{segment.start:.1f}s-{segment.end:.1f}s] "
-                  f"'{segment.text.strip()}' "
-                  f"(logprob={avg_logprob:.2f}, no_speech={no_speech_prob:.2f})")
+            logger.info(
+                "Segment [%.1fs-%.1fs] '%s' (logprob=%.2f, no_speech=%.2f)",
+                segment.start,
+                segment.end,
+                segment.text.strip(),
+                avg_logprob,
+                no_speech_prob,
+            )
             
             # Filter out low-confidence segments
             if avg_logprob < -1.0 or no_speech_prob > 0.5:
-                print(f"   ⚠️ Segment filtered (low confidence)")
+                logger.warning("Segment filtered (low confidence)")
                 continue
                 
             full_text_parts.append(segment.text)
@@ -438,7 +445,7 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
                 "pip install sounddevice soundfile numpy"
             )
         
-        print("🎤 Listening... (speak now)")
+        logger.info("Listening... (speak now)")
         
         # Recording parameters
         duration = timeout or 10.0  # Default 10 seconds max
@@ -458,7 +465,7 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
         except KeyboardInterrupt:
             sd.stop()
         
-        print("✅ Recording complete, transcribing...")
+        logger.info("Recording complete, transcribing...")
         
         # Trim silence from end (simple energy-based)
         audio = recording.flatten()

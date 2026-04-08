@@ -24,6 +24,7 @@ wheels/
 venv/
 env/
 .venv/
+.venv-qwen3-tts/
 .env/
 
 # IDE
@@ -76,3 +77,14 @@ nul
 # RVC model files (too large for git, download separately)
 resources/voices/**/*.pth
 resources/voices/**/*.index
+
+# Isolated Windows RVC dependencies
+.rvc-overlay/
+.qwen3-tts-overlay/
+.qwen3-tts-overlay.staging/
+
+# Local one-off smoke tests / temp artifacts
+.simple_*
+.worker_*
+dir_test.txt
+%SystemDrive%/

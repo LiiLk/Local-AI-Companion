@@ -115,7 +115,15 @@ def resolve_character_config(config: dict) -> dict:
         kokoro_voice = voice_config.get("kokoro_voice")
         if kokoro_voice:
             tts_config["kokoro_voice"] = kokoro_voice
-    
+
+        qwen_ref_audio = voice_config.get("qwen_ref_audio")
+        if qwen_ref_audio:
+            tts_config.setdefault("qwen3", {})["ref_audio_path"] = qwen_ref_audio
+
+        qwen_ref_text = voice_config.get("qwen_ref_text")
+        if qwen_ref_text:
+            tts_config.setdefault("qwen3", {})["ref_text"] = qwen_ref_text
+
     # Update Live2D config if preset has it
     live2d_config = preset.get("live2d", {})
     if live2d_config:

@@ -48,3 +48,6 @@ voice:
   chatterbox_ref_audio: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
   chatterbox_exaggeration: 0.6
   chatterbox_language: "fr"
+  # Qwen3-TTS voice cloning
+  qwen_ref_audio: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
+  qwen_ref_text: null
