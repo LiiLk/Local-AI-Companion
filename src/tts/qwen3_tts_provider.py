@@ -26,6 +26,8 @@ from typing import AsyncGenerator
 import numpy as np
 import soundfile as sf
 
+from src.utils.language_detection import LanguageCode, detect_language
+
 from .base import BaseTTS, TTSResult, Voice
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,7 @@ class Qwen3TTSProvider(BaseTTS):
         self._worker_stderr_thread: threading.Thread | None = None
         self._rate = "+0%"
         self._pitch = "+0Hz"
+        self._language_hint: str | None = None
 
     def _resolve_dtype(self):
         import torch
@@ -146,6 +149,53 @@ class Qwen3TTSProvider(BaseTTS):
     def _normalize_language(self, language: str | None = None) -> str:
         value = (language or self.language or "auto").strip().lower()
         return LANGUAGE_NAMES.get(value, value.title() if value else "Auto")
+
+    def _normalize_language_code(self, language: str | None) -> str | None:
+        if language is None:
+            return None
+
+        value = language.strip().lower()
+        if not value or value == "auto":
+            return None
+
+        if value.startswith("fr"):
+            return "fr"
+        if value.startswith("en"):
+            return "en"
+        if value.startswith("de"):
+            return "de"
+        if value.startswith("it"):
+            return "it"
+        if value.startswith("es"):
+            return "es"
+        if value.startswith("pt"):
+            return "pt"
+        if value.startswith("ru"):
+            return "ru"
+        if value.startswith("ja"):
+            return "ja"
+        if value.startswith("ko"):
+            return "ko"
+        if value.startswith("zh"):
+            return "zh"
+
+        return value
+
+    def _resolve_request_language(self, text: str) -> str:
+        explicit_code = self._normalize_language_code(self.language)
+        if explicit_code:
+            return self._normalize_language(explicit_code)
+
+        hint_code = self._normalize_language_code(self._language_hint)
+        if hint_code and hint_code not in {"fr", "en"}:
+            return self._normalize_language(hint_code)
+
+        if text and text.strip():
+            default_lang = LanguageCode.FRENCH if hint_code == "fr" else LanguageCode.ENGLISH
+            detected = detect_language(text, default=default_lang)
+            return self._normalize_language(str(detected))
+
+        return self._normalize_language(hint_code)
 
     def _resolve_x_vector_only_mode(self) -> bool:
         if self.x_vector_only_mode is not None:
@@ -424,7 +474,7 @@ class Qwen3TTSProvider(BaseTTS):
 
     def _generate_sync_inprocess(self, text: str) -> tuple[np.ndarray, int]:
         self._load_model_inprocess()
-        language = self._normalize_language()
+        language = self._resolve_request_language(text)
 
         if self.mode == "custom_voice":
             kwargs = {
@@ -481,6 +531,7 @@ class Qwen3TTSProvider(BaseTTS):
                 {
                     "command": "synthesize",
                     "text": text,
+                    "language": self._resolve_request_language(text),
                     "output_path": str(tmp_output),
                 }
             )
@@ -567,6 +618,9 @@ class Qwen3TTSProvider(BaseTTS):
 
         self.speaker = voice_id
         self._restart_worker()
+
+    def set_language(self, language: str | None) -> None:
+        self._language_hint = self._normalize_language_code(language)
 
     def set_rate(self, rate: str) -> None:
         self._rate = rate

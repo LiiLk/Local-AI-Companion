@@ -195,6 +195,9 @@ class ConversationState:
                 print(f"   Edge TTS config: voice={voice}")
                 self.tts = EdgeTTSProvider(voice=voice)
 
+            if self.tts and hasattr(self.tts, "set_language"):
+                self.tts.set_language(self.current_language)
+
         return self.tts
 
     def get_rvc(self):
@@ -478,6 +481,9 @@ class WebSocketManager:
             if state.current_language != lang_code:
                 print(f"Language switch detected: {state.current_language} -> {lang_code}")
                 state.current_language = lang_code
+
+                if state.tts and hasattr(state.tts, "set_language"):
+                    state.tts.set_language(lang_code)
 
                 tts_config = state.config.get("tts", {})
                 provider_name = tts_config.get("provider", "kokoro")
@@ -940,6 +946,15 @@ class WebSocketManager:
         llm_messages = list(state.messages)
 
         if language:
+            normalized_lang = language.lower()
+            if normalized_lang.startswith("fr"):
+                state.current_language = "fr"
+            elif normalized_lang.startswith("en"):
+                state.current_language = "en"
+
+            if state.tts and hasattr(state.tts, "set_language"):
+                state.tts.set_language(state.current_language)
+
             lang_map = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "ja": "Japanese"}
             lang_name = lang_map.get(language, language)
 
