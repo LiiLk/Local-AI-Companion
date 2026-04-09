@@ -47,13 +47,13 @@ FRENCH_MARKERS = {
     "ne", "pas", "plus", "jamais", "rien",
     "très", "bien", "mal", "peu", "beaucoup", "trop",
     "avec", "sans", "pour", "dans", "sur", "sous",
-    "ici", "là", "oui", "non", "peut-être",
+    "ici", "là", "oui", "non", "peut-être", "ca", "ça",
     "bonjour", "salut", "merci", "pardon", "excusez",
     "aujourd'hui", "demain", "hier", "maintenant",
     "comment", "pourquoi", "quand", "combien",
     # Verbs
     "faire", "avoir", "être", "aller", "venir", "voir",
-    "veux", "peux", "dois", "vais", "voudrais", "pourrais",
+    "veux", "peux", "dois", "va", "vais", "voudrais", "pourrais",
     # French-specific contractions
     "c'est", "j'ai", "n'est", "qu'est", "d'accord",
 }

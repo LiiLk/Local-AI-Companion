@@ -103,10 +103,10 @@
                     </svg>
                 </button>
                 <div class="chat-title">
-                    <img src="assets/juri_avatar.png?v=2" alt="Juri" class="header-avatar" width="44" height="44">
+                    <div class="header-avatar" aria-hidden="true">✨</div>
                     <div>
-                        <h1>Juri</h1>
-                        <span class="chat-subtitle">Street Fighter • Sarcastic AI</span>
+                        <h1 id="chat-character-name">Assistant</h1>
+                        <span class="chat-subtitle" id="chat-character-subtitle">Local AI Companion</span>
                     </div>
                 </div>
                 <div class="chat-actions">
@@ -125,13 +125,13 @@
                     <!-- Welcome Message -->
                     <div class="message assistant welcome-message">
                         <div class="message-avatar">
-                            <img src="assets/juri_avatar.png" class="avatar-img">
+                            ✨
                         </div>
                         <div class="message-bubble">
                             <div class="message-content">
-                                <p><strong>Salut, loser !</strong> 😏</p>
-                                <p>Juri Han à l'appareil. Prêt à souffrir un peu ? Ou tu veux juste que je t'aide ?</p>
-                                <p class="hint">Parle-moi si t'oses.</p>
+                                <p><strong id="welcome-title">Assistant prêt.</strong></p>
+                                <p id="welcome-body">La session est connectée. Tu peux parler ou écrire pour commencer.</p>
+                                <p class="hint" id="welcome-hint">Le chargement initial peut prendre un peu de temps, puis la conversation devient plus stable.</p>
                             </div>
                             <div class="message-meta">
                                 <span class="message-time">Maintenant</span>
@@ -306,12 +306,12 @@
                     </h3>
                     <div class="setting-item">
                         <label for="character-name">Nom</label>
-                        <input type="text" id="character-name" value="Juri" placeholder="Nom du personnage">
+                        <input type="text" id="character-name" value="March 7th" placeholder="Nom du personnage">
                     </div>
                     <div class="setting-item">
                         <label for="character-prompt">Personnalité</label>
                         <textarea id="character-prompt" rows="3"
-                            placeholder="Décrivez la personnalité...">You are Juri Han from Street Fighter. You are sarcastic, sadistic, but helpful.</textarea>
+                            placeholder="Décrivez la personnalité...">You are March 7th from Honkai: Star Rail. Reply in the same language as the user and keep answers short for real-time voice chat.</textarea>
                     </div>
                 </section>
             </div>
