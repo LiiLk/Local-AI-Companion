@@ -1364,8 +1364,9 @@ class WebSocketManager:
                     try:
                         def _preload_tts():
                             tts = state.get_tts()
-                            # Preload ONNX model so first synthesis is fast
-                            if hasattr(tts, '_load_model'):
+                            if hasattr(tts, "preload"):
+                                tts.preload()
+                            elif hasattr(tts, '_load_model'):
                                 try:
                                     tts._load_model()
                                 except Exception as exc:
@@ -1375,6 +1376,8 @@ class WebSocketManager:
                                         state.tts = KokoroProvider(voice=fallback_voice)
                                     else:
                                         raise
+                            if hasattr(tts, "warmup"):
+                                tts.warmup()
                         await loop.run_in_executor(None, _preload_tts)
                         print(f"   TTS loaded for {client_id}")
                         await safe_send({
