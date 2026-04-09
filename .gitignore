@@ -25,6 +25,8 @@ venv/
 env/
 .venv/
 .venv-qwen3-tts/
+.venv-qwen3-asr/
+.venv-qwen3-asr-worker/
 .env/
 
 # IDE
@@ -88,3 +90,4 @@ resources/voices/**/*.index
 .worker_*
 dir_test.txt
 %SystemDrive%/
+AGENTS.md

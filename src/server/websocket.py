@@ -32,6 +32,8 @@ from src.utils.character_loader import resolve_character_config
 from src.utils.emotion_detector import EmotionDetector, strip_emotion_markers
 from src.utils.rvc_config import build_rvc_runtime_config
 from src.utils.language_detection import detect_language as detect_text_language
+from src.tts.tts_task_manager import TTSTaskManager
+from src.utils.sentence_splitter import SentenceSplitter
 
 websocket_router = APIRouter()
 
@@ -241,15 +243,32 @@ class ConversationState:
         """Get or create ASR provider (lazy loading). Pipeline mode only."""
         if self.asr is None:
             asr_config = self.config.get("asr", {})
-            device = asr_config.get("device", "cpu")
+            asr_provider = asr_config.get("provider", "whisper")
 
-            model_size = asr_config.get("model_size", "base")
-            initial_prompt = asr_config.get("prompt", None)
-            self.asr = WhisperProvider(
-                model_size=model_size,
-                device=device,
-                initial_prompt=initial_prompt
-            )
+            if asr_provider == "qwen3":
+                from src.asr.qwen3_asr_provider import Qwen3ASRProvider
+                qwen3_cfg = asr_config.get("qwen3", {})
+                self.asr = Qwen3ASRProvider(
+                    model_id=qwen3_cfg.get("model_id", "Qwen/Qwen3-ASR-0.6B"),
+                    device=qwen3_cfg.get("device", "cuda:0"),
+                    dtype=qwen3_cfg.get("dtype", "bfloat16"),
+                    max_new_tokens=qwen3_cfg.get("max_new_tokens", 256),
+                    backend=qwen3_cfg.get("backend", "worker"),
+                    python_path=qwen3_cfg.get("python_path"),
+                    site_packages_dir=qwen3_cfg.get("site_packages_dir"),
+                    worker_script=qwen3_cfg.get("worker_script"),
+                )
+            else:
+                device = asr_config.get("device", "cpu")
+                model_size = asr_config.get("model_size", "base")
+                compute_type = asr_config.get("compute_type", "float16")
+                initial_prompt = asr_config.get("prompt", None)
+                self.asr = WhisperProvider(
+                    model_size=model_size,
+                    device=device,
+                    compute_type=compute_type,
+                    initial_prompt=initial_prompt,
+                )
             self.asr_language = asr_config.get("language", "")
 
         return self.asr
@@ -269,13 +288,20 @@ class ConversationState:
             from src.vad.silero_vad import VADConfig
 
             llm_provider = self.config.get("llm", {}).get("provider", "ollama")
-            gemma_config = self.config.get("gemma", {}) if self.mode == "gemma-omni" or (self.mode == "pipeline" and llm_provider == "gemma") else {}
+            # Read VAD settings: gemma-omni uses gemma config, pipeline uses pipeline config
+            if self.mode == "gemma-omni" or (self.mode == "pipeline" and llm_provider == "gemma"):
+                vad_source = self.config.get("gemma", {})
+            else:
+                vad_source = {}
+            pipeline_config = self.config.get("pipeline", {})
+            # Pipeline-level vad_required_misses overrides the default 30
+            default_misses = pipeline_config.get("vad_required_misses", 30)
             vad_config = VADConfig(
                 sample_rate=16000,
-                prob_threshold=gemma_config.get("vad_prob_threshold", 0.5),
-                db_threshold=gemma_config.get("vad_db_threshold", -50),
-                required_hits=gemma_config.get("vad_required_hits", 3),
-                required_misses=gemma_config.get("vad_required_misses", 30),
+                prob_threshold=vad_source.get("vad_prob_threshold", 0.5),
+                db_threshold=vad_source.get("vad_db_threshold", -50),
+                required_hits=vad_source.get("vad_required_hits", 3),
+                required_misses=vad_source.get("vad_required_misses", default_misses),
             )
             self.vad = SileroVAD(config=vad_config)
         return self.vad
@@ -942,7 +968,6 @@ class WebSocketManager:
         await self.send_json(client_id, {"type": "audio_start"})
 
         full_response = ""
-        current_sentence = ""
 
         llm_messages = list(state.messages)
 
@@ -969,29 +994,75 @@ class WebSocketManager:
                 llm_messages[-1] = Message(role="user", content=new_content)
                 print(f"Enforcing language: {lang_name}")
 
-        async for chunk in state.llm.chat_stream(llm_messages):
-            full_response += chunk
-            current_sentence += chunk
+        # --- Decoupled TTS pipeline ---
+        # LLM tokens stream into SentenceSplitter, complete sentences are
+        # queued to TTSTaskManager which synthesizes independently.
+        # The LLM stream never blocks while TTS is working.
 
-            await self.send_json(client_id, {
-                "type": "text_chunk",
-                "content": chunk
+        splitter = SentenceSplitter(faster_first_response=True)
+        manager = self  # capture for closure
+
+        async def _on_ws_audio(payload: dict):
+            expression = payload.get("expression")
+            if expression and state.emotion_detector:
+                if expression != state.current_expression:
+                    state.current_expression = expression
+                    await manager.send_json(client_id, {
+                        "type": "expression_change",
+                        "expression": expression,
+                    })
+
+            await manager.send_json(client_id, {
+                "type": "audio_data",
+                "data": payload["audio_base64"],
+                "format": "wav",
+                "lip_sync": {
+                    "volumes": payload["volumes"],
+                    "duration_ms": payload["duration_ms"],
+                    "chunk_ms": 50,
+                },
+                "expression": expression,
+                "text": payload["text"],
             })
 
-            if any(punct in chunk for punct in ".!?\n"):
-                import re
-                parts = re.split(r'([.!?\n]+)', current_sentence)
+        tts_obj = state.get_tts()
+        rvc_obj = state.get_rvc()
 
-                if len(parts) > 1:
-                    for i in range(0, len(parts) - 1, 2):
-                        sentence = parts[i] + parts[i+1]
-                        if sentence.strip():
-                            await self._process_tts_chunk(client_id, sentence)
+        tts_mgr = TTSTaskManager(
+            tts=tts_obj,
+            on_audio_ready=_on_ws_audio,
+            rvc=rvc_obj,
+            emotion_detector=state.emotion_detector,
+        )
+        await tts_mgr.start()
 
-                    current_sentence = parts[-1]
+        try:
+            async for chunk in state.llm.chat_stream(llm_messages):
+                full_response += chunk
 
-        if current_sentence.strip():
-            await self._process_tts_chunk(client_id, current_sentence)
+                await self.send_json(client_id, {
+                    "type": "text_chunk",
+                    "content": chunk,
+                })
+
+                splitter.feed(chunk)
+                for sentence in splitter.get_sentences():
+                    await self._update_voice_for_language(state, sentence)
+                    clean = self._clean_text_for_tts(sentence)
+                    if clean.strip():
+                        await tts_mgr.submit(clean)
+
+            remaining = splitter.flush()
+            if remaining:
+                clean = self._clean_text_for_tts(remaining)
+                if clean.strip():
+                    await self._update_voice_for_language(state, clean)
+                    await tts_mgr.submit(clean)
+
+            await tts_mgr.finish()
+        except asyncio.CancelledError:
+            await tts_mgr.cancel()
+            raise
 
         state.messages.append(Message(role="assistant", content=full_response))
 
@@ -1406,7 +1477,12 @@ class WebSocketManager:
                         "progress": 82
                     })
                     try:
-                        await loop.run_in_executor(None, state.get_asr)
+                        def _preload_asr():
+                            asr = state.get_asr()
+                            if hasattr(asr, "preload"):
+                                asr.preload()
+
+                        await loop.run_in_executor(None, _preload_asr)
                         print(f"   ASR loaded for {client_id}")
                         await safe_send({
                             "type": "model_loaded",

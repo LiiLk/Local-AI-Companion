@@ -78,7 +78,10 @@ async def get_config(request: Request):
             )
         else:
             tts_voice = tts.get("kokoro_voice", tts.get("voice", "ff_siwis"))
-        asr_model = asr.get("model_size", "base")
+        if asr.get("provider", "whisper") == "qwen3":
+            asr_model = asr.get("qwen3", {}).get("model_id", "Qwen/Qwen3-ASR-0.6B")
+        else:
+            asr_model = asr.get("model_size", "base")
 
     return ConfigResponse(
         mode=mode,

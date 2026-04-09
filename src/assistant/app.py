@@ -354,15 +354,33 @@ class Live2DAssistant:
                 logger.info(f"TTS: Edge ({voice})")
 
             # Create ASR
-            device = asr_config.get('device', 'cpu')
-            model_size = asr_config.get('model_size', 'base')
-            prompt = asr_config.get('prompt')
-            asr = WhisperProvider(
-                model_size=model_size,
-                device=device,
-                initial_prompt=prompt
-            )
-            logger.info(f"ASR: Whisper {model_size} on {device}")
+            asr_provider = asr_config.get('provider', 'whisper')
+            if asr_provider == 'qwen3':
+                from src.asr.qwen3_asr_provider import Qwen3ASRProvider
+                qwen3_cfg = asr_config.get('qwen3', {})
+                asr = Qwen3ASRProvider(
+                    model_id=qwen3_cfg.get('model_id', 'Qwen/Qwen3-ASR-0.6B'),
+                    device=qwen3_cfg.get('device', 'cuda:0'),
+                    dtype=qwen3_cfg.get('dtype', 'bfloat16'),
+                    max_new_tokens=qwen3_cfg.get('max_new_tokens', 256),
+                    backend=qwen3_cfg.get('backend', 'worker'),
+                    python_path=qwen3_cfg.get('python_path'),
+                    site_packages_dir=qwen3_cfg.get('site_packages_dir'),
+                    worker_script=qwen3_cfg.get('worker_script'),
+                )
+                logger.info(f"ASR: Qwen3-ASR ({qwen3_cfg.get('model_id', '0.6B')})")
+            else:
+                device = asr_config.get('device', 'cpu')
+                model_size = asr_config.get('model_size', 'base')
+                compute_type = asr_config.get('compute_type', 'float16')
+                prompt = asr_config.get('prompt')
+                asr = WhisperProvider(
+                    model_size=model_size,
+                    device=device,
+                    compute_type=compute_type,
+                    initial_prompt=prompt,
+                )
+                logger.info(f"ASR: Whisper {model_size} on {device}")
 
             # Create optional RVC post-processor
             rvc = None
@@ -426,13 +444,15 @@ class Live2DAssistant:
         # Create audio service (shared by both modes)
         llm_provider = self.config.get('llm', {}).get('provider', 'ollama')
         gemma_vad_config = self.config.get('gemma', {}) if mode == 'gemma-omni' or (mode == 'pipeline' and llm_provider == 'gemma') else {}
+        pipeline_config = self.config.get('pipeline', {})
+        default_misses = pipeline_config.get('vad_required_misses', 30)
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=False,
             vad_prob_threshold=gemma_vad_config.get('vad_prob_threshold', 0.5),
             vad_db_threshold=gemma_vad_config.get('vad_db_threshold', -50),
             vad_required_hits=gemma_vad_config.get('vad_required_hits', 3),
-            vad_required_misses=gemma_vad_config.get('vad_required_misses', 30),
+            vad_required_misses=gemma_vad_config.get('vad_required_misses', default_misses),
         )
         self.audio_service = AudioService(audio_config)
         self.audio_service.on_speech_detected = self._on_speech_detected
@@ -584,7 +604,9 @@ class Live2DAssistant:
                 rvc = getattr(self.pipeline, 'rvc', None)
                 if hasattr(llm, 'preload'):
                     llm.preload()
-                if hasattr(asr, '_get_model'):
+                if hasattr(asr, 'preload'):
+                    asr.preload()
+                elif hasattr(asr, '_get_model'):
                     asr._get_model()
                 if hasattr(tts, 'preload'):
                     tts.preload()
