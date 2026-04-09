@@ -13,6 +13,7 @@ import asyncio
 import base64
 import emoji
 import tempfile
+import time
 import numpy as np
 from langdetect import detect, LangDetectException
 from pathlib import Path
@@ -968,6 +969,8 @@ class WebSocketManager:
         await self.send_json(client_id, {"type": "audio_start"})
 
         full_response = ""
+        llm_started = time.perf_counter()
+        first_sentence_logged = False
 
         llm_messages = list(state.messages)
 
@@ -1047,6 +1050,9 @@ class WebSocketManager:
 
                 splitter.feed(chunk)
                 for sentence in splitter.get_sentences():
+                    if not first_sentence_logged:
+                        first_sentence_logged = True
+                        print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
                     await self._update_voice_for_language(state, sentence)
                     clean = self._clean_text_for_tts(sentence)
                     if clean.strip():
@@ -1054,11 +1060,15 @@ class WebSocketManager:
 
             remaining = splitter.flush()
             if remaining:
+                if not first_sentence_logged:
+                    first_sentence_logged = True
+                    print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
                 clean = self._clean_text_for_tts(remaining)
                 if clean.strip():
                     await self._update_voice_for_language(state, clean)
                     await tts_mgr.submit(clean)
 
+            print(f"LLM total generation time for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
             await tts_mgr.finish()
         except asyncio.CancelledError:
             await tts_mgr.cancel()

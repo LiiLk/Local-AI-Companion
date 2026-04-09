@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -99,11 +102,12 @@ def normalize_language(value: str) -> str:
 def load_model(args: argparse.Namespace):
     from qwen_tts import Qwen3TTSModel
 
+    actual_attn = resolve_attn_implementation(args.attn_implementation)
     model = Qwen3TTSModel.from_pretrained(
         args.model_id,
         device_map=args.device,
         dtype=resolve_dtype(args.dtype),
-        attn_implementation=resolve_attn_implementation(args.attn_implementation),
+        attn_implementation=actual_attn,
     )
 
     voice_clone_prompt = None
@@ -116,22 +120,20 @@ def load_model(args: argparse.Namespace):
             kwargs["ref_text"] = args.ref_text
         voice_clone_prompt = model.create_voice_clone_prompt(**kwargs)
 
-    return model, voice_clone_prompt
+    return model, voice_clone_prompt, actual_attn
 
 
-def synthesize_to_file(model, voice_clone_prompt, args: argparse.Namespace, request: dict) -> tuple[Path, float | None]:
+def synthesize_to_payload(model, voice_clone_prompt, args: argparse.Namespace, request: dict, actual_attn: str) -> dict:
     import numpy as np
     import soundfile as sf
 
     text = request["text"]
-    output_path = Path(request["output_path"]).resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     language = normalize_language(request.get("language") or args.language)
     mode = request.get("mode") or args.mode
     speaker = request.get("speaker") or args.speaker
     instruct = request.get("instruct") or args.instruct
 
+    started = time.perf_counter()
     if mode == "custom_voice":
         kwargs = {
             "text": text,
@@ -157,13 +159,36 @@ def synthesize_to_file(model, voice_clone_prompt, args: argparse.Namespace, requ
             language=language,
             voice_clone_prompt=voice_clone_prompt,
         )
+    synth_ms = (time.perf_counter() - started) * 1000
 
     audio = np.asarray(wavs[0], dtype=np.float32).reshape(-1)
     audio = np.clip(audio, -1.0, 1.0)
     audio_int16 = (audio * 32767).astype(np.int16)
-    sf.write(str(output_path), audio_int16, sample_rate, subtype="PCM_16")
     duration = len(audio_int16) / sample_rate if sample_rate else None
-    return output_path, duration
+
+    buffer = io.BytesIO()
+    sf.write(buffer, audio_int16, sample_rate, format="WAV", subtype="PCM_16")
+    wav_bytes = buffer.getvalue()
+
+    file_write_ms = 0.0
+    output_path = request.get("output_path")
+    if output_path:
+        output_file = Path(output_path).resolve()
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        write_started = time.perf_counter()
+        output_file.write_bytes(wav_bytes)
+        file_write_ms = (time.perf_counter() - write_started) * 1000
+        output_path = str(output_file)
+
+    return {
+        "duration": duration,
+        "sample_rate": sample_rate,
+        "audio_base64": base64.b64encode(wav_bytes).decode("ascii"),
+        "output_path": output_path,
+        "synth_ms": synth_ms,
+        "file_write_ms": file_write_ms,
+        "attn_implementation": actual_attn,
+    }
 
 
 def main() -> int:
@@ -180,8 +205,8 @@ def main() -> int:
         if not args.model_id:
             raise ValueError("--model-id is required unless --check-imports is used")
 
-        model, voice_clone_prompt = load_model(args)
-        print_json({"status": "ready", "backend": "worker"})
+        model, voice_clone_prompt, actual_attn = load_model(args)
+        print_json({"status": "ready", "backend": "worker", "attn_implementation": actual_attn})
 
         for line in sys.stdin:
             line = line.strip()
@@ -199,14 +224,9 @@ def main() -> int:
                 print_json({"status": "error", "message": f"Unsupported command: {command}"})
                 continue
 
-            output_path, duration = synthesize_to_file(model, voice_clone_prompt, args, request)
-            print_json(
-                {
-                    "status": "ok",
-                    "output_path": str(output_path),
-                    "duration": duration,
-                }
-            )
+            payload = synthesize_to_payload(model, voice_clone_prompt, args, request, actual_attn)
+            payload["status"] = "ok"
+            print_json(payload)
 
         return 0
     except Exception as exc:

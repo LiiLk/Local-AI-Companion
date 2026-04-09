@@ -189,8 +189,8 @@ tts:
   #   but quality is usually a bit lower
   # ─────────────────────────────────────────────────────────────────────────
   qwen3:
-    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-    mode: "voice_clone"          # "voice_clone", "custom_voice", "voice_design"
+    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    mode: "custom_voice"         # temporary low-latency test; avoids voice clone cost
     language: "auto"
     speaker: "Ryan"              # Used only in custom_voice mode
     instruct: ""                 # Used in custom_voice / voice_design modes
@@ -378,5 +378,8 @@ live2d:
   hotkeys:
     toggle_visibility: "F12"
     toggle_frameless: "F11"
+
+
+
 
 
