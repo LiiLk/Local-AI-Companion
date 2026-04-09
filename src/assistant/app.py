@@ -586,7 +586,9 @@ class Live2DAssistant:
                     llm.preload()
                 if hasattr(asr, '_get_model'):
                     asr._get_model()
-                if hasattr(tts, '_load_model'):
+                if hasattr(tts, 'preload'):
+                    tts.preload()
+                elif hasattr(tts, '_load_model'):
                     try:
                         tts._load_model()
                     except Exception as exc:
@@ -601,6 +603,8 @@ class Live2DAssistant:
                             tts = fallback_tts
                         else:
                             raise
+                if hasattr(tts, 'warmup'):
+                    tts.warmup()
                 if rvc and hasattr(rvc, 'preload'):
                     rvc.preload()
                     if hasattr(rvc, 'warmup'):

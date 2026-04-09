@@ -125,6 +125,7 @@ class Qwen3TTSProvider(BaseTTS):
         self._rate = "+0%"
         self._pitch = "+0Hz"
         self._language_hint: str | None = None
+        self._warmed_up = False
 
     def _resolve_dtype(self):
         import torch
@@ -456,6 +457,22 @@ class Qwen3TTSProvider(BaseTTS):
 
     def preload(self) -> None:
         self._load_model()
+
+    def warmup(self) -> None:
+        """Pay the first synthesis cost before the first real user reply."""
+        if self._warmed_up:
+            return
+
+        warmup_text = "Bonjour."
+        fd, tmp_name = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+
+        try:
+            self._synthesize_worker_sync(warmup_text, tmp_path)
+            self._warmed_up = True
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def _create_voice_clone_prompt(self):
         if not self.ref_audio_path or not self.ref_audio_path.exists():

@@ -7,6 +7,7 @@ with WebSocket support for real-time AI conversation.
 
 import yaml
 import logging
+import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -18,6 +19,21 @@ from .websocket import websocket_router
 from ..utils.character_loader import resolve_character_config, get_available_characters
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_console_output() -> None:
+    """Avoid Windows console crashes when logs contain non-ASCII characters."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(errors="backslashreplace")
+            except Exception:
+                continue
+
+
+_configure_console_output()
 
 
 def load_config() -> dict:

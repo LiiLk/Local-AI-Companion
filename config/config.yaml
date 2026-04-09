@@ -291,9 +291,9 @@ asr:
   prompt: "Transcription of a conversation with an AI assistant."
 
   # Device: "cpu" or "cuda" (GPU)
-  # With other models on GPU, use "cpu" for Whisper to avoid OOM
-  # Whisper small on CPU is fast enough (~1-2s per phrase)
-  device: "cpu"
+  # On an RTX 4070, CUDA gives a much better conversational latency than CPU.
+  # If you later hit VRAM pressure, switch back to "cpu" or use a smaller model.
+  device: "cuda"
 
 # === Live2D Avatar ===
 live2d:
