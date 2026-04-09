@@ -200,12 +200,14 @@ class ConversationPipeline:
         llm: BaseLLM,
         tts: BaseTTS,
         asr: BaseASR,
-        config: Optional[ConversationConfig] = None
+        config: Optional[ConversationConfig] = None,
+        rvc: Optional[Any] = None,
     ):
         self.llm = llm
         self.tts = tts
         self.asr = asr
         self.config = config or ConversationConfig()
+        self.rvc = rvc
         
         # Emotion detection
         self.emotion_detector = EmotionDetector()
@@ -404,6 +406,10 @@ class ConversationPipeline:
         if not full_wav_bytes or audio_bytes is None:
             return
 
+        full_wav_bytes, audio_bytes, sample_rate = await self._maybe_apply_rvc(
+            full_wav_bytes, audio_bytes, sample_rate
+        )
+
         volumes = analyze_audio_volumes(audio_bytes, sample_rate, self.config.lip_sync_chunk_ms)
 
         # 5. Create payload with FULL WAV (not just PCM)
@@ -425,6 +431,35 @@ class ConversationPipeline:
 
         if self.on_audio_ready:
             await self._call_async(self.on_audio_ready, payload)
+
+    async def _maybe_apply_rvc(
+        self,
+        wav_bytes: bytes,
+        audio_bytes: bytes,
+        sample_rate: int,
+    ) -> tuple[bytes, bytes, int]:
+        """Run optional RVC post-processing and fall back to original audio on failure."""
+        if not self.rvc:
+            return wav_bytes, audio_bytes, sample_rate
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as src:
+            src_path = Path(src.name)
+            src.write(wav_bytes)
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as dst:
+            dst_path = Path(dst.name)
+
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.rvc.convert_file, src_path, dst_path)
+            converted_wav = dst_path.read_bytes()
+            converted_audio, converted_sr = read_wav_data(dst_path)
+            return converted_wav, converted_audio, converted_sr
+        except Exception as exc:
+            logger.warning("RVC conversion failed, using original audio: %s", exc)
+            return wav_bytes, audio_bytes, sample_rate
+        finally:
+            src_path.unlink(missing_ok=True)
+            dst_path.unlink(missing_ok=True)
 
     async def _call_async(self, callback: Callable, *args):
         """Call callback, awaiting if async."""
