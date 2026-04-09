@@ -53,11 +53,11 @@ gemma:
   quantization: "int4"           # BitsAndBytes NF4 (~3-4 GB VRAM)
   device: "cuda"
   dtype: "bfloat16"
-  max_new_tokens: 128
+  max_new_tokens: 64
   turn_timeout_sec: 75
-  temperature: 0.7
-  top_p: 0.95
-  context_max_turns: 10
+  temperature: 0.3
+  top_p: 0.9
+  context_max_turns: 6
   vision:
     enabled: true
     token_budget: 140            # Tokens per image (passive mode)
@@ -67,7 +67,7 @@ gemma:
   # Default: 30 (~960ms), tuned here for snappier real-time replies (~320ms)
   vad_required_misses: 10
   screen:
-    enabled: true
+    enabled: false
     interval: 2.0                # Seconds between captures
     max_buffer: 30               # Circular buffer size
     change_threshold: 0.05       # Pixel diff threshold
@@ -281,14 +281,14 @@ asr:
   # ─────────────────────────────────────────────────────────────────────────
   # "large-v3-turbo" = best quality, fast (4 decoder layers), good on CPU with optimizations
   # "small" = lighter but lower accuracy, more hallucinations
-  model_size: "large-v3-turbo"
+  model_size: "french-distil-dec2"
 
   # Language: "fr", "en", "auto" or empty "" for auto-detection
-  language: "auto"
+  language: "fr"
 
   # Prompt to guide transcription (helps even with forced language)
   # Provides context about the expected conversation style.
-  prompt: "Transcription of a conversation with an AI assistant."
+  prompt: "Transcription d'une conversation en francais avec un assistant vocal."
 
   # Device: "cpu" or "cuda" (GPU)
   # On an RTX 4070, CUDA gives a much better conversational latency than CPU.

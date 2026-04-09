@@ -31,6 +31,7 @@ from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calcul
 from src.utils.character_loader import resolve_character_config
 from src.utils.emotion_detector import EmotionDetector, strip_emotion_markers
 from src.utils.rvc_config import build_rvc_runtime_config
+from src.utils.language_detection import detect_language as detect_text_language
 
 websocket_router = APIRouter()
 
@@ -960,7 +961,11 @@ class WebSocketManager:
 
             if llm_messages and llm_messages[-1].role == "user":
                 last_msg = llm_messages[-1]
-                new_content = f"(System: The user is speaking {lang_name}. Reply in {lang_name}.)\n\n{last_msg.content}"
+                new_content = (
+                    f"(System: The user is speaking {lang_name}. "
+                    f"Reply ONLY in {lang_name}. Do not mix languages.)\n\n"
+                    f"{last_msg.content}"
+                )
                 llm_messages[-1] = Message(role="user", content=new_content)
                 print(f"Enforcing language: {lang_name}")
 
@@ -1602,10 +1607,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 if content.strip():
                     lang = None
                     try:
-                        from langdetect import detect
-                        detected = detect(content)
-                        if detected.startswith('fr'): lang = 'fr'
-                        elif detected.startswith('en'): lang = 'en'
+                        detected = str(detect_text_language(content))
+                        if detected.startswith('fr'):
+                            lang = 'fr'
+                        elif detected.startswith('en'):
+                            lang = 'en'
                     except:
                         pass
 

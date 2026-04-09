@@ -26,6 +26,11 @@ class App {
             // Messages
             messagesContainer: document.getElementById('messages-container'),
             messages: document.getElementById('messages'),
+            chatCharacterName: document.getElementById('chat-character-name'),
+            chatCharacterSubtitle: document.getElementById('chat-character-subtitle'),
+            welcomeTitle: document.getElementById('welcome-title'),
+            welcomeBody: document.getElementById('welcome-body'),
+            welcomeHint: document.getElementById('welcome-hint'),
 
             // Input
             input: document.getElementById('message-input'),
@@ -120,6 +125,7 @@ class App {
 
         // Connect
         this.ws.connect();
+        this._loadServerConfig();
 
         // Listen for settings changes from UIController
         window.addEventListener('settings-changed', (e) => this._handleSettingsChange(e.detail));
@@ -239,6 +245,9 @@ class App {
     _sendMessage() {
         const text = this.elements.input?.value.trim();
         if (!text) return;
+        if (!this._modelsPreloaded) {
+            this.ws.sendPreloadModels();
+        }
 
         // Add user message to UI
         this._addMessage('user', text);
@@ -467,6 +476,36 @@ class App {
         const connected = status === 'connected';
         if (window.uiController) {
             window.uiController.updateConnectionStatus(connected);
+        }
+        if (connected && !this._modelsPreloaded) {
+            this.ws.sendPreloadModels();
+        }
+    }
+
+    async _loadServerConfig() {
+        try {
+            const response = await fetch('/api/config');
+            if (!response.ok) {
+                return;
+            }
+
+            const config = await response.json();
+            const characterName = config.character_name || 'Assistant';
+
+            if (this.elements.chatCharacterName) {
+                this.elements.chatCharacterName.textContent = characterName;
+            }
+            if (this.elements.chatCharacterSubtitle) {
+                this.elements.chatCharacterSubtitle.textContent = `Mode ${config.mode || 'pipeline'} • ${config.tts_provider || 'tts'} + ${config.asr_model || 'asr'}`;
+            }
+            if (this.elements.welcomeTitle) {
+                this.elements.welcomeTitle.textContent = `${characterName} est prêt.`;
+            }
+            if (this.elements.welcomeBody) {
+                this.elements.welcomeBody.textContent = `La session est connectée avec ${config.llm_model || 'le modèle courant'}. Tu peux parler ou écrire pour commencer.`;
+            }
+        } catch (error) {
+            console.warn('[App] Failed to load server config:', error);
         }
     }
 
