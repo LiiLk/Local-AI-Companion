@@ -6,6 +6,7 @@ with WebSocket support for real-time AI conversation.
 """
 
 import yaml
+import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -15,6 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routes import router
 from .websocket import websocket_router
 from ..utils.character_loader import resolve_character_config, get_available_characters
+
+logger = logging.getLogger(__name__)
 
 
 def load_config() -> dict:
@@ -38,7 +41,7 @@ async def lifespan(app: FastAPI):
     - Shutdown: Cleanup resources
     """
     # Startup
-    print("🚀 Starting Local AI Companion Server...")
+    logger.info("Starting Local AI Companion Server...")
     config = load_config()
     app.state.config = config
     app.state.character = config.get("character", {})
@@ -48,49 +51,52 @@ async def lifespan(app: FastAPI):
     preset = character.get("preset")
     char_name = character.get("name", "AI")
     if preset:
-        print(f"   🎭 Character: {char_name} (preset: {preset})")
+        logger.info("Character: %s (preset: %s)", char_name, preset)
     else:
-        print(f"   🎭 Character: {char_name} (custom)")
+        logger.info("Character: %s (custom)", char_name)
     
     # Show available presets
     available = get_available_characters()
     if available:
-        print(f"   📦 Available presets: {', '.join(available)}")
+        logger.info("Available presets: %s", ", ".join(available))
     
     # Display mode info
     mode = config.get("mode", "pipeline")
-    print(f"   🔧 Mode: {mode}")
+    logger.info("Mode: %s", mode)
 
     if mode == "omni":
         omni_config = config.get("omni", {}).get("minicpmo", {})
         model_id = omni_config.get("model_id", "openbmb/MiniCPM-o-4_5")
         device = omni_config.get("device", "cuda")
-        print(f"   🧠 Omni: {model_id} on {device}")
+        logger.info("Omni: %s on %s", model_id, device)
     elif mode == "gemma-omni":
         gemma_config = config.get("gemma", {})
-        print(f"   🧠 Gemma: {gemma_config.get('model_id', 'google/gemma-4-E2B-it')} on {gemma_config.get('device', 'cuda')}")
-        print(f"   🔊 TTS: Chatterbox Multilingual ONNX Q4")
+        logger.info(
+            "Gemma: %s on %s",
+            gemma_config.get("model_id", "google/gemma-4-E2B-it"),
+            gemma_config.get("device", "cuda"),
+        )
+        logger.info("TTS: Chatterbox Multilingual ONNX Q4")
     else:
         llm_config = config.get("llm", {})
         llm_provider = llm_config.get("provider", "ollama")
         if llm_provider == "gemma":
             model_name = config.get("gemma", {}).get("model_id", "google/gemma-4-E2B-it")
-            print(f"   🧠 LLM: {model_name} (gemma text+vision)")
+            logger.info("LLM: %s (gemma text+vision)", model_name)
         else:
             model_name = llm_config.get("ollama", {}).get("model", "unknown")
-            print(f"   🧠 LLM: {model_name} (ollama)")
+            logger.info("LLM: %s (ollama)", model_name)
         tts_provider = config.get("tts", {}).get("provider", "kokoro")
         asr_provider = config.get("asr", {}).get("provider", "whisper")
-        print(f"   🔊 TTS: {tts_provider}")
-        print(f"   🎤 ASR: {asr_provider}")
+        logger.info("TTS: %s", tts_provider)
+        logger.info("ASR: %s", asr_provider)
 
-    print("   ⏳ Models will be loaded on first request (lazy loading)")
-    print()
+    logger.info("Models will be loaded on first request (lazy loading)")
     
     yield
     
     # Shutdown
-    print("\n👋 Shutting down server...")
+    logger.info("Shutting down server...")
 
 
 def create_app() -> FastAPI:
