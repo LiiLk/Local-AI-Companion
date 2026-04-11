@@ -61,6 +61,16 @@ class TestSentenceSplitter:
         # Should not split on "Dr."
         assert len(sentences) == 1
 
+    def test_faster_first_response_emits_fragment_without_punctuation(self):
+        splitter = SentenceSplitter(
+            faster_first_response=True,
+            first_fragment_length=18,
+            first_fragment_words=4,
+        )
+        splitter.feed("Je peux t'aider tout de suite maintenant")
+        assert splitter.get_sentences() == ["Je peux t'aider"]
+        assert splitter.flush() == "tout de suite maintenant"
+
     def test_empty_input(self):
         splitter = SentenceSplitter()
         splitter.feed("")

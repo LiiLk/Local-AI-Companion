@@ -17,7 +17,7 @@ import time
 import numpy as np
 from langdetect import detect, LangDetectException
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Coroutine
 from dataclasses import dataclass, field
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -26,6 +26,7 @@ import yaml
 from src.llm import OllamaLLM, GemmaTextVisionLLM
 from src.llm.base import Message
 from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider, Qwen3TTSProvider
+from src.tts.base import prefers_full_response_tts
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
@@ -70,6 +71,8 @@ class ConversationState:
     gemma_model: Optional[Any] = None
     gemma_pipeline: Optional[Any] = None
     rvc: Optional[Any] = None
+    response_task: Optional[asyncio.Task] = None
+    response_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def __post_init__(self):
         self.config = load_config()
@@ -102,6 +105,8 @@ class ConversationState:
                         temperature=gemma_config.get("temperature", 0.7),
                         top_p=gemma_config.get("top_p", 0.95),
                         context_max_turns=gemma_config.get("context_max_turns", 10),
+                        cpu_offload=gemma_config.get("cpu_offload", True),
+                        offload_dir=gemma_config.get("offload_dir"),
                     )
                     self.llm = GemmaTextVisionLLM(
                         gemma=gemma_model,
@@ -130,7 +135,8 @@ class ConversationState:
             print(f"Loading TTS provider: {provider} (auto_detect={auto_detect})")
 
             if provider == "kokoro":
-                voice = tts_config.get("kokoro_voice", "ff_siwis")
+                voice_config = self.config.get("character", {}).get("voice", {})
+                voice = voice_config.get("kokoro_voice") or tts_config.get("kokoro_voice", "ff_siwis")
                 print(f"   Kokoro config: voice={voice}")
                 self.tts = KokoroProvider(voice=voice)
             elif provider == "qwen3":
@@ -381,6 +387,8 @@ class ConversationState:
                 temperature=gemma_config.get("temperature", 0.7),
                 top_p=gemma_config.get("top_p", 0.95),
                 context_max_turns=gemma_config.get("context_max_turns", 10),
+                cpu_offload=gemma_config.get("cpu_offload", True),
+                offload_dir=gemma_config.get("offload_dir"),
             )
             self.gemma_model.preload()
 
@@ -413,6 +421,12 @@ class ConversationState:
 
     async def cleanup(self):
         """Cleanup resources."""
+        if self.response_task and not self.response_task.done():
+            self.response_task.cancel()
+            try:
+                await self.response_task
+            except asyncio.CancelledError:
+                pass
         if self.llm:
             await self.llm.close()
         if self.rvc and hasattr(self.rvc, "close"):
@@ -477,6 +491,80 @@ class WebSocketManager:
         """Safely get client state, returns None if client disconnected."""
         return self.states.get(client_id)
 
+    async def _stop_client_audio(self, client_id: str) -> None:
+        """Tell the client to stop queued and currently playing audio."""
+        await self.send_json(client_id, {"type": "stop_audio"})
+
+    async def _run_turn(
+        self,
+        client_id: str,
+        turn_coro: Coroutine[Any, Any, None],
+    ) -> None:
+        """Run a single client turn and clear the active task when it finishes."""
+        try:
+            await turn_coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"Turn error for {client_id}: {exc}")
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": f"Turn error: {str(exc)}",
+            })
+        finally:
+            state = self._get_state(client_id)
+            if state and state.response_task is asyncio.current_task():
+                state.response_task = None
+
+    async def _schedule_turn(
+        self,
+        client_id: str,
+        turn_coro: Coroutine[Any, Any, None],
+    ) -> Optional[asyncio.Task]:
+        """
+        Ensure a single active response per client.
+
+        Any new turn interrupts the previous one before starting.
+        """
+        state = self._get_state(client_id)
+        if not state:
+            turn_coro.close()
+            return None
+
+        async with state.response_lock:
+            existing_task = state.response_task
+            if existing_task and not existing_task.done():
+                existing_task.cancel()
+                await self._stop_client_audio(client_id)
+                try:
+                    await existing_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    print(f"Cancelled turn cleanup error for {client_id}: {exc}")
+
+            task = asyncio.create_task(self._run_turn(client_id, turn_coro))
+            state.response_task = task
+            return task
+
+    async def handle_interrupt(self, client_id: str) -> None:
+        """Interrupt any active turn for a client and stop current playback."""
+        state = self._get_state(client_id)
+        if not state:
+            return
+
+        active_task = state.response_task
+        if active_task and not active_task.done():
+            active_task.cancel()
+            try:
+                await active_task
+            except asyncio.CancelledError:
+                pass
+        state.response_task = None
+        if state.vad:
+            state.vad.reset()
+        await self._stop_client_audio(client_id)
+
     def _clean_text_for_tts(self, text: str) -> str:
         """
         Clean text before TTS:
@@ -490,6 +578,81 @@ class WebSocketManager:
         text = re.sub(r'[\*\#\_\`\~\>]+', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text
+
+    @staticmethod
+    def _normalize_supported_language(language: Optional[str]) -> Optional[str]:
+        if not language:
+            return None
+        value = str(language).strip().lower()
+        if not value or value == "auto":
+            return None
+        if value.startswith("fr"):
+            return "fr"
+        if value.startswith("en"):
+            return "en"
+        return None
+
+    async def _transcribe_with_guard(self, state: ConversationState, audio_input) -> Any:
+        """
+        Guard auto-detect for short FR/EN utterances that come back with an
+        out-of-scope language code. Retry once with current session language.
+        """
+        asr = state.get_asr()
+        requested_language = getattr(state, "asr_language", "")
+        loop = asyncio.get_event_loop()
+
+        def _do_transcribe(language):
+            return asr.transcribe(audio_input, language=language)
+
+        result = await loop.run_in_executor(None, lambda: _do_transcribe(requested_language))
+        if not result.text or not result.text.strip():
+            return result
+
+        detected_lang = self._normalize_supported_language(getattr(result, "language", None))
+        if (
+            self._normalize_supported_language(requested_language) is None
+            and getattr(result, "language", None)
+            and detected_lang is None
+        ):
+            retry_language = state.current_language or "fr"
+            print(
+                f"ASR auto-detect returned out-of-scope language={getattr(result, 'language', None)}, "
+                f"retrying with forced language={retry_language}"
+            )
+            retry = await loop.run_in_executor(None, lambda: _do_transcribe(retry_language))
+            if retry.text and retry.text.strip():
+                result = retry
+
+        normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
+        if normalized_lang:
+            result.language = normalized_lang
+        else:
+            result.language = state.current_language
+
+        return result
+
+    async def _synthesize_tts_to_path(self, tts: Any, text: str, output_path: Path) -> Path:
+        """Resolve TTS output to a concrete file path even when the provider returns bytes."""
+        if asyncio.iscoroutinefunction(tts.synthesize):
+            result = await tts.synthesize(text, output_path)
+        else:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, tts.synthesize, text, output_path)
+
+        if result and getattr(result, "audio_data", None):
+            output_path.write_bytes(result.audio_data)
+            return output_path
+
+        returned_path = getattr(result, "audio_path", None) if result else None
+        if returned_path:
+            candidate = Path(returned_path)
+            if candidate.exists() and candidate.stat().st_size > 0:
+                return candidate
+
+        if output_path.exists() and output_path.stat().st_size > 0:
+            return output_path
+
+        raise RuntimeError("TTS provider returned no audio output")
 
     async def _update_voice_for_language(self, state: ConversationState, text: str):
         """Detect language and update TTS voice if needed."""
@@ -574,12 +737,8 @@ class WebSocketManager:
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_path = Path(f.name)
-
-            if asyncio.iscoroutinefunction(tts.synthesize):
-                await tts.synthesize(text, temp_path)
-            else:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, tts.synthesize, text, temp_path)
+            loop = asyncio.get_event_loop()
+            temp_path = await self._synthesize_tts_to_path(tts, text, temp_path)
 
             # RVC voice conversion (optional post-processing)
             rvc = state.get_rvc()
@@ -947,7 +1106,7 @@ class WebSocketManager:
     # Pipeline mode handlers
     # ------------------------------------------------------------------
 
-    async def handle_text_message(self, client_id: str, content: str, language: str | None = None):
+    async def _handle_text_message_turn(self, client_id: str, content: str, language: str | None = None):
         """Handle a text message from the client."""
         state = self._get_state(client_id)
         if not state:
@@ -971,6 +1130,7 @@ class WebSocketManager:
         full_response = ""
         llm_started = time.perf_counter()
         first_sentence_logged = False
+        first_audio_logged = False
 
         llm_messages = list(state.messages)
 
@@ -1006,6 +1166,11 @@ class WebSocketManager:
         manager = self  # capture for closure
 
         async def _on_ws_audio(payload: dict):
+            nonlocal first_audio_logged
+            if not first_audio_logged:
+                first_audio_logged = True
+                print(f"First TTS audio latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+
             expression = payload.get("expression")
             if expression and state.emotion_detector:
                 if expression != state.current_expression:
@@ -1030,6 +1195,7 @@ class WebSocketManager:
 
         tts_obj = state.get_tts()
         rvc_obj = state.get_rvc()
+        single_shot_tts = prefers_full_response_tts(tts_obj)
 
         tts_mgr = TTSTaskManager(
             tts=tts_obj,
@@ -1048,25 +1214,32 @@ class WebSocketManager:
                     "content": chunk,
                 })
 
-                splitter.feed(chunk)
-                for sentence in splitter.get_sentences():
-                    if not first_sentence_logged:
-                        first_sentence_logged = True
-                        print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
-                    await self._update_voice_for_language(state, sentence)
-                    clean = self._clean_text_for_tts(sentence)
-                    if clean.strip():
-                        await tts_mgr.submit(clean)
+                if not single_shot_tts:
+                    splitter.feed(chunk)
+                    for sentence in splitter.get_sentences():
+                        if not first_sentence_logged:
+                            first_sentence_logged = True
+                            print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+                        await self._update_voice_for_language(state, sentence)
+                        clean = self._clean_text_for_tts(sentence)
+                        if clean.strip():
+                            await tts_mgr.submit(clean)
 
-            remaining = splitter.flush()
-            if remaining:
-                if not first_sentence_logged:
-                    first_sentence_logged = True
-                    print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
-                clean = self._clean_text_for_tts(remaining)
+            if single_shot_tts:
+                clean = self._clean_text_for_tts(full_response)
                 if clean.strip():
                     await self._update_voice_for_language(state, clean)
                     await tts_mgr.submit(clean)
+            else:
+                remaining = splitter.flush()
+                if remaining:
+                    if not first_sentence_logged:
+                        first_sentence_logged = True
+                        print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+                    clean = self._clean_text_for_tts(remaining)
+                    if clean.strip():
+                        await self._update_voice_for_language(state, clean)
+                        await tts_mgr.submit(clean)
 
             print(f"LLM total generation time for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
             await tts_mgr.finish()
@@ -1081,6 +1254,13 @@ class WebSocketManager:
             "full_text": full_response
         })
         await self.send_json(client_id, {"type": "audio_end"})
+
+    async def handle_text_message(self, client_id: str, content: str, language: str | None = None):
+        """Schedule a text turn, interrupting any active turn for this client."""
+        await self._schedule_turn(
+            client_id,
+            self._handle_text_message_turn(client_id, content, language=language),
+        )
 
     async def generate_and_send_audio(self, client_id: str, text: str):
         """Generate TTS audio and send to client."""
@@ -1101,7 +1281,7 @@ class WebSocketManager:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                 temp_path = Path(f.name)
 
-            await tts.synthesize(text, temp_path)
+            temp_path = await self._synthesize_tts_to_path(tts, text, temp_path)
 
             with open(temp_path, "rb") as f:
                 audio_data = f.read()
@@ -1123,7 +1303,7 @@ class WebSocketManager:
 
         await self.send_json(client_id, {"type": "audio_end"})
 
-    async def handle_audio_message(self, client_id: str, audio_data: str):
+    async def _handle_audio_message_turn(self, client_id: str, audio_data: str):
         """Handle audio data from the client (WebM blob)."""
         state = self._get_state(client_id)
         if not state:
@@ -1161,8 +1341,7 @@ class WebSocketManager:
             webm_path.unlink(missing_ok=True)
 
             await self.send_json(client_id, {"type": "transcribing"})
-            language = getattr(state, 'asr_language', 'fr')
-            result = asr.transcribe(wav_path, language=language)
+            result = await self._transcribe_with_guard(state, wav_path)
 
             wav_path.unlink(missing_ok=True)
 
@@ -1172,7 +1351,7 @@ class WebSocketManager:
                     "text": result.text,
                     "language": result.language
                 })
-                await self.handle_text_message(client_id, result.text, language=result.language)
+                await self._handle_text_message_turn(client_id, result.text, language=result.language)
             else:
                 await self.send_json(client_id, {
                     "type": "transcription",
@@ -1186,6 +1365,13 @@ class WebSocketManager:
                 "type": "error",
                 "message": f"ASR error: {str(e)}"
             })
+
+    async def handle_audio_message(self, client_id: str, audio_data: str):
+        """Schedule an uploaded-audio turn, interrupting any active turn for this client."""
+        await self._schedule_turn(
+            client_id,
+            self._handle_audio_message_turn(client_id, audio_data),
+        )
 
     async def handle_audio_stream(self, client_id: str, audio_samples: list):
         """Handle streaming audio data with VAD."""
@@ -1207,11 +1393,11 @@ class WebSocketManager:
 
                 elif len(event) > 100:
                     if state.mode == "omni":
-                        asyncio.create_task(self._handle_audio_omni(client_id, event))
+                        await self._schedule_turn(client_id, self._handle_audio_omni(client_id, event))
                     elif state.mode == "gemma-omni":
-                        asyncio.create_task(self._handle_audio_gemma(client_id, event))
+                        await self._schedule_turn(client_id, self._handle_audio_gemma(client_id, event))
                     else:
-                        asyncio.create_task(self._transcribe_and_respond(client_id, event))
+                        await self._schedule_turn(client_id, self._transcribe_and_respond_turn(client_id, event))
 
         except Exception as e:
             print(f"VAD error: {e}")
@@ -1228,7 +1414,7 @@ class WebSocketManager:
         audio_samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
         await self.handle_audio_stream(client_id, audio_samples)
 
-    async def _transcribe_and_respond(self, client_id: str, audio_bytes: bytes):
+    async def _transcribe_and_respond_turn(self, client_id: str, audio_bytes: bytes):
         """Transcribe audio bytes and generate response. Pipeline mode only."""
         state = self._get_state(client_id)
         if not state:
@@ -1253,13 +1439,7 @@ class WebSocketManager:
                 return
 
             await self.send_json(client_id, {"type": "transcribing"})
-            language = getattr(state, 'asr_language', 'fr')
-
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: asr.transcribe(audio_float, language=language)
-            )
+            result = await self._transcribe_with_guard(state, audio_float)
 
             if result.text.strip():
                 await self.send_json(client_id, {
@@ -1267,7 +1447,7 @@ class WebSocketManager:
                     "text": result.text,
                     "language": result.language
                 })
-                await self.handle_text_message(client_id, result.text, language=result.language)
+                await self._handle_text_message_turn(client_id, result.text, language=result.language)
             else:
                 await self.send_json(client_id, {
                     "type": "transcription",
@@ -1291,6 +1471,16 @@ class WebSocketManager:
         character = state.config.get("character", {})
         system_prompt = character.get("system_prompt", "You are a helpful assistant.")
         state.messages = [Message(role="system", content=system_prompt)]
+
+        active_task = state.response_task
+        if active_task and not active_task.done():
+            active_task.cancel()
+            try:
+                await active_task
+            except asyncio.CancelledError:
+                pass
+        state.response_task = None
+        await self._stop_client_audio(client_id)
 
         if state.omni_pipeline:
             state.omni_pipeline.clear_history()
@@ -1460,9 +1650,11 @@ class WebSocketManager:
                                         fallback_voice = state.config.get("tts", {}).get("kokoro_voice", "ff_siwis")
                                         print(f"   Qwen3-TTS preload failed, falling back to Kokoro: {exc}")
                                         state.tts = KokoroProvider(voice=fallback_voice)
+                                        tts = state.tts
                                     else:
                                         raise
-                            if hasattr(tts, "warmup"):
+                            tts_warmup_on_start = bool(state.config.get("tts", {}).get("warmup_on_start", False))
+                            if tts_warmup_on_start and hasattr(tts, "warmup"):
                                 tts.warmup()
                         await loop.run_in_executor(None, _preload_tts)
                         print(f"   TTS loaded for {client_id}")
@@ -1708,6 +1900,21 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 if audio_data:
                     await manager.handle_audio_message(client_id, audio_data)
 
+            elif msg_type == "audio_segment":
+                pcm16 = data.get("pcm16", "")
+                if pcm16:
+                    state = manager.states.get(client_id)
+                    if state and state.vad:
+                        state.vad.reset()
+
+                    audio_bytes = base64.b64decode(pcm16)
+                    if state and state.mode == "omni":
+                        await manager._schedule_turn(client_id, manager._handle_audio_omni(client_id, audio_bytes))
+                    elif state and state.mode == "gemma-omni":
+                        await manager._schedule_turn(client_id, manager._handle_audio_gemma(client_id, audio_bytes))
+                    else:
+                        await manager._schedule_turn(client_id, manager._transcribe_and_respond_turn(client_id, audio_bytes))
+
             elif msg_type == "audio_stream":
                 audio_samples = data.get("samples", [])
                 if audio_samples:
@@ -1727,11 +1934,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     audio_bytes = state.vad.force_end()
                     if audio_bytes:
                         if state.mode == "omni":
-                            await manager._handle_audio_omni(client_id, audio_bytes)
+                            await manager._schedule_turn(client_id, manager._handle_audio_omni(client_id, audio_bytes))
                         elif state.mode == "gemma-omni":
-                            await manager._handle_audio_gemma(client_id, audio_bytes)
+                            await manager._schedule_turn(client_id, manager._handle_audio_gemma(client_id, audio_bytes))
                         else:
-                            await manager._transcribe_and_respond(client_id, audio_bytes)
+                            await manager._schedule_turn(client_id, manager._transcribe_and_respond_turn(client_id, audio_bytes))
+
+            elif msg_type == "interrupt":
+                await manager.handle_interrupt(client_id)
 
             elif msg_type == "clear":
                 await manager.handle_clear(client_id)

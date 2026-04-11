@@ -1011,6 +1011,10 @@ const Live2DManager = (() => {
 })();
 
 // Export
+if (typeof window !== 'undefined') {
+    window.Live2DManager = Live2DManager;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = Live2DManager;
 }

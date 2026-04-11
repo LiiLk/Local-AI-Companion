@@ -14,6 +14,26 @@ class AudioManager {
         this.isRecording = false;
         this.audioQueue = [];
         this.isPlaying = false;
+        this.stopFlushDelayMs = 120;
+        this.currentSource = null;
+        this.playbackGeneration = 0;
+        this.captureMode = 'stream';
+
+        // Client-side speech segmentation for stable pipeline mode.
+        this.noiseFloor = 0.004;
+        this.speechMinThreshold = 0.014;
+        this.speechThresholdMultiplier = 3.0;
+        this.speechReleaseFactor = 0.7;
+        this.speechStartFrames = 4;
+        this.speechEndFrames = 18;
+        this.preRollFrames = 6;
+        this.maxUtteranceMs = 12000;
+        this.speechDetected = false;
+        this.speechActiveFrames = 0;
+        this.speechSilenceFrames = 0;
+        this.preSpeechBuffers = [];
+        this.speechBuffers = [];
+        this.utteranceStartedAt = 0;
 
         // Target sample rate for Silero VAD (16kHz)
         this.targetSampleRate = 16000;
@@ -25,17 +45,28 @@ class AudioManager {
         this.onVolumeChange = null;
         this.onPlaybackStart = null;
         this.onPlaybackEnd = null;
+        this.onSpeechStart = null;
+        this.onSpeechEnd = null;
+        this.onSpeechSegment = null;
+    }
+
+    setCaptureMode(mode) {
+        this.captureMode = mode === 'client_vad' ? 'client_vad' : 'stream';
+        this._resetSpeechDetection();
     }
 
     async initMicrophone() {
         try {
-            // Request microphone at native sample rate
+            // Request the rawest microphone signal possible.
+            // Browser DSP is good for calls, but it can eat short word endings
+            // and destabilize local VAD/ASR.
             this.stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
+                    sampleRate: this.targetSampleRate,
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false
                 }
             });
 
@@ -68,6 +99,8 @@ class AudioManager {
             await this.audioContext.resume();
         }
 
+        this._resetSpeechDetection();
+
         // Create source from microphone
         this.source = this.audioContext.createMediaStreamSource(this.stream);
 
@@ -96,10 +129,17 @@ class AudioManager {
 
             // Resample to 16kHz
             const resampled = this._resample(inputData, nativeSampleRate, this.targetSampleRate);
+            const pcmBuffer = this._floatToPcm16Buffer(resampled);
+
+            if (this.captureMode === 'client_vad') {
+                const frameDurationMs = (resampled.length / this.targetSampleRate) * 1000;
+                this._processClientSpeechFrame(pcmBuffer, volume, frameDurationMs);
+                return;
+            }
 
             // Send PCM16 bytes to the server to avoid JSON float array overhead.
             if (this.onAudioSamples) {
-                this.onAudioSamples(this._floatToPcm16Buffer(resampled));
+                this.onAudioSamples(pcmBuffer);
             }
         };
 
@@ -150,7 +190,7 @@ class AudioManager {
         return pcm16.buffer;
     }
 
-    stopRecording() {
+    async stopRecording() {
         if (!this.isRecording) {
             console.warn('Not recording');
             return;
@@ -168,18 +208,133 @@ class AudioManager {
             this.source = null;
         }
 
+        if (this.captureMode === 'client_vad') {
+            this._finalizeSpeechSegment('manual_stop');
+        }
+
+        // Give the last browser audio callback / websocket send a short chance
+        // to flush before we force-close the utterance server-side.
+        await new Promise(resolve => setTimeout(resolve, this.stopFlushDelayMs));
+
         if (this.onRecordingStop) {
-            this.onRecordingStop();
+            await this.onRecordingStop();
         }
 
         console.log('Recording stopped');
     }
 
-    toggleRecording() {
-        if (this.isRecording) {
-            this.stopRecording();
+    _getSpeechThreshold() {
+        return Math.max(this.speechMinThreshold, this.noiseFloor * this.speechThresholdMultiplier);
+    }
+
+    _updateNoiseFloor(volume) {
+        const clamped = Math.max(0.001, Math.min(volume, 0.05));
+        this.noiseFloor = (this.noiseFloor * 0.92) + (clamped * 0.08);
+    }
+
+    _isSpeechFrame(volume) {
+        return volume >= this._getSpeechThreshold();
+    }
+
+    _processClientSpeechFrame(buffer, volume, frameDurationMs) {
+        const frameCopy = buffer.slice(0);
+        const now = performance.now();
+        const speechThreshold = this._getSpeechThreshold();
+        const releaseThreshold = speechThreshold * this.speechReleaseFactor;
+
+        if (!this.speechDetected) {
+            if (!this._isSpeechFrame(volume)) {
+                this._updateNoiseFloor(volume);
+            }
+
+            this.preSpeechBuffers.push(frameCopy);
+            if (this.preSpeechBuffers.length > this.preRollFrames) {
+                this.preSpeechBuffers.shift();
+            }
+
+            if (volume >= speechThreshold) {
+                this.speechActiveFrames += 1;
+            } else {
+                this.speechActiveFrames = 0;
+            }
+
+            if (this.speechActiveFrames >= this.speechStartFrames) {
+                this.speechDetected = true;
+                this.speechActiveFrames = 0;
+                this.speechSilenceFrames = 0;
+                this.utteranceStartedAt = now;
+                this.speechBuffers = this.preSpeechBuffers.slice();
+                this.preSpeechBuffers = [];
+                if (this.onSpeechStart) {
+                    this.onSpeechStart();
+                }
+            }
+            return;
+        }
+
+        this.speechBuffers.push(frameCopy);
+
+        if (volume >= releaseThreshold) {
+            this.speechSilenceFrames = 0;
         } else {
-            this.startRecording();
+            this.speechSilenceFrames += 1;
+        }
+
+        if ((now - this.utteranceStartedAt) >= this.maxUtteranceMs) {
+            this._finalizeSpeechSegment('max_duration');
+            return;
+        }
+
+        if (this.speechSilenceFrames * frameDurationMs >= 380) {
+            this._finalizeSpeechSegment('silence');
+        }
+    }
+
+    _finalizeSpeechSegment(reason) {
+        const hadSpeech = this.speechDetected || this.speechBuffers.length > 0;
+        const utterance = hadSpeech ? this._concatBuffers(this.speechBuffers) : null;
+        const durationMs = utterance ? (utterance.byteLength / 2 / this.targetSampleRate) * 1000 : 0;
+
+        this._resetSpeechDetection();
+
+        if (!hadSpeech) {
+            return;
+        }
+
+        if (this.onSpeechEnd) {
+            this.onSpeechEnd(reason);
+        }
+
+        if (utterance && durationMs >= 250 && this.onSpeechSegment) {
+            this.onSpeechSegment(utterance, this.targetSampleRate, { durationMs, reason });
+        }
+    }
+
+    _concatBuffers(buffers) {
+        const totalLength = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
+        const merged = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const buffer of buffers) {
+            merged.set(new Uint8Array(buffer), offset);
+            offset += buffer.byteLength;
+        }
+        return merged.buffer;
+    }
+
+    _resetSpeechDetection() {
+        this.speechDetected = false;
+        this.speechActiveFrames = 0;
+        this.speechSilenceFrames = 0;
+        this.preSpeechBuffers = [];
+        this.speechBuffers = [];
+        this.utteranceStartedAt = 0;
+    }
+
+    async toggleRecording() {
+        if (this.isRecording) {
+            await this.stopRecording();
+        } else {
+            await this.startRecording();
         }
     }
 
@@ -196,6 +351,7 @@ class AudioManager {
     async _playNext() {
         if (this.audioQueue.length === 0) {
             this.isPlaying = false;
+            this.currentSource = null;
             // Notify playback end
             if (this.onPlaybackEnd) {
                 this.onPlaybackEnd();
@@ -212,6 +368,7 @@ class AudioManager {
 
         this.isPlaying = true;
         const audioInput = this.audioQueue.shift();
+        const generation = this.playbackGeneration;
 
         try {
             const playbackContext = this._ensurePlaybackContext();
@@ -219,11 +376,21 @@ class AudioManager {
 
             // Decode and play
             const audioBuffer = await playbackContext.decodeAudioData(arrayBuffer);
+            if (generation !== this.playbackGeneration) {
+                return;
+            }
             const source = playbackContext.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(playbackContext.destination);
+            this.currentSource = source;
 
             source.onended = () => {
+                if (this.currentSource === source) {
+                    this.currentSource = null;
+                }
+                if (generation !== this.playbackGeneration) {
+                    return;
+                }
                 this._playNext();
             };
 
@@ -249,7 +416,21 @@ class AudioManager {
     }
 
     stopPlayback() {
+        this.playbackGeneration += 1;
         this.audioQueue = [];
+        const source = this.currentSource;
+        this.currentSource = null;
+        this.isPlaying = false;
+        if (source) {
+            try {
+                source.stop(0);
+            } catch (error) {
+                console.debug('Audio source already stopped:', error);
+            }
+        }
+        if (this.onPlaybackEnd) {
+            this.onPlaybackEnd();
+        }
     }
 
     _ensurePlaybackContext() {

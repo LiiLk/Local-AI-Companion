@@ -52,6 +52,8 @@ gemma:
   model_id: "google/gemma-4-E2B-it"
   quantization: "int4"           # BitsAndBytes NF4 (~3-4 GB VRAM)
   device: "cuda"
+  cpu_offload: true              # let skipped modules spill to CPU if VRAM is tight
+  offload_dir: ".cache/hf-offload/gemma"
   dtype: "bfloat16"
   max_new_tokens: 64
   turn_timeout_sec: 75
@@ -131,7 +133,7 @@ tts:
   # - "kokoro"     : Kokoro 82M (local, fast ~300ms, multilingual fallback)
   # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, slow ~3-5s)
   # - "edge"       : Edge TTS (Microsoft cloud, free)
-  provider: "qwen3"
+  provider: "kokoro"
 
   # ─────────────────────────────────────────────────────────────────────────
   # STREAMING TTS (sentence-by-sentence)
@@ -143,6 +145,7 @@ tts:
   # - false: Wait for full response before TTS (simpler, more stable)
   # ─────────────────────────────────────────────────────────────────────────
   stream_tts: true
+  warmup_on_start: true         # keep the first real reply fast; startup takes a bit longer
 
   # ─────────────────────────────────────────────────────────────────────────
   # AUTO LANGUAGE DETECTION
@@ -271,7 +274,7 @@ asr:
   # Available ASR providers:
   # - "whisper"    : faster-whisper (CTranslate2), CPU/GPU, many models
   # - "qwen3"      : Qwen3-ASR 0.6B/1.7B (LLM-based, 30 languages, very accurate)
-  provider: "qwen3"
+  provider: "whisper"
 
   # Available Whisper models:
   # ─────────────────────────────────────────────────────────────────────────
@@ -299,11 +302,11 @@ asr:
 
   # Prompt to guide transcription (helps even with forced language)
   # Use example output text (not a description) to prime the decoder
-  # toward casual conversational French tokens.
-  prompt: "Salut, comment ça va ? Oui, ça va bien merci. Qu'est-ce que tu fais aujourd'hui ?"
+  # toward casual conversational French/English conversational tokens.
+  prompt: "Salut, comment ça va ? Oui, ça va bien merci. Hello, how are you? Yes, I'm doing well, thank you."
 
   # Compute type: "int8" for speed+low VRAM, "float16" for max quality
-  compute_type: "int8"
+  compute_type: "float16"
 
   # ─────────────────────────────────────────────────────────────────────────
   # QWEN3-ASR (LLM-based, 30 languages, very accurate)

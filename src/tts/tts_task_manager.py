@@ -67,14 +67,14 @@ class TTSTaskManager:
         self._lip_sync_chunk_ms = lip_sync_chunk_ms
         self._on_expression = on_expression
         self._emotion_detector = emotion_detector
-        self._queue: asyncio.Queue[tuple[str, Optional[str]] | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[str, Optional[str], float] | None] = asyncio.Queue()
         self._worker_task: Optional[asyncio.Task] = None
 
     async def start(self):
         self._worker_task = asyncio.create_task(self._worker())
 
     async def submit(self, text: str, expression: Optional[str] = None):
-        await self._queue.put((text, expression))
+        await self._queue.put((text, expression, time.perf_counter()))
 
     async def finish(self):
         await self._queue.put(None)
@@ -100,18 +100,18 @@ class TTSTaskManager:
             if item is None:
                 break
 
-            text, expression = item
+            text, expression, queued_at = item
             if not text or not text.strip():
                 continue
 
             try:
-                await self._synthesize_one(text, expression)
+                await self._synthesize_one(text, expression, queued_at)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error("TTS worker error for %r: %s", text[:40], e)
 
-    async def _synthesize_one(self, text: str, expression: Optional[str]):
+    async def _synthesize_one(self, text: str, expression: Optional[str], queued_at: float):
         if self._emotion_detector:
             detected = self._emotion_detector.detect(text)
             if detected and self._on_expression:
@@ -126,6 +126,7 @@ class TTSTaskManager:
         metadata: dict = {}
 
         synth_started = time.perf_counter()
+        queue_wait_ms = (synth_started - queued_at) * 1000
         result = await self._tts.synthesize(text)
         synth_elapsed_ms = (time.perf_counter() - synth_started) * 1000
 
@@ -159,8 +160,9 @@ class TTSTaskManager:
         attn_used = metadata.get("attn_implementation") or metadata.get("attn_implementation_actual")
 
         logger.info(
-            "TTS sentence metrics: text=%r synth_ms=%.1f total_ms=%.1f file_write_ms=%.1f file_read_ms=%.1f rvc_ms=%.1f attn=%s",
+            "TTS sentence metrics: text=%r queue_wait_ms=%.1f synth_ms=%.1f total_ms=%.1f file_write_ms=%.1f file_read_ms=%.1f rvc_ms=%.1f attn=%s",
             text[:80],
+            queue_wait_ms,
             float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
             total_tts_ms,
             file_write_ms,

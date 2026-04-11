@@ -20,6 +20,7 @@ class WebSocketManager {
         this.onStreamEnd = null;
         this.onAudio = null;
         this.onError = null;
+        this.onStopAudio = null;
         
         // Live2D callbacks
         this.onAudioWithLipSync = null;  // For Live2D integration
@@ -109,6 +110,20 @@ class WebSocketManager {
             type: 'mic_stop'
         });
     }
+
+    sendInterrupt() {
+        return this.send({
+            type: 'interrupt'
+        });
+    }
+
+    sendAudioSegment(audioBuffer, sampleRate = 16000) {
+        return this.send({
+            type: 'audio_segment',
+            sample_rate: sampleRate,
+            pcm16: this._arrayBufferToBase64(audioBuffer)
+        });
+    }
     
     sendAudio(base64Audio) {
         // Fallback: send WebM blob
@@ -195,6 +210,12 @@ class WebSocketManager {
                     
                 case 'audio_end':
                     console.log('Audio generation complete');
+                    break;
+
+                case 'stop_audio':
+                    if (this.onStopAudio) {
+                        this.onStopAudio();
+                    }
                     break;
                     
                 case 'transcription':
@@ -313,6 +334,17 @@ class WebSocketManager {
         } else if (this.onAudioData) {
             this.onAudioData(data);
         }
+    }
+
+    _arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let index = 0; index < bytes.length; index += chunkSize) {
+            const chunk = bytes.subarray(index, index + chunkSize);
+            binary += String.fromCharCode(...chunk);
+        }
+        return btoa(binary);
     }
     
     _updateStatus(status) {

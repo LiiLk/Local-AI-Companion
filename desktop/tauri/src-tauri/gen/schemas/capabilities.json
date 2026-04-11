@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability for the Local AI Companion Tauri shell scaffold.","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging"]}}

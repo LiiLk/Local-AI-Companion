@@ -35,6 +35,7 @@ class VADConfig:
     required_hits: int = 3           # Consecutive frames to confirm speech start (~100ms)
     required_misses: int = 30        # Consecutive frames to confirm speech end (~1.0s)
     smoothing_window: int = 5        # Smoothing window for probability
+    force_end_silence_ms: int = 180  # Extra tail silence when the client manually stops recording
 
 
 class SileroVAD:
@@ -187,7 +188,11 @@ class SileroVAD:
     def force_end(self) -> Optional[bytes]:
         """Force end current speech segment and return audio if any."""
         if self.state == State.ACTIVE and len(self.audio_buffer) > 1024:
-            audio = bytes(self.audio_buffer)
+            tail_samples = max(0, int(self.config.sample_rate * self.config.force_end_silence_ms / 1000))
+            tail_bytes = b""
+            if tail_samples:
+                tail_bytes = np.zeros(tail_samples, dtype=np.int16).tobytes()
+            audio = bytes(self.audio_buffer) + tail_bytes
             self.reset()
             return audio
         self.reset()

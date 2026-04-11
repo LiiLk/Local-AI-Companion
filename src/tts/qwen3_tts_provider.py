@@ -468,12 +468,23 @@ class Qwen3TTSProvider(BaseTTS):
     def preload(self) -> None:
         self._load_model()
 
+    @property
+    def prefer_full_response_tts(self) -> bool:
+        """
+        `custom_voice` is the low-latency path and works better with sentence-level
+        queueing. Voice cloning/design stay full-response for stability.
+        """
+        return self.mode != "custom_voice"
+
     def warmup(self) -> None:
         """Pay the first synthesis cost before the first real user reply."""
         if self._warmed_up:
             return
 
-        self._synthesize_worker_sync("Bonjour.")
+        if self.backend == "worker":
+            self._synthesize_worker_sync("Bonjour.")
+        else:
+            self._generate_sync_inprocess("Bonjour.")
         self._warmed_up = True
 
     def _create_voice_clone_prompt(self):
@@ -557,20 +568,26 @@ class Qwen3TTSProvider(BaseTTS):
             "provider_roundtrip_ms": (time.perf_counter() - request_started) * 1000,
         }
 
-        audio_data: bytes | None = None
-        if response.get("audio_base64"):
-            audio_data = base64.b64decode(response["audio_base64"])
-
         generated_path = None
         if response.get("output_path"):
             generated_path = Path(response["output_path"]).resolve()
 
         if output_path is not None:
+            if generated_path is not None:
+                return TTSResult(audio_path=generated_path, duration=duration, metadata=metadata)
+
+            audio_data = None
+            if response.get("audio_base64"):
+                audio_data = base64.b64decode(response["audio_base64"])
             if audio_data is not None:
                 write_started = time.perf_counter()
                 output_path.write_bytes(audio_data)
                 metadata["file_write_ms"] += (time.perf_counter() - write_started) * 1000
             return TTSResult(audio_path=output_path, duration=duration, metadata=metadata)
+
+        audio_data: bytes | None = None
+        if response.get("audio_base64"):
+            audio_data = base64.b64decode(response["audio_base64"])
 
         if audio_data is not None:
             return TTSResult(audio_data=audio_data, duration=duration, metadata=metadata)

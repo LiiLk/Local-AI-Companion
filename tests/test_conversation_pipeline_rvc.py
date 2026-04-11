@@ -66,3 +66,32 @@ def test_conversation_pipeline_applies_optional_rvc():
     assert len(rvc.calls) == 1
     assert len(payloads) == 1
     assert payloads[0].sample_rate == 44100
+
+
+def test_process_text_can_restart_after_cancel_active_run():
+    pipeline = ConversationPipeline(
+        llm=FakeLLM(),
+        tts=FakeTTS(),
+        asr=FakeASR(),
+        config=ConversationConfig(stream_tts=False),
+    )
+
+    async def cancel_on_start():
+        pipeline.cancel_active_run("test restart")
+
+    pipeline.on_response_start = cancel_on_start
+
+    try:
+        asyncio.run(pipeline.process_text("Premier tour"))
+        raised = False
+    except asyncio.CancelledError:
+        raised = True
+
+    assert raised is True
+    assert pipeline.is_processing is False
+
+    pipeline.on_response_start = None
+    result = asyncio.run(pipeline.process_text("Deuxieme tour"))
+
+    assert result == "Bonjour."
+    assert pipeline.is_processing is False
