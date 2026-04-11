@@ -19,6 +19,7 @@ import logging
 import re
 import struct
 import tempfile
+import time
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,10 +28,18 @@ from typing import AsyncGenerator, Callable, Optional, Any
 import numpy as np
 
 from src.llm.base import BaseLLM, Message
-from src.tts.base import BaseTTS
-from src.asr.base import BaseASR
+from src.tts.base import BaseTTS, prefers_full_response_tts
+from src.tts.tts_task_manager import TTSTaskManager
+from src.asr.base import BaseASR, ASRResult
+from src.utils.language_detection import LanguageCode, detect_language as detect_text_language
+from src.utils.sentence_splitter import SentenceSplitter
 
 logger = logging.getLogger(__name__)
+
+LANGUAGE_NAMES = {
+    "fr": "French",
+    "en": "English",
+}
 
 
 @dataclass
@@ -68,6 +77,7 @@ class AudioPayload:
     expression: Optional[str] = None  # Detected expression
     audio_base64: Optional[str] = None
     wav_bytes: Optional[bytes] = None
+    tts_metrics: Optional[dict[str, float | str | None]] = None
 
 
 class EmotionDetector:
@@ -229,12 +239,113 @@ class ConversationPipeline:
         # State
         self._is_processing = False
         self._current_expression: Optional[str] = None
+        self._current_language_code: str = self._normalize_supported_language(self.config.asr_language) or "fr"
+        self._active_run_id: int = 0
+        self._run_counter: int = 0
         
         logger.info(f"ConversationPipeline initialized (character={self.config.character_name})")
     
     @property
     def is_processing(self) -> bool:
         return self._is_processing
+
+    def _begin_run(self, source: str) -> Optional[int]:
+        if self._is_processing:
+            logger.warning("Already processing, ignoring new %s", source)
+            return None
+
+        self._is_processing = True
+        self._run_counter += 1
+        self._active_run_id = self._run_counter
+        return self._active_run_id
+
+    def _finish_run(self, run_id: int) -> None:
+        if self._active_run_id == run_id:
+            self._is_processing = False
+
+    def _run_is_active(self, run_id: int) -> bool:
+        return self._is_processing and self._active_run_id == run_id
+
+    def _ensure_run_active(self, run_id: int) -> None:
+        if not self._run_is_active(run_id):
+            raise asyncio.CancelledError()
+
+    def cancel_active_run(self, reason: str = "interrupt") -> bool:
+        was_active = self._is_processing
+        self._run_counter += 1
+        self._active_run_id = self._run_counter
+        self._is_processing = False
+        if was_active:
+            logger.info("ConversationPipeline cancel_active_run(%s)", reason)
+        return was_active
+
+    def _should_stream_tts_by_sentence(self) -> bool:
+        """Return True when sentence-level streaming is appropriate for the provider."""
+        return self.config.stream_tts and not prefers_full_response_tts(self.tts)
+
+    @staticmethod
+    def _normalize_supported_language(language: Optional[str]) -> Optional[str]:
+        if not language:
+            return None
+
+        value = language.strip().lower()
+        if not value or value == "auto":
+            return None
+        if value.startswith("fr"):
+            return "fr"
+        if value.startswith("en"):
+            return "en"
+        return None
+
+    def _language_default(self) -> LanguageCode:
+        return LanguageCode.ENGLISH if self._current_language_code == "en" else LanguageCode.FRENCH
+
+    async def _transcribe_once(self, audio_bytes: bytes, language: Optional[str]) -> ASRResult:
+        audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+        audio_float = audio_int16.astype(np.float32) / 32767.0
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.asr.transcribe(audio_float, language=language),
+        )
+
+    def _resolve_response_language(self, transcription: str, asr_language: Optional[str]) -> str:
+        text_language = str(detect_text_language(transcription, default=self._language_default()))
+        asr_code = self._normalize_supported_language(asr_language)
+
+        if asr_code == text_language:
+            return asr_code
+        if text_language in LANGUAGE_NAMES:
+            return text_language
+        if asr_code in LANGUAGE_NAMES:
+            return asr_code
+        return self._current_language_code
+
+    def _apply_language_hint(self, language_code: str) -> None:
+        self._current_language_code = language_code
+        if self.config.auto_detect_language and hasattr(self.tts, "set_language"):
+            self.tts.set_language(language_code)
+
+    def _build_llm_messages(self, language_code: str) -> list[Message]:
+        llm_messages = list(self.messages)
+        if not llm_messages or llm_messages[-1].role != "user":
+            return llm_messages
+
+        language_name = LANGUAGE_NAMES.get(language_code)
+        if not language_name:
+            return llm_messages
+
+        last_user = llm_messages[-1]
+        llm_messages[-1] = Message(
+            role="user",
+            content=(
+                f"(System: The user is speaking {language_name}. "
+                f"Reply ONLY in {language_name}. Do not switch languages.)\n\n"
+                f"{last_user.content}"
+            ),
+        )
+        return llm_messages
     
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
         """
@@ -246,39 +357,49 @@ class ConversationPipeline:
         Returns:
             The full response text, or None on error
         """
-        if self._is_processing:
-            logger.warning("Already processing, ignoring new speech")
+        run_id = self._begin_run("speech")
+        if run_id is None:
             return None
-        
-        self._is_processing = True
         
         try:
             # 1. Transcribe audio
-            transcription = await self._transcribe(audio_bytes)
-            if not transcription:
+            transcription_result = await self._transcribe(audio_bytes)
+            self._ensure_run_active(run_id)
+            if not transcription_result or not transcription_result.text:
                 logger.info("No speech detected in audio")
                 return None
+            transcription = transcription_result.text.strip()
+
+            response_language = self._resolve_response_language(
+                transcription,
+                getattr(transcription_result, "language", None),
+            )
+            self._apply_language_hint(response_language)
             
             logger.info(f"📝 Transcription: {transcription}")
             if self.on_transcription:
                 await self._call_async(self.on_transcription, transcription)
+            self._ensure_run_active(run_id)
             
             # 2. Add to conversation history
             self.messages.append(Message(role="user", content=transcription))
+            llm_messages = self._build_llm_messages(response_language)
             
             # 3. Generate response
             if self.on_response_start:
                 await self._call_async(self.on_response_start)
+            self._ensure_run_active(run_id)
             
             full_response = ""
             
-            if self.config.stream_tts:
+            if self._should_stream_tts_by_sentence():
                 # Stream TTS sentence-by-sentence
-                full_response = await self._stream_response_with_tts()
+                full_response = await self._stream_response_with_tts(llm_messages, run_id)
             else:
                 # Get full response first, then TTS
-                full_response = await self._get_full_response()
-                await self._synthesize_and_send(full_response)
+                full_response = await self._get_full_response(llm_messages, run_id)
+                await self._synthesize_and_send(full_response, run_id)
+            self._ensure_run_active(run_id)
             
             # 4. Add to history
             self.messages.append(Message(role="assistant", content=full_response))
@@ -288,6 +409,9 @@ class ConversationPipeline:
             
             return full_response
             
+        except asyncio.CancelledError:
+            logger.info("Speech pipeline run %s cancelled", run_id)
+            raise
         except Exception as e:
             logger.error(f"Pipeline error: {e}")
             if self.on_error:
@@ -295,73 +419,213 @@ class ConversationPipeline:
             return None
             
         finally:
-            self._is_processing = False
-    
-    async def _transcribe(self, audio_bytes: bytes) -> Optional[str]:
-        """Transcribe audio bytes to text."""
-        # Convert int16 bytes to float32 for Whisper
-        audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
-        audio_float = audio_int16.astype(np.float32) / 32767.0
+            self._finish_run(run_id)
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.asr.transcribe(audio_float, language=self.config.asr_language),
-        )
+    async def process_text(self, text: str) -> Optional[str]:
+        """Process direct text input through the LLM -> TTS pipeline."""
+        run_id = self._begin_run("text input")
+        if run_id is None:
+            return None
 
-        if result.text and result.text.strip():
-            return result.text.strip()
-        return None
+        user_text = (text or "").strip()
+        if not user_text:
+            self._finish_run(run_id)
+            return None
+
+        try:
+            response_language = self._resolve_response_language(user_text, self.config.asr_language)
+            self._apply_language_hint(response_language)
+
+            logger.info("⌨️ Desktop text input: %s", user_text[:120])
+            if self.on_transcription:
+                await self._call_async(self.on_transcription, user_text)
+            self._ensure_run_active(run_id)
+
+            self.messages.append(Message(role="user", content=user_text))
+            llm_messages = self._build_llm_messages(response_language)
+
+            if self.on_response_start:
+                await self._call_async(self.on_response_start)
+            self._ensure_run_active(run_id)
+
+            if self._should_stream_tts_by_sentence():
+                full_response = await self._stream_response_with_tts(llm_messages, run_id)
+            else:
+                full_response = await self._get_full_response(llm_messages, run_id)
+                await self._synthesize_and_send(full_response, run_id)
+            self._ensure_run_active(run_id)
+
+            self.messages.append(Message(role="assistant", content=full_response))
+
+            if self.on_response_end:
+                await self._call_async(self.on_response_end, full_response)
+
+            return full_response
+        except asyncio.CancelledError:
+            logger.info("Text pipeline run %s cancelled", run_id)
+            raise
+        except Exception as e:
+            logger.error(f"Pipeline text error: {e}")
+            if self.on_error:
+                await self._call_async(self.on_error, str(e))
+            return None
+        finally:
+            self._finish_run(run_id)
     
-    async def _get_full_response(self) -> str:
+    async def _transcribe(self, audio_bytes: bytes) -> Optional[ASRResult]:
+        """Transcribe audio bytes with a retry guard for bad auto-detection."""
+        result = await self._transcribe_once(audio_bytes, self.config.asr_language)
+        if not result.text or not result.text.strip():
+            return None
+
+        detected_lang = self._normalize_supported_language(getattr(result, "language", None))
+        if (
+            self._normalize_supported_language(self.config.asr_language) is None
+            and getattr(result, "language", None)
+            and detected_lang is None
+        ):
+            retry_language = self._current_language_code or "fr"
+            logger.warning(
+                "ASR auto-detect returned out-of-scope language=%s, retrying with forced language=%s",
+                getattr(result, "language", None),
+                retry_language,
+            )
+            retry_result = await self._transcribe_once(audio_bytes, retry_language)
+            if retry_result.text and retry_result.text.strip():
+                result = retry_result
+
+        normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
+        if normalized_lang:
+            result.language = normalized_lang
+        return result
+    
+    async def _get_full_response(self, messages: list[Message], run_id: int) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
         
-        async for chunk in self.llm.chat_stream(self.messages):
+        async for chunk in self.llm.chat_stream(messages):
+            self._ensure_run_active(run_id)
             full_response += chunk
             if self.on_response_chunk:
                 await self._call_async(self.on_response_chunk, chunk)
+            self._ensure_run_active(run_id)
         
         return full_response
     
-    async def _stream_response_with_tts(self) -> str:
-        """Stream LLM response and synthesize TTS sentence-by-sentence."""
+    async def _stream_response_with_tts(self, messages: list[Message], run_id: int) -> str:
+        """Stream the LLM while TTS runs independently in the background."""
         full_response = ""
-        current_sentence = ""
-        sentence_delimiters = '.!?。！？\n'
-        
-        async for chunk in self.llm.chat_stream(self.messages):
-            full_response += chunk
-            current_sentence += chunk
-            
-            if self.on_response_chunk:
-                await self._call_async(self.on_response_chunk, chunk)
-            
-            # Check for complete sentence
-            if any(d in chunk for d in sentence_delimiters):
-                # Split by delimiters
-                parts = re.split(r'([.!?。！？\n]+)', current_sentence)
-                
-                # Process complete sentences
-                for i in range(0, len(parts) - 1, 2):
-                    if i + 1 < len(parts):
-                        sentence = parts[i] + parts[i + 1]
-                        if sentence.strip():
-                            await self._synthesize_and_send(sentence)
-                
-                # Keep remainder
-                current_sentence = parts[-1] if parts else ""
-        
-        # Process any remaining text
-        if current_sentence.strip():
-            await self._synthesize_and_send(current_sentence)
-        
-        return full_response
+        splitter = SentenceSplitter(faster_first_response=True)
+        llm_started = time.perf_counter()
+        first_llm_chunk_logged = False
+        first_sentence_submitted = False
+        first_audio_sent = False
+
+        async def _on_audio_ready(payload: dict):
+            nonlocal first_audio_sent
+            if not self._run_is_active(run_id):
+                return
+            if not self.on_audio_ready:
+                if not first_audio_sent:
+                    first_audio_sent = True
+                    logger.info(
+                        "First TTS audio latency: %.1f ms",
+                        (time.perf_counter() - llm_started) * 1000,
+                    )
+                return
+
+            if not first_audio_sent:
+                first_audio_sent = True
+                logger.info(
+                    "First TTS audio latency: %.1f ms",
+                    (time.perf_counter() - llm_started) * 1000,
+                )
+
+            audio_payload = AudioPayload(
+                audio_bytes=payload["pcm_bytes"],
+                audio_base64=payload["audio_base64"],
+                wav_bytes=payload["wav_bytes"],
+                volumes=payload["volumes"],
+                duration_ms=payload["duration_ms"],
+                sample_rate=payload["sample_rate"],
+                text=payload["text"],
+                expression=payload.get("expression"),
+                tts_metrics=payload.get("tts_metrics"),
+            )
+            await self._call_async(self.on_audio_ready, audio_payload)
+
+        async def _on_expression(expression: str):
+            if not self._run_is_active(run_id):
+                return
+            if expression and expression != self._current_expression:
+                self._current_expression = expression
+                if self.on_expression_change:
+                    await self._call_async(self.on_expression_change, expression)
+
+        tts_mgr = TTSTaskManager(
+            tts=self.tts,
+            on_audio_ready=_on_audio_ready,
+            rvc=self.rvc,
+            sample_rate=self.config.tts_sample_rate,
+            lip_sync_chunk_ms=self.config.lip_sync_chunk_ms,
+            on_expression=_on_expression,
+            emotion_detector=self.emotion_detector,
+        )
+        await tts_mgr.start()
+
+        try:
+            async for chunk in self.llm.chat_stream(messages):
+                self._ensure_run_active(run_id)
+                full_response += chunk
+
+                if not first_llm_chunk_logged:
+                    first_llm_chunk_logged = True
+                    logger.info(
+                        "First LLM chunk after %.1f ms: %r",
+                        (time.perf_counter() - llm_started) * 1000,
+                        chunk[:80],
+                    )
+
+                if self.on_response_chunk:
+                    await self._call_async(self.on_response_chunk, chunk)
+                self._ensure_run_active(run_id)
+
+                splitter.feed(chunk)
+                for sentence in splitter.get_sentences():
+                    if sentence.strip():
+                        self._ensure_run_active(run_id)
+                        if not first_sentence_submitted:
+                            first_sentence_submitted = True
+                            logger.info(
+                                "First TTS chunk queued after %.1f ms: %r",
+                                (time.perf_counter() - llm_started) * 1000,
+                                sentence[:80],
+                            )
+                        await tts_mgr.submit(sentence)
+
+            remaining = splitter.flush()
+            if remaining.strip():
+                self._ensure_run_active(run_id)
+                if not first_sentence_submitted:
+                    first_sentence_submitted = True
+                    logger.info(
+                        "First TTS chunk queued after %.1f ms: %r",
+                        (time.perf_counter() - llm_started) * 1000,
+                        remaining[:80],
+                    )
+                await tts_mgr.submit(remaining)
+
+            await tts_mgr.finish()
+            return full_response
+        except asyncio.CancelledError:
+            await tts_mgr.cancel()
+            raise
     
-    async def _synthesize_and_send(self, text: str):
+    async def _synthesize_and_send(self, text: str, run_id: int):
         """Synthesize text to speech and send payload."""
         if not text.strip():
             return
+        self._ensure_run_active(run_id)
 
         # 1. Detect emotion
         expression = self.emotion_detector.detect(text)
@@ -370,45 +634,53 @@ class ConversationPipeline:
             logger.info(f"😊 Expression: {expression}")
             if self.on_expression_change:
                 await self._call_async(self.on_expression_change, expression)
+        self._ensure_run_active(run_id)
 
         # 2. Clean text for TTS
         clean_text = self.emotion_detector.strip_markers(text)
         if not clean_text.strip():
             return
 
-        # 3. Synthesize audio
+        # 3. Synthesize audio.
+        # Providers may either write to the supplied path or return audio_data in memory.
         full_wav_bytes: bytes | None = None
         audio_bytes: bytes | None = None
         sample_rate = self.config.tts_sample_rate
 
-        if self.tts.__class__.__name__ == "ChatterboxTTSProvider":
-            tts_result = await self.tts.synthesize(clean_text)
-            full_wav_bytes = tts_result.audio_data
-            if full_wav_bytes:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_path = Path(f.name)
+
+        try:
+            if asyncio.iscoroutinefunction(self.tts.synthesize):
+                tts_result = await self.tts.synthesize(clean_text, temp_path)
+            else:
+                loop = asyncio.get_event_loop()
+                tts_result = await loop.run_in_executor(None, self.tts.synthesize, clean_text, temp_path)
+
+            if tts_result and tts_result.audio_data:
+                full_wav_bytes = tts_result.audio_data
                 audio_bytes, sample_rate = read_wav_bytes(full_wav_bytes)
-        else:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                temp_path = Path(f.name)
+            else:
+                audio_path = None
+                if tts_result and tts_result.audio_path:
+                    audio_path = Path(tts_result.audio_path)
+                elif temp_path.exists() and temp_path.stat().st_size > 0:
+                    audio_path = temp_path
 
-            try:
-                if asyncio.iscoroutinefunction(self.tts.synthesize):
-                    await self.tts.synthesize(clean_text, temp_path)
-                else:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, self.tts.synthesize, clean_text, temp_path)
-
-                with open(temp_path, 'rb') as f:
-                    full_wav_bytes = f.read()
-                audio_bytes, sample_rate = read_wav_data(temp_path)
-            finally:
-                temp_path.unlink(missing_ok=True)
+                if audio_path and audio_path.exists() and audio_path.stat().st_size > 0:
+                    full_wav_bytes = audio_path.read_bytes()
+                    audio_bytes, sample_rate = read_wav_data(audio_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
         if not full_wav_bytes or audio_bytes is None:
             return
+        self._ensure_run_active(run_id)
 
         full_wav_bytes, audio_bytes, sample_rate = await self._maybe_apply_rvc(
             full_wav_bytes, audio_bytes, sample_rate
         )
+        self._ensure_run_active(run_id)
 
         volumes = analyze_audio_volumes(audio_bytes, sample_rate, self.config.lip_sync_chunk_ms)
 
@@ -430,6 +702,7 @@ class ConversationPipeline:
         logger.info(f"🔊 Audio ready: {duration_ms}ms, {len(volumes)} volume chunks")
 
         if self.on_audio_ready:
+            self._ensure_run_active(run_id)
             await self._call_async(self.on_audio_ready, payload)
 
     async def _maybe_apply_rvc(

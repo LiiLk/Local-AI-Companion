@@ -19,6 +19,7 @@ system_prompt: |
   If the user speaks English, reply only in English.
   Never mix multiple languages in the same reply unless the user explicitly asks for translation.
   Keep replies short, natural, and suitable for real-time voice conversation.
+  Prefer 1 to 2 short sentences by default unless the user explicitly asks for detail.
   Use emotion markers sparingly.
 
 # Live2D Model
@@ -42,7 +43,7 @@ voice:
   # Edge TTS voice
   edge_voice: "en-US-JennyNeural"
   # Kokoro voice
-  kokoro_voice: "af_heart"
+  kokoro_voice: "ff_siwis"
   # Omni mode voice cloning (MiniCPM-o)
   # Path to a 6-30 second WAV file for voice cloning (relative to project root)
   # Set to null to use the model's default voice

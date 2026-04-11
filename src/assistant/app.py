@@ -26,6 +26,9 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 import argparse
 import asyncio
 import base64
+from concurrent.futures import CancelledError as FutureCancelledError
+from contextvars import ContextVar
+import contextlib
 import json
 import logging
 import signal
@@ -61,18 +64,188 @@ except ImportError:
     WEBVIEW_AVAILABLE = False
     print("⚠️ pywebview not installed. Run: pip install pywebview")
 
+try:
+    from websockets.asyncio.server import serve
+    from websockets.exceptions import ConnectionClosed
+
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    ConnectionClosed = Exception  # type: ignore[assignment]
+    print("⚠️ websockets not installed. Bridge server disabled. Run: pip install websockets")
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+CURRENT_DESKTOP_TURN_ID: ContextVar[Optional[int]] = ContextVar("desktop_turn_id", default=None)
 
 
 def load_config(config_path: Path) -> dict:
     """Load configuration from YAML file."""
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
+
+
+class DesktopBridgeApi:
+    """Minimal pywebview bridge for the desktop Live2D shell."""
+
+    def __init__(self, assistant: "Live2DAssistant"):
+        self._assistant = assistant
+
+    def send_text(self, text: str) -> dict:
+        return self._assistant.submit_text(text)
+
+    def interrupt(self) -> dict:
+        return self._assistant.request_interrupt("ui")
+
+    def toggle_mute(self) -> dict:
+        return self._assistant.toggle_mute()
+
+    def get_runtime_state(self) -> dict:
+        return self._assistant.get_runtime_state()
+
+    def toggle_debug(self) -> dict:
+        return self._assistant.toggle_debug()
+
+
+class DesktopBridgeServer:
+    """Tiny desktop-only websocket bridge for the Tauri shell."""
+
+    def __init__(self, assistant: "Live2DAssistant", host: str = "127.0.0.1", port: int = 8765):
+        self._assistant = assistant
+        self._host = host
+        self._port = port
+        self._server = None
+        self._clients = set()
+
+    async def start(self) -> None:
+        if not WEBSOCKETS_AVAILABLE:
+            raise RuntimeError("websockets is required for bridge-server mode")
+        if self._server is not None:
+            return
+
+        self._server = await serve(self._handle_client, self._host, self._port, max_size=8 * 1024 * 1024)
+        logger.info("✅ Desktop bridge listening on ws://%s:%s", self._host, self._port)
+
+    async def stop(self) -> None:
+        clients = list(self._clients)
+        self._clients.clear()
+
+        for client in clients:
+            with contextlib.suppress(Exception):
+                await client.close()
+
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+            self._server = None
+
+    def emit_frontend_event_sync(self, event_name: str, *args) -> None:
+        loop = self._assistant._loop
+        if not loop or loop.is_closed():
+            return
+        asyncio.run_coroutine_threadsafe(self._broadcast_event(event_name, args), loop)
+
+    async def _handle_client(self, websocket) -> None:
+        self._clients.add(websocket)
+        try:
+            await self._send_backend_ready(websocket)
+            async for raw_message in websocket:
+                await self._handle_message(websocket, raw_message)
+        except ConnectionClosed:
+            pass
+        finally:
+            self._clients.discard(websocket)
+
+    async def _handle_message(self, websocket, raw_message: str) -> None:
+        try:
+            message = json.loads(raw_message)
+        except json.JSONDecodeError:
+            await self._send_json(websocket, {"type": "error", "message": "Invalid JSON payload"})
+            return
+
+        if message.get("type") != "command":
+            await self._send_json(websocket, {"type": "error", "message": "Unsupported bridge message"})
+            return
+
+        name = str(message.get("name") or "")
+        request_id = message.get("request_id")
+
+        try:
+            if name == "send_text":
+                result = self._assistant.submit_text(str(message.get("text") or ""))
+            elif name == "interrupt":
+                result = self._assistant.request_interrupt("tauri")
+            elif name == "toggle_mute":
+                result = self._assistant.toggle_mute()
+            elif name == "get_runtime_state":
+                result = self._assistant.get_runtime_state()
+            elif name == "toggle_debug":
+                result = self._assistant.toggle_debug()
+            else:
+                raise ValueError(f"Unknown bridge command: {name}")
+        except Exception as exc:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "command_result",
+                    "request_id": request_id,
+                    "name": name,
+                    "ok": False,
+                    "error": str(exc),
+                },
+            )
+            return
+
+        await self._send_json(
+            websocket,
+            {
+                "type": "command_result",
+                "request_id": request_id,
+                "name": name,
+                "ok": True,
+                "result": self._with_backend(result),
+            },
+        )
+
+    async def _send_backend_ready(self, websocket) -> None:
+        await self._send_json(
+            websocket,
+            {
+                "type": "backend_ready",
+                "runtime": self._with_backend(self._assistant.get_runtime_state()),
+            },
+        )
+
+    async def _broadcast_event(self, event_name: str, args: tuple) -> None:
+        if not self._clients:
+            return
+
+        payload = {
+            "type": "frontend_event",
+            "name": event_name,
+            "args": list(args),
+            "runtime": self._with_backend(self._assistant.get_runtime_state()),
+        }
+        disconnected = []
+        for client in list(self._clients):
+            try:
+                await self._send_json(client, payload)
+            except Exception:
+                disconnected.append(client)
+
+        for client in disconnected:
+            self._clients.discard(client)
+
+    async def _send_json(self, websocket, payload: dict) -> None:
+        await websocket.send(json.dumps(payload, ensure_ascii=False))
+
+    @staticmethod
+    def _with_backend(runtime: dict) -> dict:
+        return {**runtime, "backend": "assistant-bridge"}
 
 
 class Live2DAssistant:
@@ -96,10 +269,19 @@ class Live2DAssistant:
         self._running = False
         self._window: Optional[webview.Window] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
         self._hotkey_listener = None
         self._preload_thread: Optional[threading.Thread] = None
+        self._bridge_server: Optional[DesktopBridgeServer] = None
+        self._bridge_only = False
         self._active_response_future = None
         self._turn_timeout_sec = int(self.config.get('gemma', {}).get('turn_timeout_sec', 75))
+        self._turn_counter = 0
+        self._active_turn_id: Optional[int] = None
+        self._latest_audio_turn_id: Optional[int] = None
+        self._playback_deadline: float = 0.0
+        self._debug_visible = False
+        self._js_api = DesktopBridgeApi(self)
         
         # Components (initialized in start())
         self.audio_service: Optional[AudioService] = None
@@ -197,6 +379,8 @@ class Live2DAssistant:
                 temperature=gemma_config.get('temperature', 0.7),
                 top_p=gemma_config.get('top_p', 0.95),
                 context_max_turns=gemma_config.get('context_max_turns', 10),
+                cpu_offload=gemma_config.get('cpu_offload', True),
+                offload_dir=gemma_config.get('offload_dir'),
             )
             logger.info(f"Gemma: {gemma_config.get('model_id')} (q={gemma_config.get('quantization', 'int4')})")
 
@@ -263,6 +447,8 @@ class Live2DAssistant:
                     temperature=gemma_config.get('temperature', 0.7),
                     top_p=gemma_config.get('top_p', 0.95),
                     context_max_turns=gemma_config.get('context_max_turns', 10),
+                    cpu_offload=gemma_config.get('cpu_offload', True),
+                    offload_dir=gemma_config.get('offload_dir'),
                 )
                 llm = GemmaTextVisionLLM(
                     gemma=gemma_model,
@@ -283,7 +469,7 @@ class Live2DAssistant:
             # Create TTS
             tts_provider = tts_config.get('provider', 'kokoro')
             if tts_provider == 'kokoro':
-                voice = tts_config.get('kokoro_voice', 'ff_siwis')
+                voice = voice_config.get('kokoro_voice') or tts_config.get('kokoro_voice', 'ff_siwis')
                 tts = KokoroProvider(voice=voice)
                 logger.info(f"TTS: Kokoro ({voice})")
             elif tts_provider == 'qwen3':
@@ -435,45 +621,133 @@ class Live2DAssistant:
             vad_required_misses=gemma_vad_config.get('vad_required_misses', 30),
         )
         self.audio_service = AudioService(audio_config)
+        self.audio_service.on_speech_start = self._on_speech_start
+        self.audio_service.on_speech_end = self._on_speech_end
         self.audio_service.on_speech_detected = self._on_speech_detected
         self.audio_service.on_state_change = self._on_mic_state_change
 
         logger.info("All components created")
     
     # ==================== Callbacks ====================
-    
-    def _on_speech_detected(self, audio_bytes: bytes):
-        """Called when VAD detects complete speech."""
-        if not self._loop:
-            logger.error("Event loop not available!")
-            return
 
-        if self._active_response_future and not self._active_response_future.done():
-            logger.warning("A response is already in progress, ignoring new speech")
-            return
+    def _next_turn_id(self) -> int:
+        self._turn_counter += 1
+        return self._turn_counter
 
-        self.audio_service.set_processing(True)
-        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
-        logger.info(f"Processing {len(audio_bytes)} bytes of speech (~{audio_ms} ms)...")
+    def _resolve_turn_id(self) -> Optional[int]:
+        return CURRENT_DESKTOP_TURN_ID.get() or self._active_turn_id
 
-        active_pipeline = (
+    def _dispatch_frontend_event(self, event_name: str, *args):
+        js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
+        self._evaluate_js(f"window.{event_name}?.({js_args})")
+        if self._bridge_server:
+            self._bridge_server.emit_frontend_event_sync(event_name, *args)
+
+    def _has_active_playback(self) -> bool:
+        return self._latest_audio_turn_id is not None and self._playback_deadline > time.monotonic()
+
+    def _assistant_busy(self) -> bool:
+        return bool(
+            (self._active_response_future and not self._active_response_future.done())
+            or self._has_active_playback()
+        )
+
+    def _interrupt_current_turn(self, reason: str = "interrupt") -> dict:
+        future = self._active_response_future
+        turn_id = self._active_turn_id if self._active_turn_id is not None else self._latest_audio_turn_id
+        interrupted = False
+        active_pipeline = self._get_active_pipeline()
+        cancel_active_run = getattr(active_pipeline, "cancel_active_run", None)
+
+        if future and not future.done():
+            if callable(cancel_active_run):
+                cancel_active_run(reason)
+            future.cancel()
+            interrupted = True
+            logger.info("⏹️ Interrupt requested (%s): active response cancelled", reason)
+        elif turn_id is not None and self._has_active_playback():
+            interrupted = True
+            logger.info("⏹️ Interrupt requested (%s): stopping queued playback", reason)
+        else:
+            logger.info("⏹️ Interrupt requested (%s): no active turn", reason)
+
+        self._playback_deadline = 0.0
+        self._latest_audio_turn_id = None
+
+        if turn_id is not None:
+            self._dispatch_frontend_event("onPlaybackStop", turn_id)
+
+        return {
+            "status": "ok",
+            "interrupted": interrupted,
+            "turn_id": turn_id,
+            **self.get_runtime_state(),
+        }
+
+    def request_interrupt(self, reason: str = "ui") -> dict:
+        return self._interrupt_current_turn(reason)
+
+    def toggle_mute(self) -> dict:
+        if not self.audio_service:
+            return {"status": "error", "message": "Audio service unavailable"}
+        self.audio_service.toggle_mute()
+        return {"status": "ok", **self.get_runtime_state()}
+
+    def toggle_debug(self) -> dict:
+        self._debug_visible = not self._debug_visible
+        self._evaluate_js("window.Live2DAPI?.toggleDebug?.()")
+        return {"status": "ok", **self.get_runtime_state()}
+
+    def get_runtime_state(self) -> dict:
+        mic_state = self.audio_service.state.value if self.audio_service else "loading"
+        active_future = self._active_response_future
+        return {
+            "mode": self.config.get('mode', 'pipeline'),
+            "mic_state": mic_state,
+            "active_turn_id": self._active_turn_id,
+            "response_active": bool(active_future and not active_future.done()),
+            "playback_active": self._has_active_playback(),
+            "debug_visible": self._debug_visible,
+            "character_name": self.config.get('character', {}).get('name', 'AI'),
+        }
+
+    def _get_active_pipeline(self):
+        return (
             getattr(self, '_gemma_pipeline', None)
             or getattr(self, '_omni_pipeline', None)
             or self.pipeline
         )
-        if active_pipeline is None:
-            logger.error("No pipeline available!")
-            self._on_response_complete()
-            return
 
-        async def run_pipeline_with_timeout():
-            return await asyncio.wait_for(
-                active_pipeline.process_speech(audio_bytes),
-                timeout=self._turn_timeout_sec,
-            )
+    def _start_turn(self, turn_id: int, runner, source: str) -> None:
+        if not self._loop:
+            raise RuntimeError("Event loop not available")
+
+        previous_future = self._active_response_future
+        previous_turn_id = self._active_turn_id if previous_future and not previous_future.done() else self._latest_audio_turn_id
+        active_pipeline = self._get_active_pipeline()
+        cancel_active_run = getattr(active_pipeline, "cancel_active_run", None)
+
+        if previous_turn_id is not None and previous_turn_id != turn_id:
+            self._dispatch_frontend_event("onPlaybackStop", previous_turn_id)
+
+        self._playback_deadline = 0.0
+        self._latest_audio_turn_id = None
+        self._active_turn_id = turn_id
+
+        async def run_turn_with_context():
+            token = CURRENT_DESKTOP_TURN_ID.set(turn_id)
+            try:
+                if previous_future and not previous_future.done():
+                    if callable(cancel_active_run):
+                        cancel_active_run(f"superseded by {source} turn {turn_id}")
+                    previous_future.cancel()
+
+                return await asyncio.wait_for(runner(), timeout=self._turn_timeout_sec)
+            finally:
+                CURRENT_DESKTOP_TURN_ID.reset(token)
 
         started_at = time.perf_counter()
-        future = asyncio.run_coroutine_threadsafe(run_pipeline_with_timeout(), self._loop)
+        future = asyncio.run_coroutine_threadsafe(run_turn_with_context(), self._loop)
         self._active_response_future = future
 
         def on_done(f):
@@ -482,58 +756,103 @@ class Live2DAssistant:
                 result = f.result()
                 if result:
                     preview = result[:80].replace("\n", " ")
-                    logger.info("Pipeline completed in %.1fs: %s...", elapsed, preview)
+                    logger.info("%s turn %s completed in %.1fs: %s...", source, turn_id, elapsed, preview)
                 else:
-                    logger.warning("Pipeline completed in %.1fs without a spoken response", elapsed)
+                    logger.warning("%s turn %s completed in %.1fs without spoken response", source, turn_id, elapsed)
+            except FutureCancelledError:
+                logger.info("%s turn %s cancelled after %.1fs", source, turn_id, elapsed)
             except asyncio.TimeoutError:
-                logger.error("Pipeline timed out after %.1fs", elapsed)
+                logger.error("%s turn %s timed out after %.1fs", source, turn_id, elapsed)
             except Exception as e:
-                logger.error(f"Pipeline error after {elapsed:.1f}s: {e}", exc_info=True)
+                logger.error("%s turn %s failed after %.1fs: %s", source, turn_id, elapsed, e, exc_info=True)
             finally:
                 if self._active_response_future is f:
                     self._active_response_future = None
-                self._on_response_complete()
 
         future.add_done_callback(on_done)
-    
-    def _on_response_complete(self):
-        """Called when pipeline finishes processing."""
-        if self._active_response_future and self._active_response_future.done():
-            self._active_response_future = None
-        if self.audio_service:
-            self.audio_service.set_processing(False)
+
+    def submit_text(self, text: str) -> dict:
+        user_text = (text or "").strip()
+        if not user_text:
+            return {"status": "ignored", "message": "Empty text"}
+
+        if not self._loop:
+            return {"status": "error", "message": "Event loop not available"}
+
+        active_pipeline = self._get_active_pipeline()
+        process_text = getattr(active_pipeline, "process_text", None)
+        if not callable(process_text):
+            message = "Text input is only supported in pipeline mode for the desktop stable path."
+            logger.warning(message)
+            self._dispatch_frontend_event("onError", message, None)
+            return {"status": "error", "message": message}
+
+        turn_id = self._next_turn_id()
+        self._start_turn(turn_id, lambda: process_text(user_text), source="text")
+        return {"status": "ok", "turn_id": turn_id, **self.get_runtime_state()}
+
+    def _on_speech_start(self):
+        """Called when VAD confirms speech start."""
+        interrupted_turn_id = self._active_turn_id if self._assistant_busy() else None
+        if interrupted_turn_id is not None:
+            self._interrupt_current_turn("barge-in")
+        self._dispatch_frontend_event("onSpeechStart", interrupted_turn_id)
+
+    def _on_speech_end(self):
+        """Called when VAD confirms speech end."""
+        self._dispatch_frontend_event("onSpeechEnd", self._active_turn_id)
+
+    def _on_speech_detected(self, audio_bytes: bytes):
+        """Called when VAD detects complete speech."""
+        if not self._loop:
+            logger.error("Event loop not available!")
+            return
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(f"Processing {len(audio_bytes)} bytes of speech (~{audio_ms} ms)...")
+
+        active_pipeline = self._get_active_pipeline()
+        if active_pipeline is None:
+            logger.error("No pipeline available!")
+            return
+
+        turn_id = self._next_turn_id()
+        self._start_turn(turn_id, lambda: active_pipeline.process_speech(audio_bytes), source="speech")
     
     def _on_mic_state_change(self, state: MicState):
         """Called when mic state changes."""
-        self._evaluate_js(f"window.onMicStateChange?.('{state.value}')")
+        self._dispatch_frontend_event("onMicStateChange", state.value)
     
     async def _on_transcription(self, text: str):
         """Called when ASR produces transcription."""
-        # Escape text for JS
-        escaped = text.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-        self._evaluate_js(f"window.onTranscription?.('{escaped}')")
+        self._dispatch_frontend_event("onTranscription", text, self._resolve_turn_id())
     
     async def _on_response_start(self):
         """Called when LLM starts generating."""
-        self._evaluate_js("window.onResponseStart?.()")
+        self._dispatch_frontend_event("onResponseStart", self._resolve_turn_id())
     
     async def _on_response_chunk(self, chunk: str):
         """Called for each LLM output chunk."""
-        escaped = chunk.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-        self._evaluate_js(f"window.onResponseChunk?.('{escaped}')")
+        self._dispatch_frontend_event("onResponseChunk", chunk, self._resolve_turn_id())
     
     async def _on_response_end(self, full_text: str):
         """Called when LLM finishes generating."""
-        escaped = full_text.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
-        self._evaluate_js(f"window.onResponseEnd?.('{escaped}')")
+        self._dispatch_frontend_event("onResponseEnd", full_text, self._resolve_turn_id())
     
     async def _on_audio_ready(self, payload: AudioPayload):
         """Called when TTS audio is ready with volume data."""
         logger.info("Audio payload ready (%sms, text=%r)", payload.duration_ms, (payload.text or '')[:80])
-        # Send audio to frontend for playback
         audio_base64 = payload.audio_base64
         if not audio_base64 and payload.wav_bytes:
             audio_base64 = base64.b64encode(payload.wav_bytes).decode("utf-8")
+        emitted_at_ms = int(time.time() * 1000)
+
+        turn_id = self._resolve_turn_id()
+        if turn_id is not None:
+            self._latest_audio_turn_id = turn_id
+        self._playback_deadline = max(
+            self._playback_deadline,
+            time.monotonic() + max(payload.duration_ms, 0) / 1000.0,
+        )
 
         data = {
             'audio': audio_base64,
@@ -541,19 +860,22 @@ class Live2DAssistant:
             'duration': payload.duration_ms,
             'text': payload.text,
             'expression': payload.expression,
+            'turn_id': turn_id,
+            'tts_metrics': payload.tts_metrics,
+            'trace': {
+                'backend_audio_ready_epoch_ms': emitted_at_ms,
+            },
         }
-        json_str = json.dumps(data)
-        self._evaluate_js(f"window.onAudioReady?.({json_str})")
+        self._dispatch_frontend_event("onAudioReady", data)
     
     async def _on_expression_change(self, expression: str):
         """Called when emotion is detected."""
-        self._evaluate_js(f"Live2DManager?.setExpression?.('{expression}')")
+        self._evaluate_js(f"window.Live2DAPI?.setExpression?.({json.dumps(expression, ensure_ascii=False)})")
 
     async def _on_error(self, error_msg: str):
         """Called when the active pipeline surfaces an error."""
         logger.error(f"Pipeline surfaced error: {error_msg}")
-        escaped = error_msg.replace("\\", "\\\\").replace("\'", "\\\'").replace("\n", "\\n")
-        self._evaluate_js(f"window.onError?.('{escaped}')")
+        self._dispatch_frontend_event("onError", error_msg, self._resolve_turn_id())
     
     def _evaluate_js(self, code: str):
         """Evaluate JavaScript in the webview window."""
@@ -603,7 +925,8 @@ class Live2DAssistant:
                             tts = fallback_tts
                         else:
                             raise
-                if hasattr(tts, 'warmup'):
+                tts_warmup_on_start = bool(self.config.get('tts', {}).get('warmup_on_start', False))
+                if tts_warmup_on_start and hasattr(tts, 'warmup'):
                     tts.warmup()
                 if rvc and hasattr(rvc, 'preload'):
                     rvc.preload()
@@ -641,24 +964,16 @@ class Live2DAssistant:
         def on_press(key):
             try:
                 if key == keyboard.Key.f2:
-                    # Toggle mute
-                    is_muted = self.audio_service.toggle_mute()
-                    status = "🔇 Muted" if is_muted else "🎤 Listening"
-                    logger.info(status)
+                    runtime = self.toggle_mute()
+                    logger.info("F2 toggle mute -> %s", runtime.get("mic_state"))
                     
                 elif key == keyboard.Key.f3:
-                    if self._active_response_future and not self._active_response_future.done():
-                        self._active_response_future.cancel()
-                        logger.info("⏹️ Interrupt requested: current response cancelled")
-                        self._on_response_complete()
-                    else:
-                        logger.info("⏹️ Interrupt requested (no active response)")
+                    runtime = self.request_interrupt("hotkey")
+                    logger.info("F3 interrupt -> turn=%s", runtime.get("turn_id"))
                     
                 elif key == keyboard.Key.f12:
-                    # Toggle visibility
-                    if self._window:
-                        # Toggle window visibility
-                        pass
+                    runtime = self.toggle_debug()
+                    logger.info("F12 debug -> visible=%s", runtime.get("debug_visible"))
                         
                 elif key == keyboard.Key.esc:
                     # Quit
@@ -697,6 +1012,8 @@ class Live2DAssistant:
             easy_drag=True,
             on_top=window_config.get('on_top', True),
             transparent=window_config.get('transparent', True),
+            background_color="#10141d",
+            js_api=self._js_api,
         )
         
         return window
@@ -704,140 +1021,15 @@ class Live2DAssistant:
     def _on_window_loaded(self):
         """Called when the webview window is loaded."""
         logger.info("🖼️ Window loaded")
-        
-        # Inject assistant callbacks
-        js_code = """
-        // Audio queue for sequential playback
-        window._audioQueue = [];
-        window._isPlaying = false;
-        window._audioContext = null;
-        
-        // Initialize AudioContext on first interaction (or try immediately)
-        function initAudioContext() {
-            if (!window._audioContext) {
-                window._audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                console.log('AudioContext created, state:', window._audioContext.state);
-            }
-            if (window._audioContext.state === 'suspended') {
-                window._audioContext.resume();
-            }
-        }
-        
-        // Play next audio in queue
-        async function playNextAudio() {
-            if (window._isPlaying || window._audioQueue.length === 0) return;
-            
-            window._isPlaying = true;
-            const data = window._audioQueue.shift();
-            
-            try {
-                initAudioContext();
-                
-                // Set expression if present
-                if (data.expression && window.Live2DManager) {
-                    Live2DManager.setExpression(data.expression);
-                }
-                
-                // Decode base64 to ArrayBuffer
-                const binaryString = atob(data.audio);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                }
-                
-                // Decode audio
-                const audioBuffer = await window._audioContext.decodeAudioData(bytes.buffer);
-                
-                // Create source node
-                const source = window._audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(window._audioContext.destination);
-                
-                // Start lip-sync
-                const volumes = data.volumes;
-                const chunkMs = (audioBuffer.duration * 1000) / volumes.length;
-                let index = 0;
-                
-                const lipSyncInterval = setInterval(() => {
-                    if (index < volumes.length && window.Live2DManager) {
-                        Live2DManager.setLipSync(volumes[index]);
-                        index++;
-                    } else {
-                        clearInterval(lipSyncInterval);
-                        if (window.Live2DManager) {
-                            Live2DManager.setLipSync(0);
-                        }
-                    }
-                }, chunkMs);
-                
-                // When audio ends
-                source.onended = function() {
-                    clearInterval(lipSyncInterval);
-                    if (window.Live2DManager) {
-                        Live2DManager.setLipSync(0);
-                    }
-                    window._isPlaying = false;
-                    playNextAudio();  // Play next in queue
-                };
-                
-                // Play!
-                source.start(0);
-                console.log('🔊 Playing audio:', Math.round(audioBuffer.duration * 1000), 'ms');
-                
-            } catch (e) {
-                console.error('Audio decode/play error:', e);
-                window._isPlaying = false;
-                playNextAudio();  // Try next
-            }
-        }
-        
-        // Audio playback with lip-sync
-        window.onAudioReady = function(data) {
-            console.log('Audio queued:', data.duration, 'ms, queue size:', window._audioQueue.length + 1);
-            window._audioQueue.push(data);
-            playNextAudio();
-        };
-        
-        // Mic state indicator
-        window.onMicStateChange = function(state) {
-            console.log('Mic state:', state);
-        };
-        
-        // Transcription display
-        window.onTranscription = function(text) {
-            console.log('👤 User:', text);
-        };
-        
-        // Response handling
-        window.onResponseStart = function() {
-            console.log('🤔 AI thinking...');
-        };
-        
-        window.onResponseChunk = function(chunk) {
-            // Could display streaming text
-        };
-        
-        window.onResponseEnd = function(text) {
-            console.log('✅ AI response complete');
-        };
-        
-        // Try to init audio context immediately (may fail without user interaction)
-        try { initAudioContext(); } catch(e) {}
-        
-        // Also init on any click
-        document.addEventListener('click', initAudioContext, { once: true });
-        
-        console.log('✅ Assistant callbacks injected');
-        """
-        
-        if self._window:
-            self._window.evaluate_js(js_code)
+        self._dispatch_frontend_event("onBackendReady", self.get_runtime_state())
     
     # ==================== Main ====================
     
-    def start(self):
+    def start(self, bridge_only: bool = False, bridge_port: int = 8765):
         """Start the assistant application."""
         logger.info("🚀 Starting Live2D Assistant...")
+        self._bridge_only = bridge_only
+        self._running = True
         
         # Create components
         self._create_components()
@@ -858,12 +1050,24 @@ class Live2DAssistant:
         self._loop_thread = threading.Thread(target=run_loop, daemon=True)
         self._loop_thread.start()
         logger.info("✅ Event loop started in background thread")
+
+        if bridge_only:
+            self._bridge_server = DesktopBridgeServer(self, port=bridge_port)
+            asyncio.run_coroutine_threadsafe(self._bridge_server.start(), self._loop).result(timeout=5)
+            logger.info("Bridge-only desktop backend enabled on port %s", bridge_port)
         
         # Pre-load models without blocking the window, then start audio capture
         self._start_background_preload()
 
         # Create and start window
-        if WEBVIEW_AVAILABLE:
+        if bridge_only:
+            logger.info("Running in bridge-only mode (no pywebview window)")
+            try:
+                while self._running:
+                    time.sleep(0.2)
+            except KeyboardInterrupt:
+                pass
+        elif WEBVIEW_AVAILABLE:
             self._window = self._create_window()
 
             def on_loaded():
@@ -872,13 +1076,16 @@ class Live2DAssistant:
             # Start webview (blocking)
             # Use 'edgechromium' (WebView2) for transparency support on Windows
             # Requires pywebview>=6.0.0 for transparency with mouse events
-            webview.start(on_loaded, debug=True, gui='edgechromium')
+            webview.start(
+                on_loaded,
+                debug=logging.getLogger().isEnabledFor(logging.DEBUG),
+                gui='edgechromium',
+            )
         else:
             # No GUI mode - just run the loop
             logger.info("Running in headless mode (no GUI)")
             try:
                 while True:
-                    import time
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
@@ -888,6 +1095,8 @@ class Live2DAssistant:
     def stop(self):
         """Stop the assistant application."""
         logger.info("🛑 Stopping Live2D Assistant...")
+        if not self._running and not self._loop:
+            return
         
         self._running = False
         
@@ -918,8 +1127,20 @@ class Live2DAssistant:
             if rvc and hasattr(rvc, 'close'):
                 rvc.close()
         
+        if self._bridge_server and self._loop:
+            try:
+                asyncio.run_coroutine_threadsafe(self._bridge_server.stop(), self._loop).result(timeout=5)
+            except Exception as exc:
+                logger.debug("Bridge shutdown error: %s", exc)
+            self._bridge_server = None
+
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
+
+        if self._loop_thread and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=2)
+            self._loop_thread = None
+        self._loop = None
         
         logger.info("👋 Goodbye!")
 
@@ -938,6 +1159,17 @@ def main():
         action='store_true',
         help='Enable debug logging'
     )
+    parser.add_argument(
+        '--bridge-server',
+        action='store_true',
+        help='Run the desktop backend without pywebview and expose a local websocket bridge for Tauri'
+    )
+    parser.add_argument(
+        '--bridge-port',
+        type=int,
+        default=8765,
+        help='Port for the local desktop bridge websocket server'
+    )
     
     args = parser.parse_args()
     
@@ -953,7 +1185,7 @@ def main():
     
     signal.signal(signal.SIGINT, signal_handler)
     
-    app.start()
+    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port)
 
 
 if __name__ == "__main__":

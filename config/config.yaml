@@ -52,6 +52,8 @@ gemma:
   model_id: "google/gemma-4-E2B-it"
   quantization: "int4"           # BitsAndBytes NF4 (~3-4 GB VRAM)
   device: "cuda"
+  cpu_offload: true              # let skipped modules spill to CPU if VRAM is tight
+  offload_dir: ".cache/hf-offload/gemma"
   dtype: "bfloat16"
   max_new_tokens: 64
   turn_timeout_sec: 75
@@ -72,6 +74,16 @@ gemma:
     max_buffer: 30               # Circular buffer size
     change_threshold: 0.05       # Pixel diff threshold
     include_in_conversation: false
+
+# === PIPELINE VAD TUNING ===
+# Controls end-of-speech silence detection for pipeline mode.
+# Lower = faster response (less silence needed), higher = more tolerant of pauses.
+# Default: 20 (~640ms). Gemma-omni uses 10 (~320ms).
+# Original Silero default was 30 (~960ms) which felt sluggish.
+# 20 is a good compromise: fast enough to feel responsive, tolerant enough
+# to not cut natural pauses in French speech ("salut, comment ça va").
+pipeline:
+  vad_required_misses: 20
 
 # === LLM (Brain) ===
 # Used when mode: "pipeline"
@@ -121,7 +133,7 @@ tts:
   # - "kokoro"     : Kokoro 82M (local, fast ~300ms, multilingual fallback)
   # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, slow ~3-5s)
   # - "edge"       : Edge TTS (Microsoft cloud, free)
-  provider: "qwen3"
+  provider: "kokoro"
 
   # ─────────────────────────────────────────────────────────────────────────
   # STREAMING TTS (sentence-by-sentence)
@@ -133,6 +145,7 @@ tts:
   # - false: Wait for full response before TTS (simpler, more stable)
   # ─────────────────────────────────────────────────────────────────────────
   stream_tts: true
+  warmup_on_start: true         # keep the first real reply fast; startup takes a bit longer
 
   # ─────────────────────────────────────────────────────────────────────────
   # AUTO LANGUAGE DETECTION
@@ -179,8 +192,8 @@ tts:
   #   but quality is usually a bit lower
   # ─────────────────────────────────────────────────────────────────────────
   qwen3:
-    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-    mode: "voice_clone"          # "voice_clone", "custom_voice", "voice_design"
+    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+    mode: "custom_voice"         # temporary low-latency test; avoids voice clone cost
     language: "auto"
     speaker: "Ryan"              # Used only in custom_voice mode
     instruct: ""                 # Used in custom_voice / voice_design modes
@@ -259,7 +272,8 @@ tts:
 # Used when mode: "pipeline" (omni mode handles ASR internally)
 asr:
   # Available ASR providers:
-  # - "whisper"  : Local, CPU/GPU compatible, good for many languages with distilled models
+  # - "whisper"    : faster-whisper (CTranslate2), CPU/GPU, many models
+  # - "qwen3"      : Qwen3-ASR 0.6B/1.7B (LLM-based, 30 languages, very accurate)
   provider: "whisper"
 
   # Available Whisper models:
@@ -281,14 +295,37 @@ asr:
   # ─────────────────────────────────────────────────────────────────────────
   # "large-v3-turbo" = best quality, fast (4 decoder layers), good on CPU with optimizations
   # "small" = lighter but lower accuracy, more hallucinations
-  model_size: "french-distil-dec2"
+  model_size: "large-v3-turbo"
 
   # Language: "fr", "en", "auto" or empty "" for auto-detection
-  language: "fr"
+  language: "auto"
 
   # Prompt to guide transcription (helps even with forced language)
-  # Provides context about the expected conversation style.
-  prompt: "Transcription d'une conversation en francais avec un assistant vocal."
+  # Use example output text (not a description) to prime the decoder
+  # toward casual conversational French/English conversational tokens.
+  prompt: "Salut, comment ça va ? Oui, ça va bien merci. Hello, how are you? Yes, I'm doing well, thank you."
+
+  # Compute type: "int8" for speed+low VRAM, "float16" for max quality
+  compute_type: "float16"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # QWEN3-ASR (LLM-based, 30 languages, very accurate)
+  # ─────────────────────────────────────────────────────────────────────────
+  # Recommended on Windows:
+  #   powershell -ExecutionPolicy Bypass -File scripts/install_qwen3_asr_windows.ps1 -Clean
+  # Qwen-ASR pins transformers 4.57.x, so we run it in a dedicated worker venv
+  # to avoid breaking Gemma 4 in the main app environment.
+  # 0.6B: fast, good quality.  1.7B: best quality, slower.
+  # ─────────────────────────────────────────────────────────────────────────
+  qwen3:
+    model_id: "Qwen/Qwen3-ASR-0.6B"
+    device: "cuda:0"
+    dtype: "bfloat16"
+    max_new_tokens: 256
+    backend: "worker"
+    python_path: ".\\.venv-qwen3-asr-worker\\Scripts\\python.exe"
+    site_packages_dir: null
+    worker_script: ".\\scripts\\qwen3_asr_worker.py"
 
   # Device: "cpu" or "cuda" (GPU)
   # On an RTX 4070, CUDA gives a much better conversational latency than CPU.
@@ -344,3 +381,8 @@ live2d:
   hotkeys:
     toggle_visibility: "F12"
     toggle_frameless: "F11"
+
+
+
+
+

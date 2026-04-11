@@ -9,6 +9,7 @@ stack stays isolated from Gemma in the main application environment.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import io
 import json
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -126,6 +128,8 @@ class Qwen3TTSProvider(BaseTTS):
         self._pitch = "+0Hz"
         self._language_hint: str | None = None
         self._warmed_up = False
+        self._attn_implementation_actual: str | None = None
+        self._worker_ready_payload: dict = {}
 
     def _resolve_dtype(self):
         import torch
@@ -188,12 +192,11 @@ class Qwen3TTSProvider(BaseTTS):
             return self._normalize_language(explicit_code)
 
         hint_code = self._normalize_language_code(self._language_hint)
-        if hint_code and hint_code not in {"fr", "en"}:
+        if hint_code:
             return self._normalize_language(hint_code)
 
         if text and text.strip():
-            default_lang = LanguageCode.FRENCH if hint_code == "fr" else LanguageCode.ENGLISH
-            detected = detect_language(text, default=default_lang)
+            detected = detect_language(text, default=LanguageCode.FRENCH)
             return self._normalize_language(str(detected))
 
         return self._normalize_language(hint_code)
@@ -373,6 +376,10 @@ class Qwen3TTSProvider(BaseTTS):
             details = payload.get("message") or "\n".join(startup_lines).strip()
             raise RuntimeError(details or stderr or "Qwen3-TTS worker failed to initialize")
 
+        self._worker_ready_payload = payload
+        self._attn_implementation_actual = payload.get("attn_implementation") or self.attn_implementation
+        logger.info("Qwen3-TTS worker ready (attn=%s)", self._attn_implementation_actual)
+
     def _shutdown_worker(self) -> None:
         process = self._worker_process
         if process is None:
@@ -439,12 +446,15 @@ class Qwen3TTSProvider(BaseTTS):
                 ) from exc
 
             logger.info("Loading Qwen3-TTS in-process from %s...", self.model_id)
+            actual_attn = self._resolve_attn_implementation()
+            self._attn_implementation_actual = actual_attn
             self._model = Qwen3TTSModel.from_pretrained(
                 self.model_id,
                 device_map=self.device,
                 dtype=self._resolve_dtype(),
-                attn_implementation=self._resolve_attn_implementation(),
+                attn_implementation=actual_attn,
             )
+            logger.info("Qwen3-TTS in-process ready (attn=%s)", actual_attn)
 
             if self.mode == "voice_clone" and self.ref_audio_path and self.ref_audio_path.exists():
                 self._voice_clone_prompt = self._create_voice_clone_prompt()
@@ -458,21 +468,24 @@ class Qwen3TTSProvider(BaseTTS):
     def preload(self) -> None:
         self._load_model()
 
+    @property
+    def prefer_full_response_tts(self) -> bool:
+        """
+        `custom_voice` is the low-latency path and works better with sentence-level
+        queueing. Voice cloning/design stay full-response for stability.
+        """
+        return self.mode != "custom_voice"
+
     def warmup(self) -> None:
         """Pay the first synthesis cost before the first real user reply."""
         if self._warmed_up:
             return
 
-        warmup_text = "Bonjour."
-        fd, tmp_name = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        tmp_path = Path(tmp_name)
-
-        try:
-            self._synthesize_worker_sync(warmup_text, tmp_path)
-            self._warmed_up = True
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        if self.backend == "worker":
+            self._synthesize_worker_sync("Bonjour.")
+        else:
+            self._generate_sync_inprocess("Bonjour.")
+        self._warmed_up = True
 
     def _create_voice_clone_prompt(self):
         if not self.ref_audio_path or not self.ref_audio_path.exists():
@@ -535,35 +548,60 @@ class Qwen3TTSProvider(BaseTTS):
         text: str,
         output_path: Path | None = None,
     ) -> TTSResult:
-        tmp_output = output_path
-        created_temp = False
-        if tmp_output is None:
-            fd, tmp_name = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-            tmp_output = Path(tmp_name)
-            created_temp = True
+        request_started = time.perf_counter()
+        request = {
+            "command": "synthesize",
+            "text": text,
+            "language": self._resolve_request_language(text),
+        }
+        if output_path is not None:
+            request["output_path"] = str(output_path)
 
-        try:
-            response = self._send_worker_command(
-                {
-                    "command": "synthesize",
-                    "text": text,
-                    "language": self._resolve_request_language(text),
-                    "output_path": str(tmp_output),
-                }
-            )
+        response = self._send_worker_command(request)
+        duration = response.get("duration")
+        metadata = {
+            "backend": "worker",
+            "attn_implementation": response.get("attn_implementation") or self._attn_implementation_actual,
+            "synth_ms": float(response.get("synth_ms", 0.0) or 0.0),
+            "file_write_ms": float(response.get("file_write_ms", 0.0) or 0.0),
+            "file_read_ms": 0.0,
+            "provider_roundtrip_ms": (time.perf_counter() - request_started) * 1000,
+        }
+
+        generated_path = None
+        if response.get("output_path"):
             generated_path = Path(response["output_path"]).resolve()
-            duration = response.get("duration")
-            if output_path is not None:
-                return TTSResult(audio_path=generated_path, duration=duration)
 
+        if output_path is not None:
+            if generated_path is not None:
+                return TTSResult(audio_path=generated_path, duration=duration, metadata=metadata)
+
+            audio_data = None
+            if response.get("audio_base64"):
+                audio_data = base64.b64decode(response["audio_base64"])
+            if audio_data is not None:
+                write_started = time.perf_counter()
+                output_path.write_bytes(audio_data)
+                metadata["file_write_ms"] += (time.perf_counter() - write_started) * 1000
+            return TTSResult(audio_path=output_path, duration=duration, metadata=metadata)
+
+        audio_data: bytes | None = None
+        if response.get("audio_base64"):
+            audio_data = base64.b64decode(response["audio_base64"])
+
+        if audio_data is not None:
+            return TTSResult(audio_data=audio_data, duration=duration, metadata=metadata)
+
+        if generated_path is not None:
+            read_started = time.perf_counter()
             audio_data = generated_path.read_bytes()
-            return TTSResult(audio_data=audio_data, duration=duration)
-        finally:
-            if created_temp and tmp_output:
-                tmp_output.unlink(missing_ok=True)
+            metadata["file_read_ms"] += (time.perf_counter() - read_started) * 1000
+            return TTSResult(audio_data=audio_data, duration=duration, metadata=metadata)
+
+        raise RuntimeError("Qwen3-TTS worker returned neither audio bytes nor output path")
 
     async def synthesize(
+
         self,
         text: str,
         output_path: Path | None = None,
@@ -586,14 +624,22 @@ class Qwen3TTSProvider(BaseTTS):
 
         audio_int16 = (audio * 32767).astype(np.int16)
         duration = len(audio_int16) / sample_rate if sample_rate else None
+        metadata = {
+            "backend": "inprocess",
+            "attn_implementation": self._attn_implementation_actual,
+            "file_write_ms": 0.0,
+            "file_read_ms": 0.0,
+        }
 
         if output_path is not None:
+            write_started = time.perf_counter()
             sf.write(str(output_path), audio_int16, sample_rate, subtype="PCM_16")
-            return TTSResult(audio_path=output_path, duration=duration)
+            metadata["file_write_ms"] = (time.perf_counter() - write_started) * 1000
+            return TTSResult(audio_path=output_path, duration=duration, metadata=metadata)
 
         buffer = io.BytesIO()
         sf.write(buffer, audio_int16, sample_rate, format="WAV", subtype="PCM_16")
-        return TTSResult(audio_data=buffer.getvalue(), duration=duration)
+        return TTSResult(audio_data=buffer.getvalue(), duration=duration, metadata=metadata)
 
     async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
         result = await self.synthesize(text)
