@@ -88,3 +88,8 @@ resources/voices/**/*.index
 .worker_*
 dir_test.txt
 %SystemDrive%/
+
+# Desktop/Tauri local build artifacts
+/package-lock.json
+desktop/tauri/node_modules/
+desktop/tauri/src-tauri/target/
