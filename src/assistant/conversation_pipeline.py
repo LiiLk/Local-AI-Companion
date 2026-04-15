@@ -550,9 +550,14 @@ class ConversationPipeline:
             trace["llm_start_epoch_ms"] = int(time.time() * 1000)
             
             validate_language = self._should_validate_response_language(user_language, response_language)
-            if self._should_stream_tts_by_sentence() and not validate_language:
+            if self._should_stream_tts_by_sentence():
                 # Stream TTS sentence-by-sentence
-                full_response = await self._stream_response_with_tts(llm_messages, run_id, trace)
+                full_response = await self._stream_response_with_tts(
+                    llm_messages,
+                    run_id,
+                    trace,
+                    response_language_code=response_language if validate_language else None,
+                )
             else:
                 # Get full response first, then TTS
                 full_response = await self._get_full_response(
@@ -625,8 +630,13 @@ class ConversationPipeline:
             trace["llm_start_epoch_ms"] = int(time.time() * 1000)
 
             validate_language = self._should_validate_response_language(user_language, response_language)
-            if self._should_stream_tts_by_sentence() and not validate_language:
-                full_response = await self._stream_response_with_tts(llm_messages, run_id, trace)
+            if self._should_stream_tts_by_sentence():
+                full_response = await self._stream_response_with_tts(
+                    llm_messages,
+                    run_id,
+                    trace,
+                    response_language_code=response_language if validate_language else None,
+                )
             else:
                 full_response = await self._get_full_response(
                     llm_messages,
@@ -732,6 +742,7 @@ class ConversationPipeline:
         messages: list[Message],
         run_id: int,
         trace: Optional[dict[str, float | int | str | None]] = None,
+        response_language_code: Optional[str] = None,
     ) -> str:
         """Stream the LLM while TTS runs independently in the background."""
         full_response = ""
@@ -740,6 +751,8 @@ class ConversationPipeline:
         first_llm_chunk_logged = False
         first_sentence_submitted = False
         first_audio_sent = False
+        fallback_to_full_response = False
+        first_sentence_checked = response_language_code is None
 
         async def _on_audio_ready(payload: dict):
             nonlocal first_audio_sent
@@ -819,6 +832,17 @@ class ConversationPipeline:
                 for sentence in splitter.get_sentences():
                     if sentence.strip():
                         self._ensure_run_active(run_id)
+                        if fallback_to_full_response:
+                            continue
+                        if not first_sentence_checked and response_language_code:
+                            first_sentence_checked = True
+                            if not self._response_matches_language(sentence, response_language_code):
+                                fallback_to_full_response = True
+                                logger.warning(
+                                    "First streamed sentence did not match %s; falling back to full-response rewrite",
+                                    get_language_name(response_language_code) or response_language_code,
+                                )
+                                continue
                         if not first_sentence_submitted:
                             first_sentence_submitted = True
                             if trace is not None:
@@ -833,7 +857,19 @@ class ConversationPipeline:
             remaining = splitter.flush()
             if remaining.strip():
                 self._ensure_run_active(run_id)
-                if not first_sentence_submitted:
+                if (
+                    not fallback_to_full_response
+                    and not first_sentence_checked
+                    and response_language_code
+                ):
+                    first_sentence_checked = True
+                    if not self._response_matches_language(remaining, response_language_code):
+                        fallback_to_full_response = True
+                        logger.warning(
+                            "First streamed sentence did not match %s; falling back to full-response rewrite",
+                            get_language_name(response_language_code) or response_language_code,
+                        )
+                if not fallback_to_full_response and not first_sentence_submitted:
                     first_sentence_submitted = True
                     if trace is not None:
                         trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
@@ -842,9 +878,18 @@ class ConversationPipeline:
                         (time.perf_counter() - llm_started) * 1000,
                         remaining[:80],
                     )
-                await tts_mgr.submit(remaining)
+                if not fallback_to_full_response:
+                    await tts_mgr.submit(remaining)
 
             await tts_mgr.finish()
+            if fallback_to_full_response and response_language_code:
+                full_response = await self._ensure_response_language(
+                    full_response,
+                    response_language_code,
+                    run_id,
+                    trace,
+                )
+                await self._synthesize_and_send(full_response, run_id, trace)
             return full_response
         except asyncio.CancelledError:
             await tts_mgr.cancel()
