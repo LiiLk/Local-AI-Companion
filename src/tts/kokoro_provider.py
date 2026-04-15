@@ -193,8 +193,12 @@ class KokoroProvider(BaseTTS):
             return "zh-CN"
         if value.startswith("es"):
             return "es-ES"
+        if value.startswith("hi"):
+            return "hi-IN"
         if value.startswith("it"):
             return "it-IT"
+        if value.startswith("pt"):
+            return "pt-BR"
         return None
     
     async def synthesize(

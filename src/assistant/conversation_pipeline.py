@@ -31,16 +31,21 @@ from src.llm.base import BaseLLM, Message
 from src.tts.base import BaseTTS, prefers_full_response_tts
 from src.tts.tts_task_manager import TTSTaskManager
 from src.asr.base import BaseASR, ASRResult
-from src.utils.language_detection import LanguageCode, detect_language as detect_text_language
+from src.utils.language_detection import (
+    detect_language as detect_text_language,
+    get_language_name,
+    normalize_language_code,
+)
 from src.utils.sentence_splitter import SentenceSplitter
 
 logger = logging.getLogger(__name__)
 
-LANGUAGE_NAMES = {
-    "fr": "French",
-    "en": "English",
-}
 
+def _describe_exception(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    return exc.__class__.__name__
 
 @dataclass
 class ConversationConfig:
@@ -57,6 +62,7 @@ class ConversationConfig:
     stream_tts: bool = True  # Synthesize sentence-by-sentence
     auto_detect_language: bool = True
     asr_language: Optional[str] = None
+    reply_language: Optional[str] = None
 
     # Omni mode (MiniCPM-o)
     omni_use_single_pass: bool = True  # Single omni call for speech -> response
@@ -78,6 +84,7 @@ class AudioPayload:
     audio_base64: Optional[str] = None
     wav_bytes: Optional[bytes] = None
     tts_metrics: Optional[dict[str, float | str | None]] = None
+    trace: Optional[dict[str, float | int | str | None]] = None
 
 
 class EmotionDetector:
@@ -239,9 +246,18 @@ class ConversationPipeline:
         # State
         self._is_processing = False
         self._current_expression: Optional[str] = None
-        self._current_language_code: str = self._normalize_supported_language(self.config.asr_language) or "fr"
+        self._current_language_code: str = self._normalize_supported_language(self.config.asr_language) or "en"
         self._active_run_id: int = 0
         self._run_counter: int = 0
+
+        initial_tts_language = self._configured_reply_language()
+        if not initial_tts_language:
+            initial_tts_language = self._normalize_supported_language(self.config.asr_language)
+        if initial_tts_language and hasattr(self.tts, "set_language"):
+            try:
+                self.tts.set_language(initial_tts_language)
+            except Exception as exc:
+                logger.debug("Initial TTS language setup failed: %s", exc)
         
         logger.info(f"ConversationPipeline initialized (character={self.config.character_name})")
     
@@ -275,9 +291,19 @@ class ConversationPipeline:
         self._run_counter += 1
         self._active_run_id = self._run_counter
         self._is_processing = False
+        self._abort_inflight_tts()
         if was_active:
             logger.info("ConversationPipeline cancel_active_run(%s)", reason)
         return was_active
+
+    def _abort_inflight_tts(self) -> None:
+        cancel_fn = getattr(self.tts, "cancel_inflight", None)
+        if not callable(cancel_fn):
+            return
+        try:
+            cancel_fn()
+        except Exception as exc:
+            logger.debug("TTS cancel_inflight failed: %s", exc)
 
     def _should_stream_tts_by_sentence(self) -> bool:
         """Return True when sentence-level streaming is appropriate for the provider."""
@@ -285,20 +311,52 @@ class ConversationPipeline:
 
     @staticmethod
     def _normalize_supported_language(language: Optional[str]) -> Optional[str]:
-        if not language:
-            return None
+        return normalize_language_code(language)
 
-        value = language.strip().lower()
-        if not value or value == "auto":
-            return None
-        if value.startswith("fr"):
-            return "fr"
-        if value.startswith("en"):
-            return "en"
-        return None
+    def _language_default(self) -> str:
+        return self._current_language_code or "en"
 
-    def _language_default(self) -> LanguageCode:
-        return LanguageCode.ENGLISH if self._current_language_code == "en" else LanguageCode.FRENCH
+    def _configured_reply_language(self) -> Optional[str]:
+        return self._normalize_supported_language(self.config.reply_language)
+
+    @staticmethod
+    def _result_segment_confidence(result: ASRResult | None) -> float | None:
+        segments = getattr(result, "segments", None)
+        if not result or not segments:
+            return None
+        values = [
+            float(segment.get("confidence"))
+            for segment in segments
+            if segment.get("confidence") is not None
+        ]
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    def _should_retry_with_language_hint(self, result: ASRResult) -> bool:
+        configured_language = self._normalize_supported_language(self.config.asr_language)
+        if configured_language is not None:
+            return False
+
+        current_language = self._normalize_supported_language(self._current_language_code)
+        detected_language = self._normalize_supported_language(getattr(result, "language", None))
+        if not current_language or not detected_language or detected_language == current_language:
+            return False
+
+        language_confidence = getattr(result, "confidence", None)
+        segment_confidence = self._result_segment_confidence(result)
+
+        if language_confidence is None and segment_confidence is None:
+            return False
+
+        low_language_confidence = (
+            language_confidence is not None and float(language_confidence) < 0.80
+        )
+        low_segment_confidence = (
+            segment_confidence is not None and float(segment_confidence) < -0.80
+        )
+
+        return low_language_confidence or low_segment_confidence
 
     async def _transcribe_once(self, audio_bytes: bytes, language: Optional[str]) -> ASRResult:
         audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -310,41 +368,48 @@ class ConversationPipeline:
             lambda: self.asr.transcribe(audio_float, language=language),
         )
 
-    def _resolve_response_language(self, transcription: str, asr_language: Optional[str]) -> str:
-        text_language = str(detect_text_language(transcription, default=self._language_default()))
+    def _resolve_user_language(self, transcription: str, asr_language: Optional[str]) -> str:
         asr_code = self._normalize_supported_language(asr_language)
+        text_language = self._normalize_supported_language(
+            str(detect_text_language(transcription, default=self._language_default()))
+        )
+        return asr_code or text_language or self._current_language_code or "en"
 
-        if asr_code == text_language:
-            return asr_code
-        if text_language in LANGUAGE_NAMES:
-            return text_language
-        if asr_code in LANGUAGE_NAMES:
-            return asr_code
-        return self._current_language_code
+    def _resolve_response_language(self, transcription: str, asr_language: Optional[str]) -> str:
+        configured_reply_language = self._configured_reply_language()
+        if configured_reply_language:
+            return configured_reply_language
+        return self._resolve_user_language(transcription, asr_language)
 
     def _apply_language_hint(self, language_code: str) -> None:
         self._current_language_code = language_code
         if self.config.auto_detect_language and hasattr(self.tts, "set_language"):
             self.tts.set_language(language_code)
 
-    def _build_llm_messages(self, language_code: str) -> list[Message]:
+    def _build_llm_messages(self, response_language_code: str, user_language_code: Optional[str] = None) -> list[Message]:
         llm_messages = list(self.messages)
         if not llm_messages or llm_messages[-1].role != "user":
             return llm_messages
 
-        language_name = LANGUAGE_NAMES.get(language_code)
-        if not language_name:
+        response_language_name = get_language_name(response_language_code)
+        if not response_language_name:
             return llm_messages
 
+        user_language_name = get_language_name(user_language_code or response_language_code)
         last_user = llm_messages[-1]
-        llm_messages[-1] = Message(
-            role="user",
-            content=(
-                f"(System: The user is speaking {language_name}. "
-                f"Reply ONLY in {language_name}. Do not switch languages.)\n\n"
-                f"{last_user.content}"
-            ),
-        )
+        if user_language_name and user_language_name != response_language_name:
+            instruction = (
+                f"(System: The user is speaking {user_language_name}. "
+                f"Understand the request fully, but reply ONLY in {response_language_name}. "
+                f"Do not switch languages.)"
+            )
+        else:
+            instruction = (
+                f"(System: The user is speaking {response_language_name}. "
+                f"Reply ONLY in {response_language_name}. Do not switch languages.)"
+            )
+
+        llm_messages[-1] = Message(role="user", content=f"{instruction}\n\n{last_user.content}")
         return llm_messages
     
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
@@ -362,14 +427,23 @@ class ConversationPipeline:
             return None
         
         try:
+            trace = {
+                "turn_start_epoch_ms": int(time.time() * 1000),
+                "speech_end_epoch_ms": int(time.time() * 1000),
+            }
             # 1. Transcribe audio
             transcription_result = await self._transcribe(audio_bytes)
+            trace["asr_done_epoch_ms"] = int(time.time() * 1000)
             self._ensure_run_active(run_id)
             if not transcription_result or not transcription_result.text:
                 logger.info("No speech detected in audio")
                 return None
             transcription = transcription_result.text.strip()
 
+            user_language = self._resolve_user_language(
+                transcription,
+                getattr(transcription_result, "language", None),
+            )
             response_language = self._resolve_response_language(
                 transcription,
                 getattr(transcription_result, "language", None),
@@ -383,7 +457,7 @@ class ConversationPipeline:
             
             # 2. Add to conversation history
             self.messages.append(Message(role="user", content=transcription))
-            llm_messages = self._build_llm_messages(response_language)
+            llm_messages = self._build_llm_messages(response_language, user_language)
             
             # 3. Generate response
             if self.on_response_start:
@@ -391,14 +465,15 @@ class ConversationPipeline:
             self._ensure_run_active(run_id)
             
             full_response = ""
+            trace["llm_start_epoch_ms"] = int(time.time() * 1000)
             
             if self._should_stream_tts_by_sentence():
                 # Stream TTS sentence-by-sentence
-                full_response = await self._stream_response_with_tts(llm_messages, run_id)
+                full_response = await self._stream_response_with_tts(llm_messages, run_id, trace)
             else:
                 # Get full response first, then TTS
-                full_response = await self._get_full_response(llm_messages, run_id)
-                await self._synthesize_and_send(full_response, run_id)
+                full_response = await self._get_full_response(llm_messages, run_id, trace)
+                await self._synthesize_and_send(full_response, run_id, trace)
             self._ensure_run_active(run_id)
             
             # 4. Add to history
@@ -413,9 +488,9 @@ class ConversationPipeline:
             logger.info("Speech pipeline run %s cancelled", run_id)
             raise
         except Exception as e:
-            logger.error(f"Pipeline error: {e}")
+            logger.error("Pipeline error: %s", _describe_exception(e), exc_info=True)
             if self.on_error:
-                await self._call_async(self.on_error, str(e))
+                await self._call_async(self.on_error, _describe_exception(e))
             return None
             
         finally:
@@ -433,6 +508,12 @@ class ConversationPipeline:
             return None
 
         try:
+            trace = {
+                "turn_start_epoch_ms": int(time.time() * 1000),
+                "text_submit_epoch_ms": int(time.time() * 1000),
+                "asr_done_epoch_ms": int(time.time() * 1000),
+            }
+            user_language = self._resolve_user_language(user_text, self.config.asr_language)
             response_language = self._resolve_response_language(user_text, self.config.asr_language)
             self._apply_language_hint(response_language)
 
@@ -442,17 +523,18 @@ class ConversationPipeline:
             self._ensure_run_active(run_id)
 
             self.messages.append(Message(role="user", content=user_text))
-            llm_messages = self._build_llm_messages(response_language)
+            llm_messages = self._build_llm_messages(response_language, user_language)
 
             if self.on_response_start:
                 await self._call_async(self.on_response_start)
             self._ensure_run_active(run_id)
+            trace["llm_start_epoch_ms"] = int(time.time() * 1000)
 
             if self._should_stream_tts_by_sentence():
-                full_response = await self._stream_response_with_tts(llm_messages, run_id)
+                full_response = await self._stream_response_with_tts(llm_messages, run_id, trace)
             else:
-                full_response = await self._get_full_response(llm_messages, run_id)
-                await self._synthesize_and_send(full_response, run_id)
+                full_response = await self._get_full_response(llm_messages, run_id, trace)
+                await self._synthesize_and_send(full_response, run_id, trace)
             self._ensure_run_active(run_id)
 
             self.messages.append(Message(role="assistant", content=full_response))
@@ -465,9 +547,9 @@ class ConversationPipeline:
             logger.info("Text pipeline run %s cancelled", run_id)
             raise
         except Exception as e:
-            logger.error(f"Pipeline text error: {e}")
+            logger.error("Pipeline text error: %s", _describe_exception(e), exc_info=True)
             if self.on_error:
-                await self._call_async(self.on_error, str(e))
+                await self._call_async(self.on_error, _describe_exception(e))
             return None
         finally:
             self._finish_run(run_id)
@@ -483,8 +565,9 @@ class ConversationPipeline:
             self._normalize_supported_language(self.config.asr_language) is None
             and getattr(result, "language", None)
             and detected_lang is None
+            and self._current_language_code
         ):
-            retry_language = self._current_language_code or "fr"
+            retry_language = self._current_language_code
             logger.warning(
                 "ASR auto-detect returned out-of-scope language=%s, retrying with forced language=%s",
                 getattr(result, "language", None),
@@ -494,17 +577,41 @@ class ConversationPipeline:
             if retry_result.text and retry_result.text.strip():
                 result = retry_result
 
+        if self._should_retry_with_language_hint(result):
+            retry_language = self._current_language_code
+            logger.warning(
+                "ASR low-confidence language=%s (confidence=%s), retrying with previous language=%s",
+                getattr(result, "language", None),
+                getattr(result, "confidence", None),
+                retry_language,
+            )
+            retry_result = await self._transcribe_once(audio_bytes, retry_language)
+            if retry_result.text and retry_result.text.strip():
+                logger.info(
+                    "ASR retry accepted: %r -> %r",
+                    result.text.strip()[:80],
+                    retry_result.text.strip()[:80],
+                )
+                result = retry_result
+
         normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
         if normalized_lang:
             result.language = normalized_lang
         return result
     
-    async def _get_full_response(self, messages: list[Message], run_id: int) -> str:
+    async def _get_full_response(
+        self,
+        messages: list[Message],
+        run_id: int,
+        trace: Optional[dict[str, float | int | str | None]] = None,
+    ) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
         
         async for chunk in self.llm.chat_stream(messages):
             self._ensure_run_active(run_id)
+            if trace is not None and "llm_first_token_epoch_ms" not in trace:
+                trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
             full_response += chunk
             if self.on_response_chunk:
                 await self._call_async(self.on_response_chunk, chunk)
@@ -512,7 +619,12 @@ class ConversationPipeline:
         
         return full_response
     
-    async def _stream_response_with_tts(self, messages: list[Message], run_id: int) -> str:
+    async def _stream_response_with_tts(
+        self,
+        messages: list[Message],
+        run_id: int,
+        trace: Optional[dict[str, float | int | str | None]] = None,
+    ) -> str:
         """Stream the LLM while TTS runs independently in the background."""
         full_response = ""
         splitter = SentenceSplitter(faster_first_response=True)
@@ -540,6 +652,8 @@ class ConversationPipeline:
                     "First TTS audio latency: %.1f ms",
                     (time.perf_counter() - llm_started) * 1000,
                 )
+            payload_trace = dict(trace or {})
+            payload_trace["backend_audio_ready_epoch_ms"] = int(time.time() * 1000)
 
             audio_payload = AudioPayload(
                 audio_bytes=payload["pcm_bytes"],
@@ -551,6 +665,7 @@ class ConversationPipeline:
                 text=payload["text"],
                 expression=payload.get("expression"),
                 tts_metrics=payload.get("tts_metrics"),
+                trace=payload_trace,
             )
             await self._call_async(self.on_audio_ready, audio_payload)
 
@@ -580,6 +695,8 @@ class ConversationPipeline:
 
                 if not first_llm_chunk_logged:
                     first_llm_chunk_logged = True
+                    if trace is not None:
+                        trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
                     logger.info(
                         "First LLM chunk after %.1f ms: %r",
                         (time.perf_counter() - llm_started) * 1000,
@@ -596,6 +713,8 @@ class ConversationPipeline:
                         self._ensure_run_active(run_id)
                         if not first_sentence_submitted:
                             first_sentence_submitted = True
+                            if trace is not None:
+                                trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                             logger.info(
                                 "First TTS chunk queued after %.1f ms: %r",
                                 (time.perf_counter() - llm_started) * 1000,
@@ -608,6 +727,8 @@ class ConversationPipeline:
                 self._ensure_run_active(run_id)
                 if not first_sentence_submitted:
                     first_sentence_submitted = True
+                    if trace is not None:
+                        trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                     logger.info(
                         "First TTS chunk queued after %.1f ms: %r",
                         (time.perf_counter() - llm_started) * 1000,
@@ -621,7 +742,12 @@ class ConversationPipeline:
             await tts_mgr.cancel()
             raise
     
-    async def _synthesize_and_send(self, text: str, run_id: int):
+    async def _synthesize_and_send(
+        self,
+        text: str,
+        run_id: int,
+        trace: Optional[dict[str, float | int | str | None]] = None,
+    ):
         """Synthesize text to speech and send payload."""
         if not text.strip():
             return
@@ -651,11 +777,15 @@ class ConversationPipeline:
             temp_path = Path(f.name)
 
         try:
-            if asyncio.iscoroutinefunction(self.tts.synthesize):
-                tts_result = await self.tts.synthesize(clean_text, temp_path)
-            else:
-                loop = asyncio.get_event_loop()
-                tts_result = await loop.run_in_executor(None, self.tts.synthesize, clean_text, temp_path)
+            try:
+                if asyncio.iscoroutinefunction(self.tts.synthesize):
+                    tts_result = await self.tts.synthesize(clean_text, temp_path)
+                else:
+                    loop = asyncio.get_event_loop()
+                    tts_result = await loop.run_in_executor(None, self.tts.synthesize, clean_text, temp_path)
+            except asyncio.CancelledError:
+                self._abort_inflight_tts()
+                raise
 
             if tts_result and tts_result.audio_data:
                 full_wav_bytes = tts_result.audio_data
@@ -696,7 +826,11 @@ class ConversationPipeline:
             duration_ms=duration_ms,
             sample_rate=sample_rate,
             text=clean_text,
-            expression=expression
+            expression=expression,
+            trace={
+                **(trace or {}),
+                "backend_audio_ready_epoch_ms": int(time.time() * 1000),
+            },
         )
 
         logger.info(f"🔊 Audio ready: {duration_ms}ms, {len(volumes)} volume chunks")

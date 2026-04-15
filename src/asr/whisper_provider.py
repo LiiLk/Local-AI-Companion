@@ -16,6 +16,7 @@ Features:
 import asyncio
 import os
 import logging
+import re
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, AsyncGenerator, Union
@@ -86,16 +87,19 @@ class WhisperProvider(BaseASR):
         "Bonjour, comment ça va ?"
     """
     
-    # Beam search provides better accuracy at slight speed cost
-    # Set to 1 for fastest speed (greedy decoding)
-    BEAM_SIZE = 1
+    # Beam search provides better accuracy at slight speed cost.
+    # Default stays conservative for conversational latency.
+    DEFAULT_BEAM_SIZE = 1
+    MIN_AUTO_LANGUAGE_CONFIDENCE = 0.35
+    REPETITIVE_HALLUCINATION_LANGUAGE_CONFIDENCE = 0.55
     
     def __init__(
         self,
         model_size: str = "base",
         device: str = "auto",
         compute_type: str = "float16",
-        initial_prompt: Optional[str] = None
+        initial_prompt: Optional[str] = None,
+        beam_size: int = DEFAULT_BEAM_SIZE,
     ):
         if model_size not in MODEL_SIZES:
             raise ValueError(
@@ -109,9 +113,62 @@ class WhisperProvider(BaseASR):
         # initial_prompt helps Whisper detect the correct language
         # Should be in the expected language (e.g. French for French audio)
         self.initial_prompt = initial_prompt
+        self.beam_size = max(1, int(beam_size or self.DEFAULT_BEAM_SIZE))
         
         # Lazy loading - model loaded on first use
         self._model = None
+
+    @staticmethod
+    def _looks_repetitive_hallucination(text: str) -> bool:
+        cleaned = (text or "").strip()
+        if len(cleaned) < 24:
+            return False
+
+        chars = [char for char in cleaned if not char.isspace()]
+        if len(chars) < 24:
+            return False
+
+        unique_ratio = len(set(chars)) / max(len(chars), 1)
+        if unique_ratio <= 0.08:
+            return True
+
+        repeated_char_run = re.search(r"(.)\1{11,}", cleaned)
+        if repeated_char_run:
+            return True
+
+        two_char_run = re.search(r"(.{1,2})\1{8,}", cleaned)
+        if two_char_run:
+            return True
+
+        # Repeated clause loops like "c'est le plus... c'est le plus..."
+        clause_parts = [
+            part.strip().lower()
+            for part in re.split(r"(?:\.{2,}|[.!?…])", cleaned)
+            if part and part.strip()
+        ]
+        if len(clause_parts) >= 4 and len(set(clause_parts)) == 1:
+            return True
+
+        tokens = re.findall(r"\b[\w'-]+\b", cleaned.lower())
+        if len(tokens) >= 12:
+            for n in (2, 3, 4):
+                if len(tokens) < n * 5:
+                    continue
+                repeated_run = 1
+                previous = tuple(tokens[:n])
+                for index in range(n, len(tokens) - n + 1, n):
+                    current = tuple(tokens[index:index + n])
+                    if len(current) < n:
+                        break
+                    if current == previous:
+                        repeated_run += 1
+                        if repeated_run >= 5:
+                            return True
+                    else:
+                        repeated_run = 1
+                        previous = current
+
+        return False
         
     def _download_french_model(self, model_config: dict) -> Path:
         """
@@ -278,7 +335,7 @@ class WhisperProvider(BaseASR):
         segments, info = model.transcribe(
             transcribe_input,
             language=effective_language,
-            beam_size=self.BEAM_SIZE,
+            beam_size=self.beam_size,
             word_timestamps=False,
             vad_filter=False,
             # Anti-hallucination settings:
@@ -293,11 +350,13 @@ class WhisperProvider(BaseASR):
         # Collect all segments
         all_segments = []
         full_text_parts = []
-        
+        no_speech_values: list[float] = []
+
         for segment in segments:
             # Log each segment for debugging
             avg_logprob = getattr(segment, 'avg_logprob', 0)
             no_speech_prob = getattr(segment, 'no_speech_prob', 0)
+            no_speech_values.append(float(no_speech_prob))
             logger.info(
                 "Segment [%.1fs-%.1fs] '%s' (logprob=%.2f, no_speech=%.2f)",
                 segment.start,
@@ -321,11 +380,36 @@ class WhisperProvider(BaseASR):
             })
         
         full_text = " ".join(full_text_parts).strip()
-        
+        language_confidence = getattr(info, "language_probability", None)
+        avg_no_speech = (
+            sum(no_speech_values) / len(no_speech_values)
+            if no_speech_values
+            else 0.0
+        )
+
+        if (
+            effective_language is None
+            and full_text
+            and self._looks_repetitive_hallucination(full_text)
+            and (
+                language_confidence is None
+                or float(language_confidence) < self.REPETITIVE_HALLUCINATION_LANGUAGE_CONFIDENCE
+                or avg_no_speech >= 0.35
+            )
+        ):
+            logger.warning(
+                "Rejecting likely Whisper hallucination: language=%s probability=%.2f avg_no_speech=%.2f text=%r",
+                getattr(info, "language", None),
+                float(language_confidence or 0.0),
+                avg_no_speech,
+                full_text[:120],
+            )
+            full_text = ""
+
         return ASRResult(
             text=full_text,
             language=info.language,
-            confidence=info.language_probability,
+            confidence=language_confidence,
             duration=info.duration,
             segments=all_segments
         )
@@ -375,6 +459,7 @@ class WhisperProvider(BaseASR):
         info["model_size"] = self.model_size
         info["device"] = self.device
         info["compute_type"] = self.compute_type
+        info["beam_size"] = self.beam_size
         info["loaded"] = self._model is not None
         return info
 

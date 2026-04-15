@@ -24,9 +24,24 @@ from typing import AsyncGenerator, Optional
 import numpy as np
 import soundfile as sf
 
+from src.utils.language_detection import detect_language, normalize_language_code
+
 from .base import BaseTTS, TTSResult, Voice
 
 logger = logging.getLogger(__name__)
+
+WARMUP_TEXTS = {
+    "de": "Hallo.",
+    "en": "Hello.",
+    "es": "Hola.",
+    "fr": "Bonjour.",
+    "it": "Ciao.",
+    "ja": "こんにちは。",
+    "ko": "안녕하세요.",
+    "pt": "Ola.",
+    "ru": "Privet.",
+    "zh": "Ni hao.",
+}
 
 
 # Available emotion tags that Chatterbox interprets natively
@@ -60,7 +75,7 @@ class ChatterboxTTSProvider(BaseTTS):
         ref_audio_path: str | Path | None = None,
         exaggeration: float = 0.5,
         cfg_weight: float = 0.5,
-        language: str = "fr",
+        language: str = "en",
         prefer_full_gpu: bool = False,
     ):
         self.model_id = model_id
@@ -201,20 +216,6 @@ class ChatterboxTTSProvider(BaseTTS):
                  "no", "da", "ru", "pl", "sk", "cs", "hu", "ar", "hi", "ja",
                  "ko", "zh", "ro", "bg", "fi", "ta", "ms", "he", "vi"}
 
-    @staticmethod
-    def _detect_lang(text: str) -> str:
-        """Simple heuristic language detection based on character patterns."""
-        # Common French indicators
-        fr_chars = set("àâéèêëïîôùûüÿçœæ")
-        en_indicators = {"the ", "is ", "are ", "was ", "have ", "has ", " of ", " and ", " to "}
-        lower = text.lower()
-        if any(c in fr_chars for c in lower):
-            return "fr"
-        if any(ind in lower for ind in en_indicators):
-            return "en"
-        # Default to French (our primary language)
-        return "fr"
-
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
         """Synchronous synthesis. Returns (audio_array, sample_rate)."""
         self._load_model()
@@ -325,6 +326,29 @@ class ChatterboxTTSProvider(BaseTTS):
     def set_reference_audio(self, ref_audio_path: str | Path) -> None:
         """Set reference audio for voice cloning."""
         self.set_voice(str(ref_audio_path))
+
+    def _detect_lang(self, text: str) -> str:
+        """Prefer explicit language hints before falling back to text detection."""
+        hinted = normalize_language_code(self.language)
+        if hinted in self.LANG_TAGS:
+            return hinted
+
+        detected = normalize_language_code(detect_language(text, default="en"))
+        if detected in self.LANG_TAGS:
+            return detected
+        return "en"
+
+    def set_language(self, language: str | None) -> None:
+        normalized = normalize_language_code(language)
+        if normalized in self.LANG_TAGS:
+            self.language = normalized
+
+    def preload(self) -> None:
+        self._load_model()
+
+    def warmup(self) -> None:
+        text = WARMUP_TEXTS.get(normalize_language_code(self.language) or "en", "Hello.")
+        self._synthesize_sync(text)
 
     def cleanup(self):
         """Unload model and free resources."""

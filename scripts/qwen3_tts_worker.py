@@ -11,6 +11,17 @@ import traceback
 from pathlib import Path
 
 
+def configure_torch_cache_dirs() -> None:
+    cache_root = Path(
+        os.environ.get("LOCALAPPDATA")
+        or (Path.home() / "AppData" / "Local")
+    ) / "Local-AI-Companion" / "torch-cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(cache_root / "inductor"))
+    os.environ.setdefault("TRITON_CACHE_DIR", str(cache_root / "triton"))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Persistent Qwen3-TTS worker")
     parser.add_argument("--model-id", required=False)
@@ -194,6 +205,7 @@ def synthesize_to_payload(model, voice_clone_prompt, args: argparse.Namespace, r
 def main() -> int:
     args = parse_args()
     try:
+        configure_torch_cache_dirs()
         add_isolated_site_packages(args.site_packages_dir)
 
         import qwen_tts  # noqa: F401

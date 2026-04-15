@@ -106,6 +106,32 @@ class Qwen3ASRProvider(BaseASR):
         self._worker_stderr_thread: threading.Thread | None = None
 
     @staticmethod
+    def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+        if os.name == "nt":
+            system_root = Path(os.environ.get("SystemRoot", "C:/Windows"))
+            taskkill = system_root / "System32" / "taskkill.exe"
+            command = [str(taskkill if taskkill.exists() else "taskkill"), "/PID", str(process.pid), "/T", "/F"]
+            try:
+                subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                    check=False,
+                )
+                return
+            except Exception:
+                pass
+
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except Exception:
+            pass
+
+    @staticmethod
     def _normalize_language_code(language: Optional[str]) -> Optional[str]:
         if not language:
             return None
@@ -291,7 +317,7 @@ class Qwen3ASRProvider(BaseASR):
         try:
             process.wait(timeout=5)
         except Exception:
-            process.kill()
+            self._kill_process_tree(process)
 
         self._worker_process = None
         self._worker_stderr_thread = None
@@ -472,3 +498,8 @@ class Qwen3ASRProvider(BaseASR):
             "device": self.device,
             "dtype": self.dtype,
         }
+
+    def cleanup(self) -> None:
+        self._shutdown_worker()
+        if self._model is not None:
+            self._model = None

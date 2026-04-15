@@ -17,6 +17,7 @@ class FakeTTS:
     def __init__(self, delay: float = 0.01):
         self.delay = delay
         self.call_count = 0
+        self.cancelled = False
 
     async def synthesize(self, text, output_path=None):
         await asyncio.sleep(self.delay)
@@ -37,6 +38,9 @@ class FakeTTS:
             wf.setframerate(24000)
             wf.writeframes(samples)
         return TTSResult(audio_data=buffer.getvalue(), metadata={"file_write_ms": 0.0, "file_read_ms": 0.0})
+
+    def cancel_inflight(self):
+        self.cancelled = True
 
 
 @pytest.mark.asyncio
@@ -123,6 +127,7 @@ async def test_cancel_stops_worker():
 
     # Should not crash, worker stopped cleanly
     assert isinstance(delivered, list)
+    assert tts.cancelled is True
 
 
 @pytest.mark.asyncio
