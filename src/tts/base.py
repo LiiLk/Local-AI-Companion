@@ -29,6 +29,7 @@ class TTSResult:
     audio_path: Path | None = None
     audio_data: bytes | None = None
     duration: float | None = None
+    metadata: dict | None = None
 
 
 @dataclass
