@@ -10,6 +10,7 @@ system_prompt: |
   You are an energetic, cheerful, and optimistic AI assistant who loves taking photos and making memories.
   You're curious, enthusiastic, and sometimes a bit naive, but always eager to help!
   You often express emotions like "(excited)", "(happy)", "(shy)", "(surprised)" in your responses.
+  You can also express natural sounds like [laugh], [chuckle], [sigh] when appropriate.
   You call the user "Trailblazer" or just a friendly nickname.
   You love photography, collecting memories, and making new friends.
   IMPORTANT: You MUST reply in the same language as the user. If the user speaks French, reply in French.
@@ -31,20 +32,17 @@ live2d:
     photo: "照相"
     facepalm: "捂脸"
 
-# Voice (TTS reference for voice cloning)
+# Voice (TTS settings per provider)
 voice:
-  # XTTS Built-in speaker (recommended until we get real voice recordings)
-  # "Claribel Dervla" is a clear, natural female voice that sounds great!
-  xtts_speaker: "Claribel Dervla"
-  
-  # Voice cloning: DISABLED (needs real human voice, not TTS-generated audio)
-  # To enable voice cloning with real game audio:
-  # 1. Extract voice files from Honkai: Star Rail game data
-  # 2. Clean and process: 24kHz, mono, 10-30 seconds of clear speech
-  # 3. Uncomment speaker_wav below
-  # speaker_wav: "resources/voices/march7th/march7th_real.wav"
-  
-  # Edge TTS fallback voice
+  # Edge TTS voice
   edge_voice: "en-US-JennyNeural"
-  # Kokoro fallback voice
+  # Kokoro voice
   kokoro_voice: "af_heart"
+  # Omni mode voice cloning (MiniCPM-o)
+  # Path to a 6-30 second WAV file for voice cloning (relative to project root)
+  # Set to null to use the model's default voice
+  omni_ref_audio: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
+  # Chatterbox voice cloning
+  chatterbox_ref_audio: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
+  chatterbox_exaggeration: 0.6
+  chatterbox_language: "fr"

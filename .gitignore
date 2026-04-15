@@ -48,9 +48,10 @@ logs/
 # Live2D SDK (proprietary license - do not distribute)
 assets/live2d_sdk_web/
 
-# Test files
-test_*.py
+# Ad-hoc test scripts (root only, not tests/ directory)
+/test_*.py
 test_*.mp3
+!tests/
 
 # Secrets (never commit these!)
 .env
@@ -61,3 +62,4 @@ secrets.yaml
 CLAUDE.md
 
 .github/
+tmpclaude*

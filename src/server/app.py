@@ -57,15 +57,28 @@ async def lifespan(app: FastAPI):
     if available:
         print(f"   📦 Available presets: {', '.join(available)}")
     
-    # Display correct LLM info based on provider
-    llm_config = config.get("llm", {})
-    provider = llm_config.get("provider", "ollama")
-    if provider == "llamacpp":
-        model_name = llm_config.get("llamacpp", {}).get("model_name", "unknown")
+    # Display mode info
+    mode = config.get("mode", "pipeline")
+    print(f"   🔧 Mode: {mode}")
+
+    if mode == "omni":
+        omni_config = config.get("omni", {}).get("minicpmo", {})
+        model_id = omni_config.get("model_id", "openbmb/MiniCPM-o-4_5")
+        device = omni_config.get("device", "cuda")
+        print(f"   🧠 Omni: {model_id} on {device}")
+    elif mode == "gemma-omni":
+        gemma_config = config.get("gemma", {})
+        print(f"   🧠 Gemma: {gemma_config.get('model_id', 'google/gemma-4-E4B-it')} on {gemma_config.get('device', 'cuda')}")
+        print(f"   🔊 TTS: Chatterbox Multilingual ONNX Q4")
     else:
+        llm_config = config.get("llm", {})
         model_name = llm_config.get("ollama", {}).get("model", "unknown")
-        
-    print(f"   🧠 LLM: {model_name} ({provider})")
+        tts_provider = config.get("tts", {}).get("provider", "kokoro")
+        asr_provider = config.get("asr", {}).get("provider", "whisper")
+        print(f"   🧠 LLM: {model_name} (ollama)")
+        print(f"   🔊 TTS: {tts_provider}")
+        print(f"   🎤 ASR: {asr_provider}")
+
     print("   ⏳ Models will be loaded on first request (lazy loading)")
     print()
     

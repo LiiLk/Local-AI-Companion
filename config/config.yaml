@@ -1,46 +1,91 @@
 # AI Assistant Configuration
 # You can modify this file without touching the code!
 
+# === MODE ===
+# "pipeline"    : Classic ASR → LLM → TTS pipeline (separate models)
+# "omni"        : Single omni model handles speech-to-speech (MiniCPM-o)
+# "gemma-omni"  : Gemma E4B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
+mode: "omni"
+
+# === OMNI MODEL (speech-to-speech) ===
+# Used when mode: "omni"
+# MiniCPM-o handles audio input, language understanding, and audio output
+# in a single model — no separate ASR/LLM/TTS needed.
+omni:
+  provider: "minicpmo"
+  minicpmo:
+    # Model identifier (Hugging Face)
+    model_id: "openbmb/MiniCPM-o-4_5"
+    # Quantization: "int4" (~11GB VRAM), "int8" (~15GB), null for full precision (~19GB)
+    # Use "int4" if you have a 12GB GPU (e.g. RTX 3060/4070)
+    quantization: "int4"
+    # Device: "cuda" for GPU, "cpu" for CPU (GPU strongly recommended)
+    device: "cuda"
+    # Precision: "bfloat16" (recommended), "float16", "float32"
+    dtype: "bfloat16"
+    # Attention backend: "sdpa" or "flash_attention_2" (if flash-attn installed)
+    attn_implementation: "sdpa"
+    # Initialize sub-modules (disable vision if not needed to save memory/speed)
+    init_vision: false  # Set to true only if using camera/screen capture
+    init_audio: true
+    init_tts: true
+    # Omni behavior
+    use_single_pass: true          # audio in -> text+audio out in one call
+    transcribe_for_history: false  # extra ASR pass for UI/history
+    generate_audio: true
+    stream_tts: false              # avoid sentence-level TTS in omni mode
+    # Maximum new tokens to generate (512-1024 for conversational responses)
+    max_tokens: 512
+    # Sampling parameters
+    temperature: 0.7
+    # Voice cloning: path to a 6-30s WAV reference file (or null for default voice)
+    # The model will clone the speaker's voice from this audio
+    ref_audio_path: null
+    # Supported speech languages (EN + ZH only for audio I/O)
+    speech_languages: ["en", "zh"]
+
+# === GEMMA-OMNI (Gemma E4B + Chatterbox TTS) ===
+# Used when mode: "gemma-omni"
+# Gemma 4 E4B-it handles audio + vision + reasoning in a single model.
+# Chatterbox Multilingual handles TTS with voice cloning and emotions.
+gemma:
+  model_id: "google/gemma-4-E4B-it"
+  quantization: "int4"           # TorchAO int4 (~4.1 GB VRAM)
+  device: "cuda"
+  dtype: "bfloat16"
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.95
+  context_max_turns: 10
+  vision:
+    enabled: true
+    token_budget: 140            # Tokens per image (passive mode)
+    detail_token_budget: 1120    # Tokens per image (detail mode)
+  # VAD tuning (Silero VAD end-of-speech sensitivity)
+  # Lower = faster response, higher = more tolerant of pauses
+  # Default: 30 (~960ms), recommended for conversation: 15 (~480ms)
+  vad_required_misses: 15
+  screen:
+    enabled: true
+    interval: 2.0                # Seconds between captures
+    max_buffer: 30               # Circular buffer size
+    change_threshold: 0.05       # Pixel diff threshold
+    include_in_conversation: true
+
 # === LLM (Brain) ===
+# Used when mode: "pipeline"
 llm:
-  # Which LLM provider to use: "ollama" or "llamacpp"
-  # - "ollama"   : Simple, pre-packaged models (llama3.2, mistral, etc.)
-  # - "llamacpp" : Flexible, supports vision models (Qwen3-VL, LLaVA, etc.)
-  provider: "llamacpp"
-  
-  # ─────────────────────────────────────────────────────────────────────────
-  # 🦙 LLAMA.CPP SERVER (for Qwen3-VL and vision models)
-  # ─────────────────────────────────────────────────────────────────────────
-  # Qwen3-VL-8B is a state-of-the-art vision-language model.
-  # It uses Vulkan for GPU (no CUDA Toolkit needed).
-  # 
-  # Start the server before launching the assistant:
-  #   ./scripts/start_llm_server.sh
-  # or manually:
-  #   cd ~/tools/llama-cpp && LD_LIBRARY_PATH="$PWD" ./llama-server \
-  #     --model models/qwen3-vl-8b/Qwen3-VL-8B-Instruct-Q4_K_M.gguf \
-  #     --mmproj models/qwen3-vl-8b/mmproj-F16.gguf \
-  #     --host 0.0.0.0 --port 8080 --ctx-size 8192 --n-gpu-layers 99 \
-  #     --jinja --no-context-shift
-  # ─────────────────────────────────────────────────────────────────────────
-  llamacpp:
-    base_url: "http://localhost:8080"
-    model_name: "qwen3-vl-8b-instruct"
-    # Recommended parameters for Qwen3-VL
-    max_tokens: 4096        # Qwen3-VL supports long generation
-    temperature: 0.7        # Standard temperature for Qwen models
-    top_p: 0.9              # Top-p sampling
-    top_k: 40               # Top-k sampling  
-    presence_penalty: 1.1   # Reduces repetitions
-  
-  # Ollama configuration (fallback)
+  # Which LLM provider to use: "ollama"
+  provider: "ollama"
+
+  # Ollama configuration
   ollama:
     model: "llama3.2:3b"      # Model to use
     base_url: "http://localhost:11434"
 
 # === Assistant Personality ===
 # ─────────────────────────────────────────────────────────────────────────
-# 🎭 CHARACTER PRESETS
+# CHARACTER PRESETS
 # ─────────────────────────────────────────────────────────────────────────
 # The project is fully modular! You can switch characters by:
 # 1. Using a preset: set character.preset to load from config/characters/
@@ -61,23 +106,23 @@ character:
   # Use a preset (loads from config/characters/<preset>.yaml)
   # Set to null or remove to use custom config below
   preset: "march7th"
-  
+
   # Custom config (used if preset is null)
   # name: "My Character"
   # system_prompt: |
   #   Your custom personality prompt here...
 
 # === TTS (Voice) ===
+# Used when mode: "pipeline" (omni mode handles TTS internally)
 tts:
   # Default TTS provider:
-  # - "xtts"   : XTTS v2 (voice cloning, 17 languages, ~2.8GB VRAM) ⭐ RECOMMENDED
-  # - "kokoro" : Kokoro 82M (local, natural, lightweight, no voice cloning)
-  # - "f5tts"  : F5-TTS (Emotional support, ~4GB VRAM)
-  # - "edge"   : Edge TTS (Microsoft cloud, free)
-  provider: "xtts"
-  
+  # - "kokoro"     : Kokoro 82M (local, natural, lightweight, no voice cloning)
+  # - "edge"       : Edge TTS (Microsoft cloud, free)
+  # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, emotion tags)
+  provider: "kokoro"
+
   # ─────────────────────────────────────────────────────────────────────────
-  # ⚡ STREAMING TTS (sentence-by-sentence)
+  # STREAMING TTS (sentence-by-sentence)
   # ─────────────────────────────────────────────────────────────────────────
   # When enabled, TTS starts synthesizing as soon as a sentence is complete,
   # without waiting for the full LLM response. This dramatically reduces
@@ -86,103 +131,43 @@ tts:
   # - false: Wait for full response before TTS (simpler, more stable)
   # ─────────────────────────────────────────────────────────────────────────
   stream_tts: true
-  
+
   # ─────────────────────────────────────────────────────────────────────────
-  # 🌐 AUTO LANGUAGE DETECTION
+  # AUTO LANGUAGE DETECTION
   # ─────────────────────────────────────────────────────────────────────────
   # When enabled, the TTS will automatically detect the language of the text
   # and use the appropriate voice configuration.
-  # Works with: XTTS (changes language parameter), Kokoro (changes voice),
-  #             Edge TTS (changes voice)
+  # Works with: Kokoro (changes voice), Edge TTS (changes voice)
   # ─────────────────────────────────────────────────────────────────────────
   auto_detect_language: true
-  
+
   # ─────────────────────────────────────────────────────────────────────────
-  # 🗣️ VOICE MAPPING BY LANGUAGE
+  # VOICE MAPPING BY LANGUAGE
   # ─────────────────────────────────────────────────────────────────────────
   # Define which voice to use for each language.
   # Used when auto_detect_language is enabled.
   # ─────────────────────────────────────────────────────────────────────────
   voice_mapping:
-    # F5-TTS voices by language (not currently used, kept for future)
-    # f5tts:
-    #   fr: "f5_march7th_fr"
-    #   en: "f5_march7th_en"
-
-    # XTTS v2 voices by language (speaker name)
-    xtts:
-      fr: "Claribel Dervla"     # Works great for French
-      en: "Claribel Dervla"     # Same voice, multilingual
-      # Or use different speakers:
-      # fr: "Zacharie Aimilios"  # French male voice
-      # en: "Ana Florence"       # English female voice
-    
     # Kokoro voices by language
     kokoro:
       fr: "ff_siwis"    # French female voice
       en: "af_heart"    # American female voice
-    
+
     # Edge TTS voices by language
     edge:
       fr: "fr-FR-DeniseNeural"   # French female voice
       en: "en-US-JennyNeural"    # American female voice
-  
+
   # ─────────────────────────────────────────────────────────────────────────
-  # 🎤 XTTS v2 (Voice Cloning) - Best multilingual choice ⭐ RECOMMENDED
-  # ─────────────────────────────────────────────────────────────────────────
-  # - ~467M params, ~2.8GB VRAM (coexists with Qwen3-VL ~7GB = ~10GB total ✅)
-  # - Voice cloning with only 6 seconds of audio!
-  # - 17 native languages: FR, EN, ES, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO, HI
-  # - 58 high-quality built-in speakers
-  # - Streaming with latency < 200ms
-  # - Model downloaded automatically (~1.9GB)
-  # ─────────────────────────────────────────────────────────────────────────
-  xtts:
-    # Default language (used when auto_detect_language is false)
-    language: "en"
-    
-    # Device: "cuda" for GPU acceleration (~2.8GB VRAM)
-    # With Qwen3-VL (~7GB) + XTTS (~2.8GB) = ~10GB total → fits in 12GB!
-    # Set to "cpu" if you get OOM errors
-    device: "cuda"
-    
-    # Built-in speaker (used if no voice cloning and no voice_mapping)
-    # Some recommended voices:
-    # - "Claribel Dervla" : Clear and natural female voice
-    # - "Ana Florence" : Soft female voice
-    # - "Craig Gutsy" : Energetic male voice
-    # - "Zacharie Aimilios" : French male voice
-    # - "Filip Traverse" : French male voice
-    speaker: "Claribel Dervla"
-    
-    # 🎭 Voice Cloning: DISABLED (needs real human voice recording)
-    # ─────────────────────────────────────────────────────────────────────────
-    # Voice cloning requires a REAL human voice recording (not TTS-generated!)
-    # The march7th_optimized.wav was generated by TTS, which causes poor results.
-    # To enable voice cloning:
-    # 1. Get real voice recordings (e.g., from game files or real recordings)
-    # 2. Process: 24kHz, mono, clean speech, 10-30 seconds
-    # 3. Uncomment the speaker_wav line below
-    # ─────────────────────────────────────────────────────────────────────────
-    # speaker_wav: "resources/voices/march7th/march7th_real.wav"
-  
-  # ─────────────────────────────────────────────────────────────────────────
-  # 🎵 KOKORO TTS (100% local, lightweight, no voice cloning)
+  # KOKORO TTS (100% local, lightweight, no voice cloning)
   # ─────────────────────────────────────────────────────────────────────────
   # - 82M params, ~300MB, natural quality
   # - Voices: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
   # ─────────────────────────────────────────────────────────────────────────
   kokoro_voice: "ff_siwis"
-  
-  # Voice mapping for multi-language switching
-  voice_mapping:
-    kokoro:
-      fr: "ff_siwis"
-      en: "af_heart"
-      jp: "jf_alpha"
-  
+
   # ─────────────────────────────────────────────────────────────────────────
-  # ☁️ EDGE TTS (Microsoft cloud, fallback)
+  # EDGE TTS (Microsoft cloud, fallback)
   # ─────────────────────────────────────────────────────────────────────────
   voice: "en-US-JennyNeural"
   # Other Edge voices:
@@ -190,43 +175,32 @@ tts:
   # - en-GB-SoniaNeural (British female)
   # - fr-FR-DeniseNeural (French female)
   # - ja-JP-NanamiNeural (Japanese female)
-  
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # CHATTERBOX TTS (local, voice cloning, emotion tags)
+  # ─────────────────────────────────────────────────────────────────────────
+  # - ONNX Q4 quantized (~2 GB VRAM)
+  # - Voice cloning from 5-10s reference audio
+  # - Emotion tags: [laugh], [chuckle], [cough], [sigh]
+  # - 23 languages including French
+  # ─────────────────────────────────────────────────────────────────────────
+  chatterbox:
+    model_id: "onnx-community/chatterbox-multilingual-ONNX"
+    quantized: true
+    exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
+    cfg_weight: 0.5        # Classifier-free guidance weight
+
   rate: "+0%"    # Edge TTS speed (-50% to +100%)
   pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)
 
 # === ASR (Speech Recognition) ===
+# Used when mode: "pipeline" (omni mode handles ASR internally)
 asr:
   # Available ASR providers:
   # - "whisper"  : Local, CPU/GPU compatible, good for many languages with distilled models
-  # - "canary"   : NVIDIA Canary 1B v2, best for long audio (6GB+ VRAM required)
-  # - "parakeet" : NVIDIA Parakeet TDT 0.6B v3, fast and accurate (can run on CPU)
-  # ⚠️ With Qwen3-VL (~7GB VRAM), use ASR on CPU to avoid OOM
   provider: "whisper"
-  
-  # ─────────────────────────────────────────────────────────────────────────
-  # 🦜 PARAKEET TDT 0.6B V3 (NVIDIA) - Fast and accurate ⭐ RECOMMENDED
-  # ─────────────────────────────────────────────────────────────────────────
-  # - 600M params, ~2GB VRAM (lightweight!)
-  # - Token-and-Duration Transducer (TDT) architecture
-  # - Excellent on both short AND long audio
-  # - 25 languages supported (including French, English, Spanish...)
-  # - Automatic language detection
-  # - Faster than Canary and Whisper large
-  # - REQUIRES an NVIDIA GPU
-  # ─────────────────────────────────────────────────────────────────────────
-  
-  # ─────────────────────────────────────────────────────────────────────────
-  # 🐤 CANARY 1B V2 (NVIDIA) - State-of-the-art ASR
-  # ─────────────────────────────────────────────────────────────────────────
-  # - Better accuracy than Whisper (WER ~5% for French)
-  # - 25 European languages supported
-  # - Automatic punctuation and capitalization
-  # - REQUIRES an NVIDIA GPU with 6GB+ VRAM
-  # - Faster than Whisper on GPU
-  # ⚠️ Less good on short conversational phrases
-  # ─────────────────────────────────────────────────────────────────────────
-  
-  # Available Whisper models (if provider: "whisper"):
+
+  # Available Whisper models:
   # ─────────────────────────────────────────────────────────────────────────
   # STANDARD MODELS (auto-download from OpenAI):
   # - tiny   : 39M params, very fast, low quality
@@ -237,41 +211,38 @@ asr:
   # - turbo  : 809M params, 6x faster than large-v3 (but sometimes hallucinates)
   # - distil-large-v3: 756M params, fast but ENGLISH ONLY
   # ─────────────────────────────────────────────────────────────────────────
-  # 🇫🇷 FRENCH-OPTIMIZED MODELS (downloaded to models/, gitignored):
+  # FRENCH-OPTIMIZED MODELS (downloaded to models/, gitignored):
   # - french-distil-dec4 : 0.8B params, Excellent FR quality, ~500MB download
   # - french-distil-dec2 : 0.8B params, Faster, very good FR quality
   # These models are fine-tuned on 2500+ hours of French by bofenghuang.
   # WER: 8.37% (much better than standard Whisper for French)
   # ─────────────────────────────────────────────────────────────────────────
-  # model_size: "french-distil-dec2"  # Optimized FR model
-  # model_size: "small"  # Multilingual model (good compromise speed/quality)
-  model_size: "small" # Changed from large-v3-turbo (~10s latency) to small (~2.5s latency)
+  model_size: "small"
 
   # Language: "fr", "en", "auto" or empty "" for auto-detection
   language: "auto"
-  
+
   # Prompt to guide transcription (helps even with forced language)
   # Provides context about the expected conversation style.
-  # Note: Only used by Whisper, Canary doesn't use prompts.
   prompt: "Transcription of a conversation with an AI assistant."
-  
+
   # Device: "cpu" or "cuda" (GPU)
-  # ⚠️ With Qwen3-VL on GPU, use "cpu" for Whisper to avoid OOM
-  # Whisper base on CPU is fast enough (~1-2s per phrase)
+  # With other models on GPU, use "cpu" for Whisper to avoid OOM
+  # Whisper small on CPU is fast enough (~1-2s per phrase)
   device: "cpu"
 
 # === Live2D Avatar ===
 live2d:
   # Enable/disable Live2D overlay
   enabled: false
-  
+
   # Model configuration
   model:
     # Path relative to project root
     path: "assets/models/march7th/"
     # Model settings file name
     settings_file: "march 7th.model3.json"
-  
+
   # Window settings
   window:
     width: 400
@@ -283,7 +254,7 @@ live2d:
     frameless: true
     on_top: true
     transparent: true
-  
+
   # Expression mapping from emotions to model expressions
   # Format: emotion_name: "expression_name"
   default_expression: "happy"
@@ -297,14 +268,14 @@ live2d:
     surprised: "比耶"
     photo: "照相"        # Camera
     facepalm: "捂脸"     # Face cover
-  
+
   # Lip-sync settings
   lip_sync:
     # Smoothing factor (0.0 = instant, 1.0 = very smooth)
     smoothing: 0.3
     # Sensitivity multiplier
     sensitivity: 1.0
-  
+
   # Hotkeys
   hotkeys:
     toggle_visibility: "F12"
