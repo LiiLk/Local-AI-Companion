@@ -352,7 +352,44 @@ def test_pipeline_rewrites_wrong_language_reply_before_tts():
     assert "Rewrite this assistant reply in English" in llm.calls[1][-1].content
     assert tts.calls == ["Stars are beautiful in space."]
     assert [payload.text for payload in payloads] == ["Stars are beautiful in space."]
-    assert chunks == []
+    assert chunks == ["Les etoiles sont magnifiques dans l'espace."]
+
+
+def test_pipeline_keeps_fast_streaming_when_first_sentence_is_already_english():
+    class ScriptedLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.calls.append(messages)
+            yield "Stars are beautiful in space. "
+            yield "They feel endless."
+
+    class FrenchASR:
+        def transcribe(self, audio, language=None):
+            return FakeASRResult("Parle-moi des etoiles.", language="fr", confidence=0.99)
+
+    llm = ScriptedLLM()
+    tts = KokoroProvider()
+    payloads = []
+    pipeline = ConversationPipeline(
+        llm=llm,
+        tts=tts,
+        asr=FrenchASR(),
+        config=ConversationConfig(stream_tts=True, asr_language="auto", reply_language="en"),
+    )
+
+    async def on_audio_ready(payload):
+        payloads.append(payload)
+
+    pipeline.on_audio_ready = on_audio_ready
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result == "Stars are beautiful in space. They feel endless."
+    assert len(llm.calls) == 1
+    assert tts.calls == ["Stars are beautiful in space.", "They feel endless."]
+    assert [payload.text for payload in payloads] == ["Stars are beautiful in space.", "They feel endless."]
 
 
 def test_pipeline_sets_tts_language_from_reply_language_on_init():
