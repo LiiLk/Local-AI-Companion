@@ -401,7 +401,7 @@ class ConversationPipeline:
             instruction = (
                 f"(System: The user is speaking {user_language_name}. "
                 f"Understand the request fully, but reply ONLY in {response_language_name}. "
-                f"Do not switch languages.)"
+                f"Never answer in {user_language_name}. Do not switch languages.)"
             )
         else:
             instruction = (
@@ -411,6 +411,88 @@ class ConversationPipeline:
 
         llm_messages[-1] = Message(role="user", content=f"{instruction}\n\n{last_user.content}")
         return llm_messages
+
+    def _should_validate_response_language(
+        self,
+        user_language_code: Optional[str],
+        response_language_code: str,
+    ) -> bool:
+        configured_reply_language = self._configured_reply_language()
+        if not configured_reply_language:
+            return False
+        normalized_user = self._normalize_supported_language(user_language_code)
+        normalized_response = self._normalize_supported_language(response_language_code)
+        return bool(
+            normalized_user
+            and normalized_response
+            and normalized_user != normalized_response
+        )
+
+    def _response_matches_language(self, text: str, expected_language_code: str) -> bool:
+        clean = self.emotion_detector.strip_markers(text or "").strip()
+        if not clean:
+            return True
+
+        detected = self._normalize_supported_language(
+            str(detect_text_language(clean, default=expected_language_code))
+        )
+        expected = self._normalize_supported_language(expected_language_code)
+        return bool(detected and expected and detected == expected)
+
+    async def _rewrite_response_in_language(
+        self,
+        text: str,
+        response_language_code: str,
+        run_id: int,
+        trace: Optional[dict[str, float | int | str | None]] = None,
+    ) -> str:
+        response_language_name = get_language_name(response_language_code)
+        if not response_language_name:
+            return text
+
+        logger.warning(
+            "LLM replied in the wrong language, rewriting response in %s before TTS",
+            response_language_name,
+        )
+        rewrite_messages = [
+            Message(
+                role="system",
+                content=(
+                    "You rewrite assistant replies. Preserve meaning, tone, and persona. "
+                    f"Output ONLY natural {response_language_name}. "
+                    "Preserve short emotion markers like (excited) or [chuckle] if present."
+                ),
+            ),
+            Message(
+                role="user",
+                content=(
+                    f"Rewrite this assistant reply in {response_language_name}. "
+                    "Do not add commentary.\n\n"
+                    f"{text}"
+                ),
+            ),
+        ]
+        rewritten = await self._get_full_response(
+            rewrite_messages,
+            run_id,
+            trace,
+            emit_chunks=False,
+        )
+        rewritten = rewritten.strip()
+        return rewritten or text
+
+    async def _ensure_response_language(
+        self,
+        text: str,
+        response_language_code: str,
+        run_id: int,
+        trace: Optional[dict[str, float | int | str | None]] = None,
+    ) -> str:
+        if not self._configured_reply_language():
+            return text
+        if self._response_matches_language(text, response_language_code):
+            return text
+        return await self._rewrite_response_in_language(text, response_language_code, run_id, trace)
     
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
         """
@@ -467,12 +549,24 @@ class ConversationPipeline:
             full_response = ""
             trace["llm_start_epoch_ms"] = int(time.time() * 1000)
             
-            if self._should_stream_tts_by_sentence():
+            validate_language = self._should_validate_response_language(user_language, response_language)
+            if self._should_stream_tts_by_sentence() and not validate_language:
                 # Stream TTS sentence-by-sentence
                 full_response = await self._stream_response_with_tts(llm_messages, run_id, trace)
             else:
                 # Get full response first, then TTS
-                full_response = await self._get_full_response(llm_messages, run_id, trace)
+                full_response = await self._get_full_response(
+                    llm_messages,
+                    run_id,
+                    trace,
+                    emit_chunks=not validate_language,
+                )
+                full_response = await self._ensure_response_language(
+                    full_response,
+                    response_language,
+                    run_id,
+                    trace,
+                )
                 await self._synthesize_and_send(full_response, run_id, trace)
             self._ensure_run_active(run_id)
             
@@ -530,10 +624,22 @@ class ConversationPipeline:
             self._ensure_run_active(run_id)
             trace["llm_start_epoch_ms"] = int(time.time() * 1000)
 
-            if self._should_stream_tts_by_sentence():
+            validate_language = self._should_validate_response_language(user_language, response_language)
+            if self._should_stream_tts_by_sentence() and not validate_language:
                 full_response = await self._stream_response_with_tts(llm_messages, run_id, trace)
             else:
-                full_response = await self._get_full_response(llm_messages, run_id, trace)
+                full_response = await self._get_full_response(
+                    llm_messages,
+                    run_id,
+                    trace,
+                    emit_chunks=not validate_language,
+                )
+                full_response = await self._ensure_response_language(
+                    full_response,
+                    response_language,
+                    run_id,
+                    trace,
+                )
                 await self._synthesize_and_send(full_response, run_id, trace)
             self._ensure_run_active(run_id)
 
@@ -604,6 +710,8 @@ class ConversationPipeline:
         messages: list[Message],
         run_id: int,
         trace: Optional[dict[str, float | int | str | None]] = None,
+        *,
+        emit_chunks: bool = True,
     ) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
@@ -613,7 +721,7 @@ class ConversationPipeline:
             if trace is not None and "llm_first_token_epoch_ms" not in trace:
                 trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
             full_response += chunk
-            if self.on_response_chunk:
+            if emit_chunks and self.on_response_chunk:
                 await self._call_async(self.on_response_chunk, chunk)
             self._ensure_run_active(run_id)
         
