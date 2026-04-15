@@ -46,9 +46,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.assistant.audio_service import AudioService, AudioServiceConfig, MicState
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
+from src.assistant.pipeline_runtime import create_pipeline_runtime_components
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
-from src.utils.rvc_config import build_rvc_runtime_config
 
 # Conditional imports
 try:
@@ -462,252 +462,19 @@ class Live2DAssistant:
             self.pipeline = None
 
         else:
-            from src.llm import OllamaLLM, OpenRouterLLM, GemmaTextVisionLLM
-            from src.tts import (
-                ChatterboxTTSProvider,
-                EdgeTTSProvider,
-                KokoroProvider,
-                Qwen3TTSProvider,
-                RoutedTTSProvider,
-            )
-            from src.asr import WhisperProvider
-            from src.omni import GemmaProvider
-            from src.tts.rvc_provider import RVCConverter
-
-            llm_config = self.config.get('llm', {})
-            tts_config = self.config.get('tts', {})
-            asr_config = self.config.get('asr', {})
-            gemma_config = self.config.get('gemma', {})
-            voice_config = character_config.get('voice', {})
-
-            # Create LLM
-            llm_provider = llm_config.get('provider', 'ollama')
-            if llm_provider == 'gemma':
-                gemma_model = GemmaProvider(
-                    model_id=gemma_config.get('model_id', 'google/gemma-4-E4B-it'),
-                    device=gemma_config.get('device', 'cuda'),
-                    quantization=gemma_config.get('quantization', 'int4'),
-                    max_new_tokens=gemma_config.get('max_new_tokens', 96),
-                    temperature=gemma_config.get('temperature', 0.7),
-                    top_p=gemma_config.get('top_p', 0.95),
-                    context_max_turns=gemma_config.get('context_max_turns', 10),
-                    cpu_offload=gemma_config.get('cpu_offload', True),
-                    offload_dir=gemma_config.get('offload_dir'),
-                )
-                llm = GemmaTextVisionLLM(
-                    gemma=gemma_model,
-                    screen_config=gemma_config.get('screen', {}),
-                )
-                logger.info(
-                    "LLM: Gemma text+vision (%s)",
-                    gemma_config.get('model_id', 'google/gemma-4-E4B-it'),
-                )
-            elif llm_provider == 'openrouter':
-                openrouter_cfg = llm_config.get('openrouter', {})
-                llm = OpenRouterLLM(
-                    model=openrouter_cfg.get('model', 'openai/gpt-4.1-mini'),
-                    api_key=openrouter_cfg.get('api_key'),
-                    api_key_env=openrouter_cfg.get('api_key_env', 'OPENROUTER_API_KEY'),
-                    base_url=openrouter_cfg.get('base_url', 'https://openrouter.ai/api/v1'),
-                    app_url=openrouter_cfg.get('app_url'),
-                    app_title=openrouter_cfg.get('app_title', 'Local-AI-Companion'),
-                    options=openrouter_cfg.get('options'),
-                    required_input_modalities=openrouter_cfg.get('required_input_modalities'),
-                        request_timeout_sec=openrouter_cfg.get('request_timeout_sec', 180),
-                        preload_timeout_sec=openrouter_cfg.get('preload_timeout_sec', 60),
-                    )
-                logger.info("LLM: OpenRouter (%s)", openrouter_cfg.get('model', 'openai/gpt-4.1-mini'))
-            else:
-                ollama_cfg = llm_config.get('ollama', {})
-                llm = OllamaLLM(
-                    model=ollama_cfg.get('model', 'llama3.2:3b'),
-                    base_url=ollama_cfg.get('base_url', 'http://localhost:11434'),
-                    think=ollama_cfg.get('think'),
-                    options=ollama_cfg.get('options'),
-                    request_timeout_sec=ollama_cfg.get('request_timeout_sec', 180),
-                    preload_timeout_sec=ollama_cfg.get('preload_timeout_sec', 120),
-                )
-                logger.info(f"LLM: Ollama ({ollama_cfg.get('model')})")
-
-            # Create TTS
-            tts_provider = tts_config.get('provider', 'kokoro')
-            if tts_provider == 'kokoro':
-                voice = voice_config.get('kokoro_voice') or tts_config.get('kokoro_voice', 'ff_siwis')
-                tts = KokoroProvider(voice=voice)
-                logger.info(f"TTS: Kokoro ({voice})")
-            elif tts_provider == 'qwen3':
-                qwen3_config = tts_config.get('qwen3', {})
-                ref_audio = (
-                    voice_config.get('qwen_ref_audio')
-                    or voice_config.get('chatterbox_ref_audio')
-                    or voice_config.get('omni_ref_audio')
-                    or qwen3_config.get('ref_audio_path')
-                )
-                ref_text = voice_config.get('qwen_ref_text') or qwen3_config.get('ref_text')
-                kokoro_voice = voice_config.get('kokoro_voice') or tts_config.get('kokoro_voice', 'ff_siwis')
-                kokoro = KokoroProvider(voice=kokoro_voice)
-                chatterbox_config = tts_config.get('chatterbox', {})
-                chatterbox = ChatterboxTTSProvider(
-                    model_id=chatterbox_config.get('model_id', 'onnx-community/chatterbox-multilingual-ONNX'),
-                    ref_audio_path=voice_config.get('chatterbox_ref_audio'),
-                    exaggeration=voice_config.get('chatterbox_exaggeration', 0.5),
-                    cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
-                    language=voice_config.get('chatterbox_language', 'en'),
-                    prefer_full_gpu=chatterbox_config.get('prefer_full_gpu', False),
-                )
-                qwen3_provider = None
-                degraded_reason = None
-                resolved_qwen_mode, qwen_mode_reason = Qwen3TTSProvider.resolve_mode_for_model(
-                    qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
-                    qwen3_config.get('mode', 'voice_clone'),
-                )
-                if qwen_mode_reason:
-                    degraded_reason = qwen_mode_reason
-                    logger.warning(qwen_mode_reason)
-                if Qwen3TTSProvider.is_available(
-                    backend=qwen3_config.get('backend', 'worker'),
-                    python_path=qwen3_config.get('python_path'),
-                    site_packages_dir=qwen3_config.get('site_packages_dir'),
-                    worker_script=qwen3_config.get('worker_script'),
-                ):
-                    qwen3_provider = Qwen3TTSProvider(
-                        model_id=qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
-                        mode=resolved_qwen_mode,
-                        language=qwen3_config.get('language', 'auto'),
-                        speaker=qwen3_config.get('speaker'),
-                        instruct=qwen3_config.get('instruct'),
-                        ref_audio_path=ref_audio,
-                        ref_text=ref_text,
-                        x_vector_only_mode=qwen3_config.get('x_vector_only_mode'),
-                        device=qwen3_config.get('device', 'cuda:0'),
-                        dtype=qwen3_config.get('dtype', 'bfloat16'),
-                        attn_implementation=qwen3_config.get('attn_implementation', 'flash_attention_2'),
-                        backend=qwen3_config.get('backend', 'worker'),
-                        python_path=qwen3_config.get('python_path'),
-                        site_packages_dir=qwen3_config.get('site_packages_dir'),
-                        worker_script=qwen3_config.get('worker_script'),
-                        request_timeout_sec=qwen3_config.get('request_timeout_sec', 20),
-                    )
-                else:
-                    runtime_reason = (
-                        "Qwen3-TTS runtime is not installed. "
-                        "Falling back to Chatterbox/Kokoro."
-                    )
-                    degraded_reason = f"{degraded_reason} {runtime_reason}".strip() if degraded_reason else runtime_reason
-
-                tts = RoutedTTSProvider(
-                    qwen3=qwen3_provider,
-                    chatterbox=chatterbox,
-                    kokoro=kokoro,
-                    default_language=qwen3_config.get('language', 'auto'),
-                    provider_order_by_language=tts_config.get('routed', {}).get('provider_order_by_language'),
-                    preload_fallbacks=tts_config.get('routed', {}).get('preload_fallbacks', False),
-                    warmup_fallbacks=tts_config.get('routed', {}).get('warmup_fallbacks', False),
-                )
-                if degraded_reason:
-                    tts.degraded_reason = degraded_reason
-                logger.info(
-                    "TTS: routed (qwen3=%s, chatterbox=%s, kokoro=%s)",
-                    "ready" if qwen3_provider else "fallback-only",
-                    chatterbox.__class__.__name__,
-                    kokoro.voice,
-                )
-            elif tts_provider == 'chatterbox':
-                chatterbox_config = tts_config.get('chatterbox', {})
-                ref_audio = voice_config.get('chatterbox_ref_audio')
-                exaggeration = voice_config.get('chatterbox_exaggeration', 0.5)
-                language = voice_config.get('chatterbox_language', 'en')
-                tts = ChatterboxTTSProvider(
-                    model_id=chatterbox_config.get('model_id', 'onnx-community/chatterbox-multilingual-ONNX'),
-                    ref_audio_path=ref_audio,
-                    exaggeration=exaggeration,
-                    cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
-                    language=language,
-                    prefer_full_gpu=chatterbox_config.get('prefer_full_gpu', False),
-                )
-                logger.info(f"TTS: Chatterbox (ref={ref_audio}, exag={exaggeration})")
-            else:
-                voice = tts_config.get('voice', 'en-US-JennyNeural')
-                tts = EdgeTTSProvider(voice=voice)
-                logger.info(f"TTS: Edge ({voice})")
-
-            # Create ASR
-            asr_provider = asr_config.get('provider', 'whisper')
-            if asr_provider == 'qwen3':
-                from src.asr.qwen3_asr_provider import Qwen3ASRProvider
-                qwen3_cfg = asr_config.get('qwen3', {})
-                asr = Qwen3ASRProvider(
-                    model_id=qwen3_cfg.get('model_id', 'Qwen/Qwen3-ASR-0.6B'),
-                    device=qwen3_cfg.get('device', 'cuda:0'),
-                    dtype=qwen3_cfg.get('dtype', 'bfloat16'),
-                    max_new_tokens=qwen3_cfg.get('max_new_tokens', 256),
-                    backend=qwen3_cfg.get('backend', 'worker'),
-                    python_path=qwen3_cfg.get('python_path'),
-                    site_packages_dir=qwen3_cfg.get('site_packages_dir'),
-                    worker_script=qwen3_cfg.get('worker_script'),
-                )
-                logger.info(f"ASR: Qwen3-ASR ({qwen3_cfg.get('model_id', '0.6B')})")
-            else:
-                device = asr_config.get('device', 'cpu')
-                model_size = asr_config.get('model_size', 'base')
-                compute_type = asr_config.get('compute_type', 'float16')
-                prompt = asr_config.get('prompt')
-                asr = WhisperProvider(
-                    model_size=model_size,
-                    device=device,
-                    compute_type=compute_type,
-                    initial_prompt=prompt,
-                    beam_size=asr_config.get('beam_size', 1),
-                )
-                logger.info(f"ASR: Whisper {model_size} on {device}")
-
-            # Create optional RVC post-processor
-            rvc = None
-            rvc_config = build_rvc_runtime_config(self.config)
-            if rvc_config:
-                if RVCConverter.is_available(
-                    backend=rvc_config.get('backend', 'auto'),
-                    python_path=rvc_config.get('python_path'),
-                    site_packages_dir=rvc_config.get('site_packages_dir'),
-                    worker_script=rvc_config.get('worker_script'),
-                ):
-                    try:
-                        rvc = RVCConverter(
-                            model_path=rvc_config.get('model_path'),
-                            index_path=rvc_config.get('index_path'),
-                            device=rvc_config.get('device', 'cuda:0'),
-                            f0_method=rvc_config.get('f0_method', 'rmvpe'),
-                            index_rate=rvc_config.get('index_rate', 0.75),
-                            protect=rvc_config.get('protect', 0.33),
-                            backend=rvc_config.get('backend', 'auto'),
-                            python_path=rvc_config.get('python_path'),
-                            site_packages_dir=rvc_config.get('site_packages_dir'),
-                            worker_script=rvc_config.get('worker_script'),
-                            f0_up_key=rvc_config.get('f0_up_key', 0.0),
-                            output_freq=rvc_config.get('output_freq'),
-                        )
-                        logger.info("RVC: %s", rvc_config.get('model_path'))
-                    except Exception as exc:
-                        logger.warning("RVC init failed, voice conversion disabled: %s", exc)
-                else:
-                    logger.warning("RVC requested but backend is not usable in this environment")
-
-            # Create pipeline
-            pipeline_config = ConversationConfig(
-                character_name=character_config.get('name', 'AI'),
-                system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
-                stream_tts=tts_config.get('stream_tts', True),
-                auto_detect_language=tts_config.get('auto_detect_language', True),
-                asr_language=asr_config.get('language', 'auto'),
-                reply_language=self.config.get('pipeline', {}).get('reply_language'),
-            )
+            runtime = create_pipeline_runtime_components(self.config)
+            logger.info("LLM: %s", runtime.llm_summary)
+            logger.info("TTS: %s", runtime.tts_summary)
+            logger.info("ASR: %s", runtime.asr_summary)
+            if runtime.rvc_summary:
+                logger.info("RVC: %s", runtime.rvc_summary)
 
             self.pipeline = ConversationPipeline(
-                llm=llm,
-                tts=tts,
-                asr=asr,
-                config=pipeline_config,
-                rvc=rvc,
+                llm=runtime.llm,
+                tts=runtime.tts,
+                asr=runtime.asr,
+                config=runtime.conversation_config,
+                rvc=runtime.rvc,
             )
 
             # Set pipeline callbacks
