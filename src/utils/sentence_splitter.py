@@ -14,6 +14,7 @@ ABBREVIATIONS = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "etc", "vs",
 # Sentence-ending pattern: punctuation followed by space or end-of-string
 # We look for .!? followed by at least one whitespace character
 SENTENCE_BOUNDARY = re.compile(r'([.!?]+)(\s+)')
+CLAUSE_BOUNDARY = re.compile(r'([,;:])(\s+)')
 
 
 class SentenceSplitter:
@@ -32,10 +33,24 @@ class SentenceSplitter:
             send_to_tts(remaining)
     """
 
-    def __init__(self, min_length: int = 1):
+    def __init__(
+        self,
+        min_length: int = 1,
+        min_clause_length: int = 48,
+        min_clause_words: int = 6,
+        faster_first_response: bool = False,
+        first_fragment_length: int = 32,
+        first_fragment_words: int = 6,
+    ):
         self._buffer = ""
         self._pending: list[str] = []
         self._min_length = min_length
+        self._min_clause_length = min_clause_length
+        self._min_clause_words = min_clause_words
+        self._faster_first = faster_first_response
+        self._first_fragment_length = first_fragment_length
+        self._first_fragment_words = first_fragment_words
+        self._sentence_count = 0
 
     def feed(self, text: str) -> None:
         """Add text to the buffer and extract complete sentences."""
@@ -87,6 +102,39 @@ class SentenceSplitter:
             self._buffer = self._buffer[consume_end:]
             search_start = 0  # Reset since buffer changed
 
+        while True:
+            match = CLAUSE_BOUNDARY.search(self._buffer)
+            if not match:
+                break
+
+            clause_end = match.start() + len(match.group(1))
+            consume_end = match.end()
+            candidate = self._buffer[:clause_end].strip()
+            word_count = len(candidate.split())
+
+            # Lower thresholds for the first sentence to reduce time-to-first-audio
+            if self._faster_first and self._sentence_count == 0:
+                clause_min_len = 20
+                clause_min_words = 3
+            else:
+                clause_min_len = self._min_clause_length
+                clause_min_words = self._min_clause_words
+
+            if len(candidate) < clause_min_len or word_count < clause_min_words:
+                break
+
+            self._pending.append(candidate)
+            self._buffer = self._buffer[consume_end:]
+
+        if self._should_emit_first_fragment():
+            stripped = self._buffer.strip()
+            split_at = stripped.rfind(" ", 0, self._first_fragment_length + 1)
+            if split_at >= self._min_length:
+                candidate = stripped[:split_at].strip()
+                if candidate:
+                    self._pending.append(candidate)
+                    self._buffer = stripped[split_at + 1 :].lstrip()
+
         # Handle sentence at end of buffer (punctuation at very end, no trailing space).
         # Only emit if the buffer ends with sentence-ending punctuation.
         stripped = self._buffer.rstrip()
@@ -101,9 +149,24 @@ class SentenceSplitter:
                 self._pending.append(candidate)
                 self._buffer = self._buffer[self._buffer.rindex(stripped[-1]) + 1:]
 
+    def _should_emit_first_fragment(self) -> bool:
+        """Allow the first audio chunk to start before punctuation arrives."""
+        if not self._faster_first or self._sentence_count > 0 or self._pending:
+            return False
+
+        stripped = self._buffer.strip()
+        if len(stripped) < self._first_fragment_length:
+            return False
+        if len(stripped.split()) < self._first_fragment_words:
+            return False
+        if not any(char.isspace() for char in stripped[: self._first_fragment_length + 1]):
+            return False
+        return True
+
     def get_sentences(self) -> list[str]:
         """Return and clear all complete sentences found so far."""
         sentences = self._pending
+        self._sentence_count += len(sentences)
         self._pending = []
         return sentences
 

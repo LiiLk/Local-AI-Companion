@@ -5,146 +5,881 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Live2D Avatar - Local AI Companion</title>
     <style>
+        :root {
+            color-scheme: dark;
+            --panel-bg: rgba(8, 15, 26, 0.22);
+            --panel-border: rgba(255, 255, 255, 0.14);
+            --panel-shadow: 0 12px 26px rgba(0, 0, 0, 0.14);
+            --text-main: #eef4ff;
+            --text-dim: rgba(238, 244, 255, 0.72);
+            --accent: #7bd2ff;
+            --accent-soft: rgba(123, 210, 255, 0.18);
+            --warn: #ffd36b;
+            --danger: #ff7a7a;
+            --ok: #8dffb2;
+            --muted: rgba(255, 255, 255, 0.45);
+            --bubble-user: rgba(255, 255, 255, 0.11);
+            --bubble-assistant: rgba(123, 210, 255, 0.11);
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         html, body {
             width: 100%;
             height: 100%;
             overflow: hidden;
-            /* Transparent background for overlay mode */
-            background: transparent;
+            background: transparent !important;
+            background-color: transparent !important;
+            font-family: "Segoe UI", "Helvetica Neue", sans-serif;
         }
-        
+
+        body {
+            -webkit-app-region: no-drag;
+            color: var(--text-main);
+            background: transparent !important;
+        }
+
         #live2d-canvas {
+            position: fixed;
+            inset: 0;
             width: 100%;
             height: 100%;
             display: block;
-            /* Allow click-through on transparent areas */
-            pointer-events: auto;
+            pointer-events: none;
+            z-index: 0;
         }
-        
-        /* Debug info overlay - hidden by default */
+
+        #window-drag-surface {
+            position: fixed;
+            inset: 0;
+            pointer-events: auto;
+            background: transparent;
+            z-index: 1;
+        }
+
+        #shell {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            pointer-events: none;
+            padding: 10px;
+            z-index: 2;
+        }
+
+        .panel {
+            pointer-events: auto;
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--panel-border);
+            box-shadow: var(--panel-shadow);
+            background: linear-gradient(160deg, rgba(14, 24, 39, 0.22), rgba(8, 13, 22, 0.14));
+        }
+
+        #top-bar {
+            align-self: flex-end;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            border-radius: 999px;
+            padding: 7px 11px;
+            max-width: min(200px, 52vw);
+        }
+
+        #status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--warn);
+            box-shadow: 0 0 18px rgba(255, 211, 107, 0.75);
+            flex: none;
+        }
+
+        #status-text {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        #status-meta {
+            font-size: 10px;
+            color: var(--text-dim);
+        }
+
+        #bottom-stack {
+            align-self: stretch;
+            display: flex;
+            justify-content: flex-end;
+            align-items: flex-end;
+            padding-bottom: 10px;
+        }
+
+        #dock {
+            width: min(210px, 54vw);
+            display: grid;
+            gap: 8px;
+            pointer-events: auto;
+            margin-right: 2px;
+        }
+
+        .bubble {
+            border-radius: 16px;
+            padding: 9px 11px;
+            min-height: 36px;
+            display: grid;
+            gap: 5px;
+        }
+
+        .bubble-label {
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-dim);
+        }
+
+        .bubble-text {
+            font-size: 12px;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .compact-panel {
+            border-radius: 18px;
+            padding: 9px 10px;
+        }
+
+        #user-bubble {
+            background: var(--bubble-user);
+        }
+
+        #assistant-bubble {
+            background: var(--bubble-assistant);
+        }
+
+        #transcript-stack {
+            display: grid;
+            gap: 8px;
+        }
+
+        #transcript-stack.hidden,
+        #composer.hidden {
+            display: none;
+        }
+
+        #controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            justify-content: flex-end;
+        }
+
+        .control-button {
+            height: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-main);
+            padding: 0 12px;
+            cursor: pointer;
+            transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+            min-width: 92px;
+        }
+
+        .control-button:hover {
+            background: rgba(255, 255, 255, 0.14);
+            border-color: rgba(255, 255, 255, 0.26);
+            transform: translateY(-1px);
+        }
+
+        .control-button:active {
+            transform: translateY(0);
+        }
+
+        .control-button.warn {
+            border-color: rgba(255, 122, 122, 0.35);
+            background: rgba(255, 122, 122, 0.12);
+        }
+
+        .control-button.primary {
+            background: linear-gradient(135deg, rgba(123, 210, 255, 0.32), rgba(123, 210, 255, 0.18));
+            border-color: rgba(123, 210, 255, 0.38);
+        }
+
+        #text-input {
+            width: 100%;
+            height: 38px;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-main);
+            padding: 0 14px;
+            outline: none;
+            grid-column: 1 / -1;
+        }
+
+        #composer {
+            display: grid;
+            gap: 8px;
+        }
+
+        #composer-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        #text-input::placeholder {
+            color: var(--muted);
+        }
+
         #debug-info {
             position: fixed;
-            top: 10px;
+            top: 58px;
             left: 10px;
-            background: rgba(0, 0, 0, 0.7);
-            color: #00ff00;
-            font-family: monospace;
+            width: 220px;
+            border-radius: 16px;
+            padding: 12px;
+            font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
             font-size: 12px;
-            padding: 10px;
-            border-radius: 5px;
+            line-height: 1.5;
+            color: var(--ok);
             display: none;
             z-index: 1000;
         }
-        
+
         #debug-info.visible {
             display: block;
         }
-        
-        /* Status indicator */
-        #status {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            background: rgba(0, 0, 0, 0.5);
-            color: white;
-            font-family: sans-serif;
-            font-size: 11px;
-            padding: 5px 10px;
-            border-radius: 3px;
+
+        #error-banner {
             display: none;
+            border-radius: 14px;
+            padding: 10px 12px;
+            color: #fff3f3;
+            background: rgba(255, 122, 122, 0.16);
+            border: 1px solid rgba(255, 122, 122, 0.32);
+        }
+
+        @media (max-width: 640px) {
+            #shell {
+                padding: 10px;
+            }
+
+            #dock {
+                width: min(210px, 100%);
+            }
         }
     </style>
 </head>
 <body>
-    <!-- Main canvas for Live2D rendering -->
-    <canvas id="live2d-canvas"></canvas>
-    
-    <!-- Debug overlay -->
-    <div id="debug-info">
+    <canvas id="live2d-canvas" style="background: transparent;"></canvas>
+    <div id="window-drag-surface" data-tauri-drag-region></div>
+
+    <div id="shell">
+        <div id="top-bar" class="panel" data-tauri-drag-region>
+            <div id="status-dot"></div>
+            <div>
+                <div id="status-text">Loading</div>
+                <div id="status-meta">March 7th desktop overlay</div>
+            </div>
+        </div>
+
+        <div id="bottom-stack">
+            <div id="dock">
+                <div id="error-banner"></div>
+
+                <div id="transcript-stack" class="hidden">
+                    <div id="user-bubble" class="bubble panel">
+                        <div class="bubble-label">You</div>
+                        <div id="user-text" class="bubble-text">Waiting for speech or text input...</div>
+                    </div>
+
+                    <div id="assistant-bubble" class="bubble panel">
+                        <div class="bubble-label">Assistant</div>
+                        <div id="assistant-text" class="bubble-text">Desktop shell readying...</div>
+                    </div>
+                </div>
+
+                <div id="controls" class="compact-panel panel">
+                    <button id="mute-button" class="control-button" type="button">Mute</button>
+                    <button id="interrupt-button" class="control-button warn" type="button">Interrupt</button>
+                    <button id="chat-toggle-button" class="control-button" type="button">Show Chat</button>
+                </div>
+
+                <div id="composer" class="compact-panel panel hidden">
+                    <input id="text-input" type="text" placeholder="Type a message..." />
+                    <div id="composer-row">
+                        <div class="bubble-label">Desktop turn</div>
+                        <button id="send-button" class="control-button primary" type="button">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="debug-info" class="panel">
         <div>FPS: <span id="fps">0</span></div>
         <div>Model: <span id="model-name">-</span></div>
         <div>Lip Sync: <span id="lip-value">0.00</span></div>
         <div>Expression: <span id="expression-name">-</span></div>
+        <div>Turn: <span id="debug-turn">-</span></div>
+        <div>Mic: <span id="debug-mic">loading</span></div>
     </div>
-    
-    <!-- Status indicator -->
-    <div id="status">Loading...</div>
-    
-    <!-- Live2D Cubism Core SDK -->
-    <script src="../../assets/live2d_sdk_web/Core/live2dcubismcore.min.js"></script>
-    
-    <!-- Our Live2D module -->
-    <script src="./live2d.js"></script>
-    
+
+    <script src="./desktop-bridge.js"></script>
+
     <script>
-        // Initialize when DOM is ready
-        document.addEventListener('DOMContentLoaded', async () => {
-            const statusEl = document.getElementById('status');
-            
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const existing = document.querySelector(`script[data-runtime-src="${src}"]`);
+                if (existing) {
+                    if (existing.dataset.loaded === 'true') {
+                        resolve();
+                        return;
+                    }
+                    existing.addEventListener('load', () => resolve(), { once: true });
+                    existing.addEventListener('error', () => reject(new Error(`Failed to load script: ${src}`)), { once: true });
+                    return;
+                }
+
+                const script = document.createElement('script');
+                script.src = src;
+                script.async = false;
+                script.dataset.runtimeSrc = src;
+                script.addEventListener('load', () => {
+                    script.dataset.loaded = 'true';
+                    resolve();
+                }, { once: true });
+                script.addEventListener('error', () => reject(new Error(`Failed to load script: ${src}`)), { once: true });
+                document.head.appendChild(script);
+            });
+        }
+
+        const LIVE2D_CORE_SRC = './runtime-assets/live2d_sdk_web/Core/live2dcubismcore.min.js';
+        const LIVE2D_MANAGER_SRC = './live2d.js';
+        const MARCH7TH_MODEL_PATH = './runtime-assets/models/march7th_tauri/';
+        const ui = {
+            statusText: document.getElementById('status-text'),
+            statusMeta: document.getElementById('status-meta'),
+            statusDot: document.getElementById('status-dot'),
+            userText: document.getElementById('user-text'),
+            assistantText: document.getElementById('assistant-text'),
+            muteButton: document.getElementById('mute-button'),
+            interruptButton: document.getElementById('interrupt-button'),
+            chatToggleButton: document.getElementById('chat-toggle-button'),
+            sendButton: document.getElementById('send-button'),
+            textInput: document.getElementById('text-input'),
+            errorBanner: document.getElementById('error-banner'),
+            debugInfo: document.getElementById('debug-info'),
+            debugTurn: document.getElementById('debug-turn'),
+            debugMic: document.getElementById('debug-mic'),
+            transcriptStack: document.getElementById('transcript-stack'),
+            composer: document.getElementById('composer'),
+        };
+
+        const state = {
+            backend: null,
+            runtime: null,
+            activeTurnId: null,
+            responseText: '',
+            audioQueue: [],
+            isPlaying: false,
+            playbackGeneration: 0,
+            currentSource: null,
+            audioContext: null,
+            lipSyncInterval: null,
+            chatVisible: false,
+            metricsByTurn: new Map(),
+        };
+
+        function applyChatVisibility() {
+            ui.transcriptStack.classList.toggle('hidden', !state.chatVisible);
+            ui.composer.classList.toggle('hidden', !state.chatVisible);
+            ui.chatToggleButton.textContent = state.chatVisible ? 'Hide Chat' : 'Show Chat';
+        }
+
+        function toggleChat() {
+            state.chatVisible = !state.chatVisible;
+            applyChatVisibility();
+        }
+
+        function toneColor(tone) {
+            switch (tone) {
+                case 'ok':
+                    return ['var(--ok)', '0 0 18px rgba(141, 255, 178, 0.7)'];
+                case 'danger':
+                    return ['var(--danger)', '0 0 18px rgba(255, 122, 122, 0.7)'];
+                case 'accent':
+                    return ['var(--accent)', '0 0 18px rgba(123, 210, 255, 0.7)'];
+                default:
+                    return ['var(--warn)', '0 0 18px rgba(255, 211, 107, 0.7)'];
+            }
+        }
+
+        function setStatus(text, meta = '', tone = 'warn') {
+            const [color, glow] = toneColor(tone);
+            ui.statusText.textContent = text;
+            ui.statusMeta.textContent = meta || 'Desktop realtime pipeline';
+            ui.statusDot.style.background = color;
+            ui.statusDot.style.boxShadow = glow;
+        }
+
+        function setError(message) {
+            if (!message) {
+                ui.errorBanner.style.display = 'none';
+                ui.errorBanner.textContent = '';
+                return;
+            }
+            ui.errorBanner.style.display = 'block';
+            ui.errorBanner.textContent = message;
+        }
+
+        function syncDebug() {
+            ui.debugTurn.textContent = state.activeTurnId ?? '-';
+            ui.debugMic.textContent = state.runtime?.mic_state ?? 'loading';
+        }
+
+        function setUserText(text) {
+            ui.userText.textContent = text || 'Waiting for speech or text input...';
+        }
+
+        function clearAssistantText() {
+            state.responseText = '';
+            ui.assistantText.textContent = 'Thinking...';
+        }
+
+        function appendAssistantChunk(chunk) {
+            state.responseText += chunk || '';
+            ui.assistantText.textContent = state.responseText || 'Thinking...';
+        }
+
+        function promoteTurn(turnId) {
+            if (turnId == null) {
+                return true;
+            }
+            if (state.activeTurnId == null || turnId >= state.activeTurnId) {
+                if (turnId > state.activeTurnId) {
+                    state.responseText = '';
+                    ui.assistantText.textContent = 'Thinking...';
+                }
+                state.activeTurnId = turnId;
+                syncDebug();
+                return true;
+            }
+            return false;
+        }
+
+        function shouldIgnoreTurn(turnId) {
+            return turnId != null && state.activeTurnId != null && turnId < state.activeTurnId;
+        }
+
+        function getTurnMetrics(turnId) {
+            const key = turnId ?? '__global__';
+            let metrics = state.metricsByTurn.get(key);
+            if (!metrics) {
+                metrics = {};
+                state.metricsByTurn.set(key, metrics);
+            }
+            return metrics;
+        }
+
+        function logTrace(label, details = {}) {
+            console.info(`[desktop-trace] ${label}`, details);
+        }
+
+        function ensureAudioContext() {
+            if (!state.audioContext) {
+                state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (state.audioContext.state === 'suspended') {
+                return state.audioContext.resume().then(() => state.audioContext);
+            }
+            return Promise.resolve(state.audioContext);
+        }
+
+        function stopLipSync() {
+            if (state.lipSyncInterval) {
+                clearInterval(state.lipSyncInterval);
+                state.lipSyncInterval = null;
+            }
+            window.Live2DAPI?.setLipSync?.(0);
+        }
+
+        function stopPlayback() {
+            state.playbackGeneration += 1;
+            state.audioQueue = [];
+            state.isPlaying = false;
+            if (state.currentSource) {
+                try {
+                    state.currentSource.onended = null;
+                    state.currentSource.stop(0);
+                } catch (error) {
+                    console.debug('Ignoring source stop error', error);
+                }
+                state.currentSource = null;
+            }
+            stopLipSync();
+        }
+
+        async function playNextAudio() {
+            if (state.isPlaying || state.audioQueue.length === 0) {
+                return;
+            }
+
+            state.isPlaying = true;
+            const item = state.audioQueue.shift();
+            const generation = state.playbackGeneration;
+            const turnId = item.turn_id ?? state.activeTurnId ?? null;
+            const metrics = getTurnMetrics(turnId);
+            metrics.audioDequeuedAt = performance.now();
+
             try {
-                statusEl.style.display = 'block';
-                statusEl.textContent = 'Initializing Live2D...';
-                
-                // Initialize Live2D with March 7th model
-                // The model will load with its natural default appearance
-                // Only expression parameters (detected from .exp3.json) will be modified
+                const audioContext = await ensureAudioContext();
+                const binary = atob(item.audio);
+                const bytes = new Uint8Array(binary.length);
+                for (let index = 0; index < binary.length; index += 1) {
+                    bytes[index] = binary.charCodeAt(index);
+                }
+
+                const decodeStartedAt = performance.now();
+                const decoded = await audioContext.decodeAudioData(bytes.buffer.slice(0));
+                const decodeFinishedAt = performance.now();
+                if (generation !== state.playbackGeneration) {
+                    state.isPlaying = false;
+                    return;
+                }
+
+                if (item.expression) {
+                    window.Live2DAPI?.setExpression?.(item.expression);
+                }
+
+                const source = audioContext.createBufferSource();
+                source.buffer = decoded;
+                source.connect(audioContext.destination);
+                state.currentSource = source;
+
+                const volumes = Array.isArray(item.volumes) ? item.volumes : [];
+                if (volumes.length > 0) {
+                    let index = 0;
+                    const tickMs = Math.max(16, Math.round((decoded.duration * 1000) / volumes.length));
+                    state.lipSyncInterval = window.setInterval(() => {
+                        if (index >= volumes.length || generation !== state.playbackGeneration) {
+                            stopLipSync();
+                            return;
+                        }
+                        window.Live2DAPI?.setLipSync?.(volumes[index] ?? 0);
+                        index += 1;
+                    }, tickMs);
+                }
+
+                source.onended = () => {
+                    if (state.currentSource === source) {
+                        state.currentSource = null;
+                    }
+                    stopLipSync();
+                    state.isPlaying = false;
+                    if (state.audioQueue.length > 0) {
+                        playNextAudio();
+                    } else if (state.runtime?.mic_state === 'muted') {
+                        setStatus('Muted', 'Microphone off', 'warn');
+                    } else {
+                        setStatus('Listening', 'Ready for the next turn', 'ok');
+                    }
+                };
+
+                source.start(0);
+                const playbackStartedAt = performance.now();
+                metrics.decodeStartedAt = decodeStartedAt;
+                metrics.decodeFinishedAt = decodeFinishedAt;
+                metrics.playbackStartedAt = playbackStartedAt;
+                logTrace('audio_playback_start', {
+                    turnId,
+                    queueDepthAfterShift: state.audioQueue.length,
+                    transportLagMs: item.trace?.transport_lag_ms ?? null,
+                    decodeMs: Number((decodeFinishedAt - decodeStartedAt).toFixed(1)),
+                    audioReadyToPlaybackMs: metrics.audioReceivedAt
+                        ? Number((playbackStartedAt - metrics.audioReceivedAt).toFixed(1))
+                        : null,
+                    commandToPlaybackMs: metrics.commandStartedAt
+                        ? Number((playbackStartedAt - metrics.commandStartedAt).toFixed(1))
+                        : null,
+                    ttsMetrics: item.tts_metrics || null,
+                    baseLatency: audioContext.baseLatency || null,
+                });
+                setStatus('Speaking', item.text || 'Audio playback', 'accent');
+            } catch (error) {
+                console.error('Audio playback failed', error);
+                stopLipSync();
+                state.currentSource = null;
+                state.isPlaying = false;
+                setError(`Audio playback failed: ${error.message}`);
+                if (state.audioQueue.length > 0) {
+                    playNextAudio();
+                }
+            }
+        }
+
+        function applyRuntime(runtime) {
+            state.runtime = runtime || {};
+            ui.muteButton.textContent = runtime?.mic_state === 'muted' ? 'Unmute' : 'Mute';
+            syncDebug();
+
+            if (runtime?.debug_visible) {
+                ui.debugInfo.classList.add('visible');
+            } else {
+                ui.debugInfo.classList.remove('visible');
+            }
+
+            if (runtime?.mic_state === 'muted') {
+                setStatus('Muted', `${runtime.character_name || 'Assistant'} desktop shell`, 'warn');
+            } else if (runtime?.response_active || runtime?.playback_active) {
+                setStatus('Busy', `${runtime.character_name || 'Assistant'} is responding`, 'accent');
+            } else {
+                setStatus('Listening', `${runtime.character_name || 'Assistant'} ready`, 'ok');
+            }
+        }
+
+        async function refreshRuntime() {
+            const runtime = await window.DesktopBridge.getRuntimeState();
+            applyRuntime(runtime);
+            return runtime;
+        }
+
+        async function sendText() {
+            const text = ui.textInput.value.trim();
+            if (!text) {
+                return;
+            }
+
+            setError('');
+            setUserText(text);
+            clearAssistantText();
+            ui.textInput.value = '';
+
+            const commandStartedAt = performance.now();
+            const response = await window.DesktopBridge.sendText(text);
+            if (response?.turn_id != null) {
+                promoteTurn(response.turn_id);
+                const metrics = getTurnMetrics(response.turn_id);
+                metrics.commandStartedAt = commandStartedAt;
+                metrics.commandResolvedAt = performance.now();
+                logTrace('send_text_result', {
+                    turnId: response.turn_id,
+                    roundtripMs: Number((metrics.commandResolvedAt - commandStartedAt).toFixed(1)),
+                    backend: response.backend,
+                });
+            }
+            applyRuntime(response);
+            setStatus('Thinking', 'Generating text response', 'accent');
+        }
+
+        async function toggleMute() {
+            const runtime = await window.DesktopBridge.toggleMute();
+            applyRuntime(runtime);
+        }
+
+        async function interruptTurn() {
+            const runtime = await window.DesktopBridge.interrupt();
+            applyRuntime(runtime);
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                setStatus('Loading', 'Initializing Live2D shell', 'warn');
+                await loadScript(LIVE2D_CORE_SRC);
+                await loadScript(LIVE2D_MANAGER_SRC);
+                applyChatVisibility();
+
                 await Live2DManager.init({
                     canvasId: 'live2d-canvas',
-                    modelPath: '../../assets/models/march7th/',
-                    modelName: 'march 7th.model3.json',
-                    scale: 0.90,  // Slightly smaller to fit full body
-                    position: { x: 0, y: -0.14 },  // Centered to show full body including feet
-                    debug: true
-                    // No defaultExpression - let the model show its natural face
+                    modelPath: MARCH7TH_MODEL_PATH,
+                    modelName: 'march7th.model3.json',
+                    scale: 0.84,
+                    position: { x: -0.26, y: -0.08 },
+                    debug: true,
                 });
-                
-                statusEl.style.display = 'none';
-                console.log('Live2D initialized successfully');
-                
+
+                await refreshRuntime();
+                setStatus('Listening', 'Drag window, avatar stays anchored', 'ok');
+                setError('');
             } catch (error) {
-                console.error('Failed to initialize Live2D:', error);
-                statusEl.textContent = `Error: ${error.message}`;
-                statusEl.style.background = 'rgba(255, 0, 0, 0.7)';
+                console.error('Desktop shell init failed', error);
+                setStatus('Error', error.message, 'danger');
+                setError(error.message);
             }
         });
-        
-        // Expose API for Python integration via pywebview
+
+        ui.sendButton.addEventListener('click', () => {
+            sendText().catch((error) => {
+                console.error(error);
+                setError(error.message);
+            });
+        });
+
+        ui.textInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                sendText().catch((error) => {
+                    console.error(error);
+                    setError(error.message);
+                });
+            }
+        });
+
+        ui.muteButton.addEventListener('click', () => {
+            toggleMute().catch((error) => {
+                console.error(error);
+                setError(error.message);
+            });
+        });
+
+        ui.interruptButton.addEventListener('click', () => {
+            interruptTurn().catch((error) => {
+                console.error(error);
+                setError(error.message);
+            });
+        });
+
+        ui.chatToggleButton.addEventListener('click', () => {
+            toggleChat();
+        });
+
+        document.addEventListener('click', () => {
+            ensureAudioContext().catch(() => {});
+        }, { once: true });
+
+        window.onBackendReady = (runtime) => {
+            applyRuntime(runtime);
+        };
+
+        window.onMicStateChange = (micState) => {
+            state.runtime = { ...(state.runtime || {}), mic_state: micState };
+            applyRuntime(state.runtime);
+        };
+
+        window.onSpeechStart = (turnId) => {
+            if (turnId != null) {
+                promoteTurn(turnId);
+            }
+            setStatus('Listening', 'Speech detected', 'accent');
+        };
+
+        window.onSpeechEnd = (turnId) => {
+            if (!shouldIgnoreTurn(turnId)) {
+                setStatus('Thinking', 'Speech captured, running pipeline', 'accent');
+            }
+        };
+
+        window.onTranscription = (text, turnId) => {
+            if (!promoteTurn(turnId)) {
+                return;
+            }
+            setUserText(text);
+            setError('');
+        };
+
+        window.onResponseStart = (turnId) => {
+            if (!promoteTurn(turnId)) {
+                return;
+            }
+            const metrics = getTurnMetrics(turnId);
+            metrics.responseStartedAt = performance.now();
+            logTrace('response_start', {
+                turnId,
+                commandToResponseMs: metrics.commandStartedAt
+                    ? Number((metrics.responseStartedAt - metrics.commandStartedAt).toFixed(1))
+                    : null,
+            });
+            clearAssistantText();
+            setStatus('Thinking', 'LLM is streaming', 'accent');
+        };
+
+        window.onResponseChunk = (chunk, turnId) => {
+            if (!promoteTurn(turnId)) {
+                return;
+            }
+            appendAssistantChunk(chunk);
+        };
+
+        window.onResponseEnd = (text, turnId) => {
+            if (!promoteTurn(turnId)) {
+                return;
+            }
+            ui.assistantText.textContent = text || state.responseText || 'No response text';
+            setStatus('Speaking', 'Waiting for queued audio', 'accent');
+        };
+
+        window.onAudioReady = (payload) => {
+            if (!payload || !promoteTurn(payload.turn_id)) {
+                return;
+            }
+            const metrics = getTurnMetrics(payload.turn_id);
+            metrics.audioReceivedAt = performance.now();
+            const backendReadyAt = payload.trace?.backend_audio_ready_epoch_ms;
+            const transportLagMs = backendReadyAt ? Date.now() - backendReadyAt : null;
+            if (payload.trace) {
+                payload.trace.transport_lag_ms = transportLagMs;
+            } else {
+                payload.trace = { transport_lag_ms: transportLagMs };
+            }
+            logTrace('audio_ready', {
+                turnId: payload.turn_id,
+                transportLagMs,
+                durationMs: payload.duration,
+                queuedChunksBeforePush: state.audioQueue.length,
+                ttsMetrics: payload.tts_metrics || null,
+            });
+            state.audioQueue.push(payload);
+            playNextAudio().catch((error) => {
+                console.error(error);
+                setError(error.message);
+            });
+        };
+
+        window.onPlaybackStop = (turnId) => {
+            if (turnId != null && shouldIgnoreTurn(turnId)) {
+                return;
+            }
+            stopPlayback();
+            if (turnId != null) {
+                state.activeTurnId = turnId;
+            }
+            syncDebug();
+            if (state.runtime?.mic_state === 'muted') {
+                setStatus('Muted', 'Playback interrupted', 'warn');
+            } else {
+                setStatus('Interrupted', 'Ready for the next turn', 'accent');
+            }
+        };
+
+        window.onError = (message, turnId) => {
+            if (turnId != null && shouldIgnoreTurn(turnId)) {
+                return;
+            }
+            setStatus('Error', 'Pipeline failure', 'danger');
+            setError(message);
+        };
+
         window.Live2DAPI = {
-            // Set expression by name (e.g., "happy", "sad")
             setExpression: (name) => Live2DManager.setExpression(name),
-            
-            // Set lip sync value (0.0 - 1.0)
             setLipSync: (value) => Live2DManager.setLipSync(value),
-            
-            // Start lip sync from audio analysis
             startLipSyncFromAudio: () => Live2DManager.startAudioLipSync(),
-            
-            // Stop lip sync
             stopLipSync: () => Live2DManager.stopLipSync(),
-            
-            // Set parameter directly (advanced)
             setParameter: (name, value) => Live2DManager.setParameter(name, value),
-            
-            // Play motion
             playMotion: (group, index) => Live2DManager.playMotion(group, index),
-            
-            // Toggle debug info
             toggleDebug: () => {
-                const el = document.getElementById('debug-info');
-                el.classList.toggle('visible');
+                ui.debugInfo.classList.toggle('visible');
             },
-            
-            // Get available expressions
             getExpressions: () => Live2DManager.getExpressionNames(),
-            
-            // Get available motions
-            getMotions: () => Live2DManager.getMotionGroups()
+            getMotions: () => Live2DManager.getMotionGroups(),
         };
     </script>
 </body>

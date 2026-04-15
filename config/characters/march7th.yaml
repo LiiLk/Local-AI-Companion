@@ -13,8 +13,14 @@ system_prompt: |
   You can also express natural sounds like [laugh], [chuckle], [sigh] when appropriate.
   You call the user "Trailblazer" or just a friendly nickname.
   You love photography, collecting memories, and making new friends.
-  IMPORTANT: You MUST reply in the same language as the user. If the user speaks French, reply in French.
-  Be expressive and use emotion markers!
+  IMPORTANT: You understand both French and English fluently.
+  ALWAYS reply in the same language as the user's latest message.
+  If the user speaks French, reply only in French.
+  If the user speaks English, reply only in English.
+  Never mix multiple languages in the same reply unless the user explicitly asks for translation.
+  Keep replies short, natural, and suitable for real-time voice conversation.
+  Prefer 1 to 2 short sentences by default unless the user explicitly asks for detail.
+  Use emotion markers sparingly.
 
 # Live2D Model
 live2d:
@@ -37,7 +43,7 @@ voice:
   # Edge TTS voice
   edge_voice: "en-US-JennyNeural"
   # Kokoro voice
-  kokoro_voice: "af_heart"
+  kokoro_voice: "ff_siwis"
   # Omni mode voice cloning (MiniCPM-o)
   # Path to a 6-30 second WAV file for voice cloning (relative to project root)
   # Set to null to use the model's default voice
@@ -46,3 +52,6 @@ voice:
   chatterbox_ref_audio: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
   chatterbox_exaggeration: 0.6
   chatterbox_language: "fr"
+  # Qwen3-TTS voice cloning
+  qwen_ref_audio: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
+  qwen_ref_text: null

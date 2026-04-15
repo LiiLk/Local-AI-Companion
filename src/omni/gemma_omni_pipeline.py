@@ -14,10 +14,10 @@ Flow:
 """
 
 import asyncio
-import base64
 import gc
 import io
 import logging
+import time
 import wave
 from dataclasses import dataclass, field
 from typing import Callable, Optional
@@ -76,6 +76,7 @@ class GemmaOmniPipeline:
 
         # Screen capture (optional)
         self.screen_buffer: Optional['ScreenBuffer'] = None
+        self._include_screen_in_conversation = False
 
         # State
         self._is_processing = False
@@ -110,8 +111,9 @@ class GemmaOmniPipeline:
         logger.info("Both models loaded")
 
     async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
-        """Process speech — uses streaming if configured."""
-        if getattr(self.config, 'stream_tts', False):
+        """Process speech — uses sentence streaming for lower latency."""
+        if getattr(self.config, 'stream_tts', True):
+            logger.info("Gemma audio turn: sentence-streaming path (low latency)")
             return await self.process_speech_streaming(audio_bytes)
         return await self._process_speech_basic(audio_bytes)
 
@@ -125,6 +127,13 @@ class GemmaOmniPipeline:
             return None
 
         self._is_processing = True
+        turn_started = time.perf_counter()
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(
+            "Gemma speech turn started (audio_ms=%s, history_turns=%s)",
+            audio_ms,
+            len(self.history) // 2,
+        )
 
         try:
             from src.utils.sentence_splitter import SentenceSplitter
@@ -138,8 +147,8 @@ class GemmaOmniPipeline:
             if self.on_transcription:
                 await self._call_async(self.on_transcription, "[audio input]")
 
-            # Stream tokens from Gemma
-            splitter = SentenceSplitter()
+            # Stream tokens from Gemma — faster_first_response splits earlier on first sentence
+            splitter = SentenceSplitter(faster_first_response=True)
             full_response = ""
             first_audio_sent = False
 
@@ -151,6 +160,10 @@ class GemmaOmniPipeline:
                 images=images if images else None,
             )
 
+            # Collect all sentences first (Gemma gets full GPU), then TTS sequentially.
+            # On shared GPU, parallel TTS+LLM causes contention and is slower.
+            sentences: list[str] = []
+
             async for token in self.gemma.chat_stream(**stream_kwargs):
                 full_response += token
                 splitter.feed(token)
@@ -158,15 +171,17 @@ class GemmaOmniPipeline:
                 if self.on_response_chunk:
                     await self._call_async(self.on_response_chunk, token)
 
-                # Check for complete sentences
                 for sentence in splitter.get_sentences():
-                    await self._synthesize_and_send(sentence, first_audio_sent)
-                    first_audio_sent = True
+                    sentences.append(sentence)
 
-            # Flush remaining text
             remaining = splitter.flush()
             if remaining:
-                await self._synthesize_and_send(remaining, first_audio_sent)
+                sentences.append(remaining)
+
+            # TTS each sentence — send audio chunks as they complete
+            for sentence in sentences:
+                await self._synthesize_and_send(sentence, first_audio_sent)
+                first_audio_sent = True
 
             if self.on_response_end:
                 await self._call_async(self.on_response_end, full_response)
@@ -207,6 +222,7 @@ class GemmaOmniPipeline:
 
     async def _synthesize_and_send(self, text: str, is_continuation: bool = False) -> None:
         """Synthesize a sentence and fire audio callback."""
+        tts_started = time.perf_counter()
         # Emotion detection
         emotion, expression = self.emotion_detector.detect_and_get_expression(text)
 
@@ -218,19 +234,22 @@ class GemmaOmniPipeline:
         if not tts_text.strip():
             return
 
+        logger.info("TTS synthesis start (%s chars)", len(tts_text))
+
         # Synthesize
         tts_result = await self.tts.synthesize(tts_text)
+        logger.info("TTS synthesis finished in %.1fs", time.perf_counter() - tts_started)
         self._vram.log("after_tts_inference")
 
         if tts_result.audio_data:
             pcm_data = self._extract_pcm_from_wav(tts_result.audio_data)
             volumes = analyze_audio_volumes(pcm_data, self.tts.SAMPLE_RATE, chunk_ms=50)
-            audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
             duration_ms = int((tts_result.duration or 0) * 1000)
 
             payload = AudioPayload(
                 audio_bytes=pcm_data,
-                audio_base64=audio_b64,
+                audio_base64=None,
+                wav_bytes=tts_result.audio_data,
                 volumes=volumes,
                 duration_ms=duration_ms,
                 sample_rate=self.tts.SAMPLE_RATE,
@@ -256,6 +275,13 @@ class GemmaOmniPipeline:
             return None
 
         self._is_processing = True
+        turn_started = time.perf_counter()
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(
+            "Gemma speech turn started (audio_ms=%s, history_turns=%s)",
+            audio_ms,
+            len(self.history) // 2,
+        )
 
         try:
             # Step 1: Build conversation context
@@ -273,9 +299,11 @@ class GemmaOmniPipeline:
                 audio=audio_bytes,
                 images=images if images else None,
             )
+            logger.info("Gemma inference started")
 
             try:
                 response = await self.gemma.chat(**chat_kwargs)
+                logger.info("Gemma inference completed in %.1fs", time.perf_counter() - turn_started)
             except Exception as e:
                 # Check if this is a CUDA OOM error
                 _is_oom = "out of memory" in str(e).lower()
@@ -300,6 +328,7 @@ class GemmaOmniPipeline:
                 self.gemma.max_new_tokens = min(128, original_max)
                 try:
                     response = await self.gemma.chat(**chat_kwargs)
+                    logger.info("Gemma inference completed in %.1fs", time.perf_counter() - turn_started)
                 finally:
                     self.gemma.max_new_tokens = original_max
 
@@ -328,7 +357,9 @@ class GemmaOmniPipeline:
             tts_text = self.emotion_detector.strip_markers_for_tts(response)
 
             # Step 5: Synthesize speech with Chatterbox
+            logger.info("Gemma text ready (%s chars), starting TTS", len(tts_text))
             tts_result = await self.tts.synthesize(tts_text)
+            logger.info("TTS completed, total turn time %.1fs", time.perf_counter() - turn_started)
 
             # Step 6: Build AudioPayload
             if tts_result.audio_data:
@@ -340,14 +371,12 @@ class GemmaOmniPipeline:
                     pcm_data, self.tts.SAMPLE_RATE, chunk_ms=50
                 )
 
-                # Base64 encode the full WAV for browser playback
-                audio_b64 = base64.b64encode(audio_data).decode("utf-8")
-
                 duration_ms = int((tts_result.duration or 0) * 1000)
 
                 payload = AudioPayload(
                     audio_bytes=pcm_data,
-                    audio_base64=audio_b64,
+                    audio_base64=None,
+                    wav_bytes=audio_data,
                     volumes=volumes,
                     duration_ms=duration_ms,
                     sample_rate=self.tts.SAMPLE_RATE,
@@ -371,6 +400,7 @@ class GemmaOmniPipeline:
             if len(self.history) > max_msgs:
                 self.history = self.history[-max_msgs:]
 
+            logger.info("Gemma speech turn finished in %.1fs", time.perf_counter() - turn_started)
             return response
 
         except Exception as e:
@@ -429,6 +459,7 @@ class GemmaOmniPipeline:
         """Start screen capture if configured."""
         from src.vision.screen_buffer import ScreenBuffer
 
+        self._include_screen_in_conversation = config.get("include_in_conversation", False)
         self.screen_buffer = ScreenBuffer(
             capture_interval=config.get("interval", 2.0),
             max_buffer=config.get("max_buffer", 30),
@@ -439,7 +470,7 @@ class GemmaOmniPipeline:
 
     def _get_screen_context(self) -> list:
         """Get current screen frame(s) for vision context."""
-        if not self.screen_buffer:
+        if not self.screen_buffer or not self._include_screen_in_conversation:
             return []
 
         frame = self.screen_buffer.get_latest()

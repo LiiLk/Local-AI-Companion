@@ -224,6 +224,10 @@ body {
 .header-avatar {
     width: 44px;
     height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.25rem;
     border-radius: var(--radius-full);
     object-fit: cover;
     border: 2px solid var(--color-bg-tertiary);
@@ -1109,6 +1113,7 @@ kbd {
     z-index: var(--z-sticky);
     pointer-events: none;
     overflow: hidden;
+    background: transparent;
 }
 
 .live2d-container #live2d-canvas {

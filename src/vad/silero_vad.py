@@ -5,6 +5,8 @@ Based on Open-LLM-VTuber's implementation.
 Uses a state machine to detect speech start/end with smoothing.
 """
 
+import logging
+
 import numpy as np
 import torch
 from collections import deque
@@ -12,6 +14,9 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Generator, Optional
 from silero_vad import load_silero_vad
+
+
+logger = logging.getLogger(__name__)
 
 
 class State(Enum):
@@ -30,6 +35,7 @@ class VADConfig:
     required_hits: int = 3           # Consecutive frames to confirm speech start (~100ms)
     required_misses: int = 30        # Consecutive frames to confirm speech end (~1.0s)
     smoothing_window: int = 5        # Smoothing window for probability
+    force_end_silence_ms: int = 180  # Extra tail silence when the client manually stops recording
 
 
 class SileroVAD:
@@ -42,9 +48,9 @@ class SileroVAD:
     def __init__(self, config: Optional[VADConfig] = None):
         self.config = config or VADConfig()
         
-        print("🔄 Loading Silero VAD model...")
+        logger.info("Loading Silero VAD model...")
         self.model = load_silero_vad()
-        print("✅ Silero VAD loaded!")
+        logger.info("Silero VAD loaded")
         
         # State machine
         self.state = State.IDLE
@@ -182,7 +188,11 @@ class SileroVAD:
     def force_end(self) -> Optional[bytes]:
         """Force end current speech segment and return audio if any."""
         if self.state == State.ACTIVE and len(self.audio_buffer) > 1024:
-            audio = bytes(self.audio_buffer)
+            tail_samples = max(0, int(self.config.sample_rate * self.config.force_end_silence_ms / 1000))
+            tail_bytes = b""
+            if tail_samples:
+                tail_bytes = np.zeros(tail_samples, dtype=np.int16).tobytes()
+            audio = bytes(self.audio_buffer) + tail_bytes
             self.reset()
             return audio
         self.reset()

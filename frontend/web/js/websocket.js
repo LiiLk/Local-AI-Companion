@@ -10,6 +10,7 @@ class WebSocketManager {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.reconnectDelay = 1000;
+        this.pendingAudioMeta = [];
         
         // Event callbacks
         this.onStatusChange = null;
@@ -19,6 +20,7 @@ class WebSocketManager {
         this.onStreamEnd = null;
         this.onAudio = null;
         this.onError = null;
+        this.onStopAudio = null;
         
         // Live2D callbacks
         this.onAudioWithLipSync = null;  // For Live2D integration
@@ -36,8 +38,10 @@ class WebSocketManager {
         }
         
         this._updateStatus('connecting');
-        
+        this.pendingAudioMeta = [];
+
         this.ws = new WebSocket(this.url);
+        this.ws.binaryType = 'arraybuffer';
         
         this.ws.onopen = () => {
             console.log('WebSocket connected');
@@ -59,7 +63,11 @@ class WebSocketManager {
         };
         
         this.ws.onmessage = (event) => {
-            this._handleMessage(event.data);
+            if (typeof event.data === 'string') {
+                this._handleMessage(event.data);
+            } else {
+                this._handleBinaryMessage(event.data);
+            }
         };
     }
     
@@ -68,6 +76,7 @@ class WebSocketManager {
             this.ws.close(1000, 'User disconnected');
             this.ws = null;
         }
+        this.pendingAudioMeta = [];
     }
     
     send(message) {
@@ -87,17 +96,32 @@ class WebSocketManager {
     }
     
     sendAudioStream(samples) {
-        // Send raw PCM samples for server-side VAD
-        return this.send({
-            type: 'audio_stream',
-            samples: samples
-        });
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(samples);
+            return true;
+        }
+        console.error('WebSocket not connected');
+        return false;
     }
     
     sendMicStop() {
         // Notify server that user manually stopped mic
         return this.send({
             type: 'mic_stop'
+        });
+    }
+
+    sendInterrupt() {
+        return this.send({
+            type: 'interrupt'
+        });
+    }
+
+    sendAudioSegment(audioBuffer, sampleRate = 16000) {
+        return this.send({
+            type: 'audio_segment',
+            sample_rate: sampleRate,
+            pcm16: this._arrayBufferToBase64(audioBuffer)
         });
     }
     
@@ -171,6 +195,10 @@ class WebSocketManager {
                         this.onAudioData(message.data);
                     }
                     break;
+
+                case 'audio_meta':
+                    this.pendingAudioMeta.push(message);
+                    break;
                     
                 case 'expression_change':
                     // Live2D expression change
@@ -182,6 +210,12 @@ class WebSocketManager {
                     
                 case 'audio_end':
                     console.log('Audio generation complete');
+                    break;
+
+                case 'stop_audio':
+                    if (this.onStopAudio) {
+                        this.onStopAudio();
+                    }
                     break;
                     
                 case 'transcription':
@@ -281,6 +315,36 @@ class WebSocketManager {
         } catch (error) {
             console.error('Failed to parse message:', error);
         }
+    }
+
+    _handleBinaryMessage(data) {
+        const meta = this.pendingAudioMeta.shift();
+        if (!meta) {
+            console.warn('Received binary audio without pending metadata');
+            return;
+        }
+
+        const message = {
+            ...meta,
+            buffer: data
+        };
+
+        if (this.onAudioWithLipSync && meta.lip_sync) {
+            this.onAudioWithLipSync(message);
+        } else if (this.onAudioData) {
+            this.onAudioData(data);
+        }
+    }
+
+    _arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        const chunkSize = 0x8000;
+        for (let index = 0; index < bytes.length; index += chunkSize) {
+            const chunk = bytes.subarray(index, index + chunkSize);
+            binary += String.fromCharCode(...chunk);
+        }
+        return btoa(binary);
     }
     
     _updateStatus(status) {

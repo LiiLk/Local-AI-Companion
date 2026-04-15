@@ -75,7 +75,7 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
     Create the appropriate TTS provider.
 
     Args:
-        provider: "kokoro" or "edge"
+        provider: "kokoro", "qwen3", or "edge"
         tts_config: TTS configuration from config.yaml
 
     Returns:
@@ -85,6 +85,36 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
         # Kokoro - High quality local TTS
         voice = tts_config.get("kokoro_voice", "af_heart")
         return KokoroProvider(voice=voice)
+    elif provider == "qwen3":
+        from src.tts import Qwen3TTSProvider
+
+        qwen3_config = tts_config.get("qwen3", {})
+        if not Qwen3TTSProvider.is_available(
+            backend=qwen3_config.get("backend", "worker"),
+            python_path=qwen3_config.get("python_path"),
+            site_packages_dir=qwen3_config.get("site_packages_dir"),
+            worker_script=qwen3_config.get("worker_script"),
+        ):
+            raise RuntimeError(
+                "Qwen3-TTS runtime is not installed. Run scripts/install_qwen3_tts_windows.ps1 first."
+            )
+        return Qwen3TTSProvider(
+            model_id=qwen3_config.get("model_id", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+            mode=qwen3_config.get("mode", "voice_clone"),
+            language=qwen3_config.get("language", "auto"),
+            speaker=qwen3_config.get("speaker"),
+            instruct=qwen3_config.get("instruct"),
+            ref_audio_path=qwen3_config.get("ref_audio_path"),
+            ref_text=qwen3_config.get("ref_text"),
+            x_vector_only_mode=qwen3_config.get("x_vector_only_mode"),
+            device=qwen3_config.get("device", "cuda:0"),
+            dtype=qwen3_config.get("dtype", "bfloat16"),
+            attn_implementation=qwen3_config.get("attn_implementation", "flash_attention_2"),
+            backend=qwen3_config.get("backend", "worker"),
+            python_path=qwen3_config.get("python_path"),
+            site_packages_dir=qwen3_config.get("site_packages_dir"),
+            worker_script=qwen3_config.get("worker_script"),
+        )
     else:
         # Edge TTS - Microsoft Cloud (fallback)
         voice = tts_config.get("voice", "en-US-JennyNeural")
@@ -546,8 +576,8 @@ async def main():
     parser.add_argument("--voice", "-v", action="store_true",
                        help="Enable voice synthesis")
     parser.add_argument("--tts", type=str, default="kokoro",
-                       choices=["kokoro", "edge"],
-                       help="TTS provider: kokoro (local) or edge (cloud)")
+                       choices=["kokoro", "qwen3", "edge"],
+                       help="TTS provider: kokoro (local), qwen3 (local voice clone), or edge (cloud)")
     parser.add_argument("--listen", "-l", action="store_true",
                        help="Enable voice listening (microphone)")
     parser.add_argument("--asr-model", type=str, default="base",
@@ -596,6 +626,7 @@ async def main():
     elif args.voice:
         tts_names = {
             "kokoro": "Kokoro (local)",
+            "qwen3": "Qwen3-TTS (local)",
             "edge": "Edge TTS (cloud)"
         }
         tts_name = tts_names.get(args.tts, args.tts)
