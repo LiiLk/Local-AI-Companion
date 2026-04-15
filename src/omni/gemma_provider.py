@@ -16,6 +16,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -52,6 +53,8 @@ class GemmaProvider:
         temperature: float = 0.7,
         top_p: float = 0.95,
         context_max_turns: int = 10,
+        cpu_offload: bool = True,
+        offload_dir: str | None = None,
     ):
         self.model_id = model_id
         self.device = device
@@ -60,11 +63,44 @@ class GemmaProvider:
         self.temperature = temperature
         self.top_p = top_p
         self.context_max_turns = context_max_turns
+        self.cpu_offload = cpu_offload
+        self.offload_dir = Path(offload_dir) if offload_dir else Path(".cache/hf-offload/gemma")
 
         self._model = None
         self._processor = None
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gemma")
+
+    def _build_quantized_load_kwargs(self, torch, bitsandbytes_config_cls=None):
+        if bitsandbytes_config_cls is None:
+            from transformers import BitsAndBytesConfig as bitsandbytes_config_cls
+
+        logger.info("Applying BitsAndBytes NF4 quantization...")
+        quantization_config = bitsandbytes_config_cls(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            llm_int8_skip_modules=["lm_head", "audio_tower", "embed_audio"],
+            # Some multimodal Gemma modules remain in higher precision.
+            # Allow explicit CPU offload instead of hard-failing when auto device_map
+            # cannot keep every skipped module on the GPU.
+            llm_int8_enable_fp32_cpu_offload=self.cpu_offload,
+        )
+
+        load_kwargs = {
+            "quantization_config": quantization_config,
+            "device_map": "auto",
+            "torch_dtype": torch.bfloat16,
+            "low_cpu_mem_usage": True,
+            "attn_implementation": "sdpa",
+        }
+
+        if self.cpu_offload:
+            self.offload_dir.mkdir(parents=True, exist_ok=True)
+            load_kwargs["offload_folder"] = str(self.offload_dir)
+
+        return load_kwargs
 
     def _load_model(self):
         """Load model with TorchAO int4 quantization. Thread-safe."""
@@ -94,21 +130,15 @@ class GemmaProvider:
                 logger.warning("AutoModelForMultimodalLM not available, using AutoModelForImageTextToText")
 
             if self.quantization == "int4":
-                from transformers import BitsAndBytesConfig
-
-                logger.info("Applying BitsAndBytes NF4 quantization...")
-                quantization_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                    llm_int8_skip_modules=["lm_head", "audio_tower", "embed_audio"],
+                load_kwargs = self._build_quantized_load_kwargs(torch)
+                logger.info(
+                    "Gemma int4 load strategy: device_map=auto, cpu_offload=%s, offload_dir=%s",
+                    self.cpu_offload,
+                    str(self.offload_dir),
                 )
                 model = ModelClass.from_pretrained(
                     self.model_id,
-                    quantization_config=quantization_config,
-                    device_map="auto",
-                    torch_dtype=torch.bfloat16,
+                    **load_kwargs,
                 )
             else:
                 model = ModelClass.from_pretrained(
@@ -414,12 +444,32 @@ class GemmaProvider:
         streamer, thread = await loop.run_in_executor(
             self._executor, self._generate, messages, audio_inputs, image_inputs, True
         )
+        stream_queue: asyncio.Queue[object] = asyncio.Queue()
+        stream_done = object()
+
+        def forward_stream() -> None:
+            try:
+                for token in streamer:
+                    if token:
+                        loop.call_soon_threadsafe(stream_queue.put_nowait, token)
+            except Exception as exc:
+                loop.call_soon_threadsafe(stream_queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(stream_queue.put_nowait, stream_done)
+
+        forwarder = threading.Thread(target=forward_stream, daemon=True, name="GemmaStreamerForwarder")
+        forwarder.start()
 
         try:
-            for token in streamer:
-                if token:
-                    yield token
+            while True:
+                item = await stream_queue.get()
+                if item is stream_done:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
         finally:
+            forwarder.join(timeout=5)
             thread.join(timeout=5)
 
     async def transcribe(self, audio_bytes: bytes) -> str:

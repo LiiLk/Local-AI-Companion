@@ -1,57 +1,168 @@
-# AI Assistant Configuration
-# You can modify this file without touching the code!
+# Local AI Companion
+# Tracked config = simple defaults.
+# Put secrets and machine-specific overrides in config/config.local.yaml.
 
-# === MODE ===
-# "pipeline"    : Classic ASR → LLM → TTS pipeline (separate models)
-# "omni"        : Single omni model handles speech-to-speech (MiniCPM-o)
-# "gemma-omni"  : Gemma E2B (ASR+LLM+Vision) + Chatterbox TTS (voice clone)
-mode: "pipeline"
+mode: "pipeline"  # "pipeline", "omni", "gemma-omni"
 
-# === OMNI MODEL (speech-to-speech) ===
-# Used when mode: "omni"
-# MiniCPM-o handles audio input, language understanding, and audio output
-# in a single model — no separate ASR/LLM/TTS needed.
+pipeline:
+  vad_required_misses: 20
+  reply_language: "en"
+
+audio:
+  # Desktop backend behavior:
+  # - bridge-only defaults to muted unless explicitly overridden here.
+  start_muted: false
+  bridge_start_muted: true
+
+llm:
+  # Stable choices for the normal pipeline:
+  # - "ollama"     : local LLM
+  # - "openrouter" : cloud LLM
+  # - "gemma"      : advanced local multimodal path
+  provider: "ollama"
+
+  ollama:
+    model: "qwen3.5:4b"
+    base_url: "http://localhost:11434"
+    think: false
+    request_timeout_sec: 180
+    preload_timeout_sec: 120
+    turn_timeout_sec: 210
+    options:
+      temperature: 0.6
+      top_p: 0.9
+      top_k: 40
+      presence_penalty: 0.1
+
+  openrouter:
+    model: "x-ai/grok-4.1-fast"
+    api_key: null  # keep null here; use env or config.local.yaml
+    api_key_env: "OPENROUTER_API_KEY"
+    base_url: "https://openrouter.ai/api/v1"
+    app_url: null
+    app_title: "Local-AI-Companion"
+    required_input_modalities: []
+    request_timeout_sec: 180
+    preload_timeout_sec: 60
+    options:
+      temperature: 0.6
+      top_p: 0.9
+      max_completion_tokens: 96
+      reasoning:
+        effort: "none"
+
+character:
+  preset: "march7th"
+
+tts:
+  # Stable choices:
+  # - "kokoro" : best local realtime path, especially with RVC enabled
+  # - "qwen3"  : best local premium voice path
+  # - "chatterbox" / "edge" : optional fallbacks
+  provider: "kokoro"
+  stream_tts: true
+  warmup_on_start: true
+  auto_detect_language: true
+  kokoro_voice: "ff_siwis"
+  voice: "en-US-JennyNeural"
+  rate: "+0%"
+  pitch: "+0Hz"
+
+  qwen3:
+    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    mode: "voice_clone"
+    language: "auto"
+    speaker: null
+    instruct: ""
+    ref_audio_path: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
+    ref_text: null
+    x_vector_only_mode: true
+    device: "cuda:0"
+    dtype: "bfloat16"
+    attn_implementation: "sdpa"
+    backend: "worker"
+    python_path: ".\\.venv-qwen3-tts\\Scripts\\python.exe"
+    site_packages_dir: null
+    worker_script: ".\\scripts\\qwen3_tts_worker.py"
+    request_timeout_sec: 20
+
+  routed:
+    preload_fallbacks: true
+    warmup_fallbacks: true
+    provider_order_by_language:
+      fr: ["chatterbox", "qwen3", "kokoro"]
+      en: ["qwen3", "chatterbox", "kokoro"]
+
+  chatterbox:
+    model_id: "onnx-community/chatterbox-multilingual-ONNX"
+    cfg_weight: 0.5
+    prefer_full_gpu: true
+
+  rvc:
+    enabled: true
+    backend: "worker"
+    python_path: ".\\venv\\Scripts\\python.exe"
+    site_packages_dir: ".\\.rvc-overlay"
+    worker_script: ".\\scripts\\rvc_worker.py"
+    model_path: "resources/voices/march7th/March-7th.pth"
+    index_path: "resources/voices/march7th/March-7th.index"
+    device: "cuda:0"
+    f0_method: "rmvpe"
+    f0_up_key: 0.0
+    index_rate: 0.0
+    protect: 0.33
+    output_freq: null
+
+asr:
+  # Stable choices:
+  # - "whisper" : best default
+  # - "qwen3"   : advanced local quality path
+  provider: "whisper"
+  model_size: "small"
+  language: "auto"
+  prompt: null
+  beam_size: 3
+  compute_type: "float16"
+  device: "cuda"
+
+  qwen3:
+    model_id: "Qwen/Qwen3-ASR-0.6B"
+    device: "cuda:0"
+    dtype: "bfloat16"
+    max_new_tokens: 256
+    backend: "worker"
+    python_path: ".\\.venv-qwen3-asr-worker\\Scripts\\python.exe"
+    site_packages_dir: null
+    worker_script: ".\\scripts\\qwen3_asr_worker.py"
+
+# Advanced local multimodal paths.
+# Leave these alone unless you explicitly switch mode or llm.provider.
 omni:
   provider: "minicpmo"
   minicpmo:
-    # Model identifier (Hugging Face)
     model_id: "openbmb/MiniCPM-o-4_5"
-    # Quantization: "int4" (~11GB VRAM), "int8" (~15GB), null for full precision (~19GB)
-    # Use "int4" if you have a 12GB GPU (e.g. RTX 3060/4070)
     quantization: "int4"
-    # Device: "cuda" for GPU, "cpu" for CPU (GPU strongly recommended)
     device: "cuda"
-    # Precision: "bfloat16" (recommended), "float16", "float32"
     dtype: "bfloat16"
-    # Attention backend: "sdpa" or "flash_attention_2" (if flash-attn installed)
     attn_implementation: "sdpa"
-    # Initialize sub-modules (disable vision if not needed to save memory/speed)
-    init_vision: false  # Set to true only if using camera/screen capture
+    init_vision: false
     init_audio: true
     init_tts: true
-    # Omni behavior
-    use_single_pass: true          # audio in -> text+audio out in one call
-    transcribe_for_history: false  # extra ASR pass for UI/history
+    use_single_pass: true
+    transcribe_for_history: false
     generate_audio: true
-    stream_tts: false              # avoid sentence-level TTS in omni mode
-    # Maximum new tokens to generate (512-1024 for conversational responses)
+    stream_tts: false
     max_tokens: 512
-    # Sampling parameters
     temperature: 0.7
-    # Voice cloning: path to a 6-30s WAV reference file (or null for default voice)
-    # The model will clone the speaker's voice from this audio
     ref_audio_path: null
-    # Supported speech languages (EN + ZH only for audio I/O)
     speech_languages: ["en", "zh"]
 
-# === GEMMA-OMNI (Gemma E2B + Chatterbox TTS) ===
-# Used when mode: "gemma-omni"
-# Gemma 4 E2B-it handles audio + vision + reasoning in a single model.
-# Chatterbox Multilingual handles TTS with voice cloning and emotions.
 gemma:
   model_id: "google/gemma-4-E2B-it"
-  quantization: "int4"           # BitsAndBytes NF4 (~3-4 GB VRAM)
+  quantization: "int4"
   device: "cuda"
+  cpu_offload: true
+  offload_dir: ".cache/hf-offload/gemma"
   dtype: "bfloat16"
   max_new_tokens: 64
   turn_timeout_sec: 75
@@ -60,287 +171,12 @@ gemma:
   context_max_turns: 6
   vision:
     enabled: true
-    token_budget: 140            # Tokens per image (passive mode)
-    detail_token_budget: 1120    # Tokens per image (detail mode)
-  # VAD tuning (Silero VAD end-of-speech sensitivity)
-  # Lower = faster response, higher = more tolerant of pauses
-  # Default: 30 (~960ms), tuned here for snappier real-time replies (~320ms)
+    token_budget: 140
+    detail_token_budget: 1120
   vad_required_misses: 10
   screen:
     enabled: false
-    interval: 2.0                # Seconds between captures
-    max_buffer: 30               # Circular buffer size
-    change_threshold: 0.05       # Pixel diff threshold
+    interval: 2.0
+    max_buffer: 30
+    change_threshold: 0.05
     include_in_conversation: false
-
-# === LLM (Brain) ===
-# Used when mode: "pipeline"
-llm:
-  # Which LLM provider to use: "ollama" or "gemma"
-  provider: "gemma"
-
-  # Ollama configuration (kept as fallback)
-  ollama:
-    model: "llama3.2:3b"
-    base_url: "http://localhost:11434"
-
-# === Assistant Personality ===
-# ─────────────────────────────────────────────────────────────────────────
-# CHARACTER PRESETS
-# ─────────────────────────────────────────────────────────────────────────
-# The project is fully modular! You can switch characters by:
-# 1. Using a preset: set character.preset to load from config/characters/
-# 2. Custom config: set character.name and character.system_prompt directly
-#
-# Available presets (in config/characters/):
-# - "march7th" : March 7th from Honkai: Star Rail (cheerful photographer)
-# - "juri"     : Juri Han from Street Fighter (sarcastic villain)
-# - "clippy"   : Microsoft Clippy (helpful paperclip)
-#
-# To add a new character:
-# 1. Create config/characters/yourcharacter.yaml
-# 2. Add Live2D model to assets/models/yourcharacter/
-# 3. Add voice reference to resources/voices/yourcharacter/
-# 4. Set character.preset: "yourcharacter" below
-# ─────────────────────────────────────────────────────────────────────────
-character:
-  # Use a preset (loads from config/characters/<preset>.yaml)
-  # Set to null or remove to use custom config below
-  preset: "march7th"
-
-  # Custom config (used if preset is null)
-  # name: "My Character"
-  # system_prompt: |
-  #   Your custom personality prompt here...
-
-# === TTS (Voice) ===
-# Used when mode: "pipeline" (omni mode handles TTS internally)
-tts:
-  # Default TTS provider:
-  # - "qwen3"      : Qwen3-TTS (local, best custom voice / low-latency clone)
-  # - "kokoro"     : Kokoro 82M (local, fast ~300ms, multilingual fallback)
-  # - "chatterbox" : Chatterbox Multilingual (local, voice cloning, slow ~3-5s)
-  # - "edge"       : Edge TTS (Microsoft cloud, free)
-  provider: "qwen3"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # STREAMING TTS (sentence-by-sentence)
-  # ─────────────────────────────────────────────────────────────────────────
-  # When enabled, TTS starts synthesizing as soon as a sentence is complete,
-  # without waiting for the full LLM response. This dramatically reduces
-  # perceived latency.
-  # - true: Synthesize sentence by sentence (faster perceived response)
-  # - false: Wait for full response before TTS (simpler, more stable)
-  # ─────────────────────────────────────────────────────────────────────────
-  stream_tts: true
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # AUTO LANGUAGE DETECTION
-  # ─────────────────────────────────────────────────────────────────────────
-  # When enabled, the TTS will automatically detect the language of the text
-  # and use the appropriate voice configuration.
-  # Works with: Kokoro (changes voice), Edge TTS (changes voice)
-  # ─────────────────────────────────────────────────────────────────────────
-  auto_detect_language: true
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # VOICE MAPPING BY LANGUAGE
-  # ─────────────────────────────────────────────────────────────────────────
-  # Define which voice to use for each language.
-  # Used when auto_detect_language is enabled.
-  # ─────────────────────────────────────────────────────────────────────────
-  voice_mapping:
-    # Kokoro voices by language
-    kokoro:
-      fr: "ff_siwis"    # French female voice
-      en: "af_heart"    # American female voice
-
-    # Edge TTS voices by language
-    edge:
-      fr: "fr-FR-DeniseNeural"   # French female voice
-      en: "en-US-JennyNeural"    # American female voice
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # QWEN3-TTS (local, low-latency voice cloning)
-  # ─────────────────────────────────────────────────────────────────────────
-  # Recommended stack for the assistant:
-  # - Gemma 4 E2B as the brain
-  # - Faster-Whisper for ASR
-  # - Qwen3-TTS 0.6B Base for fast voice clone
-  #
-  # Important:
-  # - The app runs in offline-first mode, so download the model once before use
-  # - Recommended setup on Windows:
-  #   powershell -ExecutionPolicy Bypass -File scripts/install_qwen3_tts_windows.ps1 -Clean
-  # - The worker backend keeps Qwen's transformers 4.57 isolated in a dedicated venv
-  # - The installer pins a CUDA-enabled torch runtime in that worker venv
-  # - If flash-attn is not installed in the worker, it falls back to sdpa automatically
-  # - With no transcript for the reference clip, x-vector-only cloning still works
-  #   but quality is usually a bit lower
-  # ─────────────────────────────────────────────────────────────────────────
-  qwen3:
-    model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-    mode: "voice_clone"          # "voice_clone", "custom_voice", "voice_design"
-    language: "auto"
-    speaker: "Ryan"              # Used only in custom_voice mode
-    instruct: ""                 # Used in custom_voice / voice_design modes
-    ref_audio_path: "resources/voices/march7th/VO_Archive_March_7th_5.wav"
-    ref_text: null               # Add the exact transcript for best clone quality
-    x_vector_only_mode: true     # Safe default when ref_text is unknown
-    device: "cuda:0"
-    dtype: "bfloat16"
-    attn_implementation: "flash_attention_2"
-    backend: "worker"
-    python_path: ".\\.venv-qwen3-tts\\Scripts\\python.exe"
-    site_packages_dir: null
-    worker_script: ".\\scripts\\qwen3_tts_worker.py"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # KOKORO TTS (100% local, lightweight, no voice cloning)
-  # ─────────────────────────────────────────────────────────────────────────
-  # - 82M params, ~300MB, natural quality
-  # - Voices: ff_siwis (FR), af_heart (US), bf_emma (UK), jf_alpha (JP)
-  # ─────────────────────────────────────────────────────────────────────────
-  kokoro_voice: "ff_siwis"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # EDGE TTS (Microsoft cloud, fallback)
-  # ─────────────────────────────────────────────────────────────────────────
-  voice: "en-US-JennyNeural"
-  # Other Edge voices:
-  # - en-US-GuyNeural (American male)
-  # - en-GB-SoniaNeural (British female)
-  # - fr-FR-DeniseNeural (French female)
-  # - ja-JP-NanamiNeural (Japanese female)
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # CHATTERBOX TTS (local, voice cloning, emotion tags)
-  # ─────────────────────────────────────────────────────────────────────────
-  # - ONNX Q4 quantized (~2 GB VRAM)
-  # - Voice cloning from 5-10s reference audio
-  # - Emotion tags: [laugh], [chuckle], [cough], [sigh]
-  # - 23 languages including French
-  # ─────────────────────────────────────────────────────────────────────────
-  chatterbox:
-    model_id: "onnx-community/chatterbox-multilingual-ONNX"
-    quantized: true
-    exaggeration: 0.5      # Emotion intensity (0.0 = flat, 1.0 = dramatic)
-    cfg_weight: 0.5        # Classifier-free guidance weight
-    prefer_full_gpu: true  # Full GPU for Chatterbox (E2B leaves enough VRAM)
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # RVC VOICE CONVERSION (post-processing, optional)
-  # ─────────────────────────────────────────────────────────────────────────
-  # Converts TTS output to a target voice using an RVC v2 model.
-  # Pipeline: Kokoro TTS → RVC → final audio with cloned voice.
-  # Recommended on Windows:
-  #   powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1 -Clean
-  # "auto" uses the worker overlay when installed, otherwise falls back to in-process InferRVC.
-  # ─────────────────────────────────────────────────────────────────────────
-  rvc:
-    enabled: false  # Set to true when RVC model is ready
-    backend: "worker"  # "worker" is the most stable option on Windows
-    python_path: ".\\venv\\Scripts\\python.exe"
-    site_packages_dir: null
-    worker_script: ".\\scripts\\rvc_worker.py"
-    model_path: "resources/voices/march7th/March-7th.pth"
-    index_path: "resources/voices/march7th/March-7th.index"
-    device: "cuda:0"
-    f0_method: "rmvpe"
-    f0_up_key: 0.0
-    index_rate: 0.0  # Realtime-safe default on Windows. >0 enables the FAISS index but can become very slow.
-    protect: 0.33
-    output_freq: null  # Keep native model sample rate unless you explicitly need resampling.
-
-  rate: "+0%"    # Edge TTS speed (-50% to +100%)
-  pitch: "+0Hz"  # Edge TTS pitch (-50Hz to +50Hz)
-
-# === ASR (Speech Recognition) ===
-# Used when mode: "pipeline" (omni mode handles ASR internally)
-asr:
-  # Available ASR providers:
-  # - "whisper"  : Local, CPU/GPU compatible, good for many languages with distilled models
-  provider: "whisper"
-
-  # Available Whisper models:
-  # ─────────────────────────────────────────────────────────────────────────
-  # STANDARD MODELS (auto-download from OpenAI):
-  # - tiny   : 39M params, very fast, low quality
-  # - base   : 74M params, fast, medium quality
-  # - small  : 244M params, GOOD COMPROMISE! Lightweight + good quality
-  # - medium : 769M params, slow, very good quality
-  # - large-v3: 1.5B params, very slow, best quality
-  # - turbo  : 809M params, 6x faster than large-v3 (but sometimes hallucinates)
-  # - distil-large-v3: 756M params, fast but ENGLISH ONLY
-  # ─────────────────────────────────────────────────────────────────────────
-  # FRENCH-OPTIMIZED MODELS (downloaded to models/, gitignored):
-  # - french-distil-dec4 : 0.8B params, Excellent FR quality, ~500MB download
-  # - french-distil-dec2 : 0.8B params, Faster, very good FR quality
-  # These models are fine-tuned on 2500+ hours of French by bofenghuang.
-  # WER: 8.37% (much better than standard Whisper for French)
-  # ─────────────────────────────────────────────────────────────────────────
-  # "large-v3-turbo" = best quality, fast (4 decoder layers), good on CPU with optimizations
-  # "small" = lighter but lower accuracy, more hallucinations
-  model_size: "french-distil-dec2"
-
-  # Language: "fr", "en", "auto" or empty "" for auto-detection
-  language: "fr"
-
-  # Prompt to guide transcription (helps even with forced language)
-  # Provides context about the expected conversation style.
-  prompt: "Transcription d'une conversation en francais avec un assistant vocal."
-
-  # Device: "cpu" or "cuda" (GPU)
-  # On an RTX 4070, CUDA gives a much better conversational latency than CPU.
-  # If you later hit VRAM pressure, switch back to "cpu" or use a smaller model.
-  device: "cuda"
-
-# === Live2D Avatar ===
-live2d:
-  # Enable/disable Live2D overlay
-  enabled: false
-
-  # Model configuration
-  model:
-    # Path relative to project root
-    path: "assets/models/march7th/"
-    # Model settings file name
-    settings_file: "march 7th.model3.json"
-
-  # Window settings
-  window:
-    width: 400
-    height: 600
-    # Position: -1 = auto (bottom-right corner)
-    x: -1
-    y: -1
-    opacity: 0.95
-    frameless: true
-    on_top: true
-    transparent: true
-
-  # Expression mapping from emotions to model expressions
-  # Format: emotion_name: "expression_name"
-  default_expression: "happy"
-  expressions:
-    happy: "星星"        # Stars
-    excited: "比耶"      # Peace sign
-    sad: "哭"           # Cry
-    angry: "黑脸"        # Dark face
-    shy: "脸红"          # Blush
-    embarrassed: "流汗"   # Sweat
-    surprised: "比耶"
-    photo: "照相"        # Camera
-    facepalm: "捂脸"     # Face cover
-
-  # Lip-sync settings
-  lip_sync:
-    # Smoothing factor (0.0 = instant, 1.0 = very smooth)
-    smoothing: 0.3
-    # Sensitivity multiplier
-    sensitivity: 1.0
-
-  # Hotkeys
-  hotkeys:
-    toggle_visibility: "F12"
-    toggle_frameless: "F11"

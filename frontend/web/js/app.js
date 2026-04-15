@@ -78,6 +78,7 @@ class App {
         this.ws.onModelsReady = (msg) => this._showModelsReady(msg);
         this.ws.onModelsError = (msg) => this._showModelsError(msg);
         this.ws.onError = (error) => this._handleError(error);
+        this.ws.onStopAudio = () => this._stopAllPlayback();
         
         // Live2D callbacks (if enabled)
         this.ws.onAudioWithLipSync = (msg) => this._handleAudioWithLipSync(msg);
@@ -91,9 +92,14 @@ class App {
         this.audio.onRecordingStart = () => this._handleRecordingStart();
         this.audio.onRecordingStop = () => this._handleRecordingStop();
         this.audio.onAudioSamples = (samples) => {
-            // Stream audio samples to server for VAD processing
-            this.ws.sendAudioStream(samples);
+            if (this._mode !== 'pipeline') {
+                // Omni modes still need raw audio streaming.
+                this.ws.sendAudioStream(samples);
+            }
         };
+        this.audio.onSpeechStart = () => this._handleSpeechStart();
+        this.audio.onSpeechEnd = () => this._handleSpeechEnd();
+        this.audio.onSpeechSegment = (buffer, sampleRate, meta) => this._handleSpeechSegment(buffer, sampleRate, meta);
         this.audio.onVolumeChange = (volume) => this._updateVolumeIndicator(volume);
 
         // Playback events (only used when Live2D is not enabled)
@@ -202,6 +208,7 @@ class App {
     _handleModeInfo(message) {
         this._mode = message.mode || 'pipeline';
         console.log('[App] Server mode:', this._mode);
+        this._configureAudioCaptureMode();
     }
 
     _handleOmniAudioChunk(message) {
@@ -266,6 +273,7 @@ class App {
     }
 
     _handleRecordingStart() {
+        this._configureAudioCaptureMode();
         // Update voice button state
         this.elements.voiceBtn?.classList.add('recording');
 
@@ -281,11 +289,31 @@ class App {
         // Hide status bar
         this._hideStatus();
 
-        // Notify server
-        this.ws.sendMicStop();
+        // Only stream modes rely on server-side end-of-utterance forcing.
+        if (this._mode !== 'pipeline') {
+            this.ws.sendMicStop();
+        }
+    }
+
+    _handleSpeechStart() {
+        this._interruptActiveAssistantTurn();
+        this.ws.sendInterrupt();
+        this.elements.voiceBtn?.classList.add('active');
+        this._showStatus('🗣️ Parole détectée...', 25);
+    }
+
+    _handleSpeechEnd() {
+        this.elements.voiceBtn?.classList.remove('active');
+        this._showStatus('⏳ Transcription...', 75);
+    }
+
+    _handleSpeechSegment(buffer, sampleRate, meta = {}) {
+        console.log('[App] Speech segment ready:', meta);
+        this.ws.sendAudioSegment(buffer, sampleRate);
     }
 
     _handleStreamStart() {
+        this._stopAllPlayback();
         this.isStreaming = true;
         this.currentStreamContent = '';
 
@@ -332,12 +360,14 @@ class App {
     }
 
     _handleVadStart() {
+        if (this._mode === 'pipeline') return;
         // VAD detected speech start - show visual feedback
         this._showStatus('🗣️ Parole détectée...', 25);
         this.elements.voiceBtn?.classList.add('active');
     }
 
     _handleVadEnd() {
+        if (this._mode === 'pipeline') return;
         // VAD detected speech end - will transcribe now
         // Ignore if AI is speaking (echo cancellation/feedback)
         if (this.isSpeaking) return;
@@ -586,8 +616,32 @@ class App {
                 this.elements.messages.appendChild(welcomeMsg);
             }
         }
+        this._stopAllPlayback();
         this.streamingPlayer.stop();
         this.ws.sendClear();
+    }
+
+    _configureAudioCaptureMode() {
+        const captureMode = this._mode === 'pipeline' ? 'client_vad' : 'stream';
+        this.audio.setCaptureMode(captureMode);
+    }
+
+    _interruptActiveAssistantTurn() {
+        if (this.isStreaming) {
+            this.isStreaming = false;
+            const streamingMsg = this.elements.messages?.querySelector('.message.streaming');
+            if (streamingMsg) {
+                streamingMsg.classList.remove('streaming');
+            }
+        }
+        this._stopAllPlayback();
+    }
+
+    _stopAllPlayback() {
+        this.audio.stopPlayback();
+        this.streamingPlayer.stop();
+        this.isSpeaking = false;
+        this._hideStatus();
     }
 }
 

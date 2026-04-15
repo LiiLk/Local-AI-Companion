@@ -29,6 +29,7 @@ class TTSResult:
     audio_path: Path | None = None
     audio_data: bytes | None = None
     duration: float | None = None
+    metadata: dict | None = None
 
 
 @dataclass
@@ -46,6 +47,23 @@ class Voice:
     name: str
     language: str
     gender: str
+
+
+def prefers_full_response_tts(tts: object | None) -> bool:
+    """
+    Return True when a provider should synthesize the final response in one shot.
+
+    The class-name fallback keeps existing tests and lightly-coupled integrations
+    working even when they use stand-in provider objects.
+    """
+    if tts is None:
+        return False
+
+    explicit_preference = getattr(tts, "prefer_full_response_tts", None)
+    if explicit_preference is not None:
+        return bool(explicit_preference)
+
+    return tts.__class__.__name__ == "Qwen3TTSProvider"
 
 
 class BaseTTS(ABC):
