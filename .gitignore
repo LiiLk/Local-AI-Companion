@@ -35,6 +35,12 @@ env/
 *.swp
 *.swo
 *~
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # OS
 .DS_Store
@@ -58,6 +64,8 @@ test_*.mp3
 
 # Secrets (never commit these!)
 .env
+.env.local
+config/config.local.yaml
 secrets.yaml
 **/api_keys*
 
@@ -90,11 +98,14 @@ resources/voices/**/*.index
 .worker_*
 dir_test.txt
 %SystemDrive%/
+tmp/
+tmp_*.wav
 AGENTS.md
 docs/superpowers/plans/2026-04-09-pipeline-latency-optimization.md
-tests/test_conversation_pipeline_tts_strategy.py
 
 # Desktop/Tauri local build artifacts
 /package-lock.json
 desktop/tauri/node_modules/
 desktop/tauri/src-tauri/target/
+config/config.local.example.yaml
+config/*.local.yaml
