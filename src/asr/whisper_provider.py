@@ -15,6 +15,8 @@ Features:
 
 import asyncio
 import os
+import logging
+import re
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, AsyncGenerator, Union
@@ -22,6 +24,7 @@ from dataclasses import dataclass
 
 from .base import BaseASR, BaseRealtimeASR, ASRResult, ASRSegment
 
+logger = logging.getLogger(__name__)
 
 # Directory for locally cached models
 MODELS_DIR = Path(__file__).parent.parent.parent / "models"
@@ -84,16 +87,19 @@ class WhisperProvider(BaseASR):
         "Bonjour, comment ça va ?"
     """
     
-    # Beam search provides better accuracy at slight speed cost
-    # Set to 1 for fastest speed (greedy decoding)
-    BEAM_SIZE = 1
+    # Beam search provides better accuracy at slight speed cost.
+    # Default stays conservative for conversational latency.
+    DEFAULT_BEAM_SIZE = 1
+    MIN_AUTO_LANGUAGE_CONFIDENCE = 0.35
+    REPETITIVE_HALLUCINATION_LANGUAGE_CONFIDENCE = 0.55
     
     def __init__(
         self,
         model_size: str = "base",
         device: str = "auto",
         compute_type: str = "float16",
-        initial_prompt: Optional[str] = None
+        initial_prompt: Optional[str] = None,
+        beam_size: int = DEFAULT_BEAM_SIZE,
     ):
         if model_size not in MODEL_SIZES:
             raise ValueError(
@@ -107,9 +113,62 @@ class WhisperProvider(BaseASR):
         # initial_prompt helps Whisper detect the correct language
         # Should be in the expected language (e.g. French for French audio)
         self.initial_prompt = initial_prompt
+        self.beam_size = max(1, int(beam_size or self.DEFAULT_BEAM_SIZE))
         
         # Lazy loading - model loaded on first use
         self._model = None
+
+    @staticmethod
+    def _looks_repetitive_hallucination(text: str) -> bool:
+        cleaned = (text or "").strip()
+        if len(cleaned) < 24:
+            return False
+
+        chars = [char for char in cleaned if not char.isspace()]
+        if len(chars) < 24:
+            return False
+
+        unique_ratio = len(set(chars)) / max(len(chars), 1)
+        if unique_ratio <= 0.08:
+            return True
+
+        repeated_char_run = re.search(r"(.)\1{11,}", cleaned)
+        if repeated_char_run:
+            return True
+
+        two_char_run = re.search(r"(.{1,2})\1{8,}", cleaned)
+        if two_char_run:
+            return True
+
+        # Repeated clause loops like "c'est le plus... c'est le plus..."
+        clause_parts = [
+            part.strip().lower()
+            for part in re.split(r"(?:\.{2,}|[.!?…])", cleaned)
+            if part and part.strip()
+        ]
+        if len(clause_parts) >= 4 and len(set(clause_parts)) == 1:
+            return True
+
+        tokens = re.findall(r"\b[\w'-]+\b", cleaned.lower())
+        if len(tokens) >= 12:
+            for n in (2, 3, 4):
+                if len(tokens) < n * 5:
+                    continue
+                repeated_run = 1
+                previous = tuple(tokens[:n])
+                for index in range(n, len(tokens) - n + 1, n):
+                    current = tuple(tokens[index:index + n])
+                    if len(current) < n:
+                        break
+                    if current == previous:
+                        repeated_run += 1
+                        if repeated_run >= 5:
+                            return True
+                    else:
+                        repeated_run = 1
+                        previous = current
+
+        return False
         
     def _download_french_model(self, model_config: dict) -> Path:
         """
@@ -131,11 +190,11 @@ class WhisperProvider(BaseASR):
         
         # Check if already downloaded
         if ctranslate2_path.exists() and (ctranslate2_path / "model.bin").exists():
-            print(f"✅ French model already cached: {local_path}")
+            logger.info("French model already cached: %s", local_path)
             return ctranslate2_path
         
-        print(f"📥 Downloading French model from {hf_repo}...")
-        print(f"   (This will only be done once)")
+        logger.info("Downloading French model from %s...", hf_repo)
+        logger.info("This will only be done once.")
         
         # Create models directory
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,7 +207,7 @@ class WhisperProvider(BaseASR):
             local_dir_use_symlinks=False,
         )
         
-        print(f"✅ Model downloaded: {local_path}")
+        logger.info("French model downloaded: %s", local_path)
         return ctranslate2_path
     
     def _get_model(self):
@@ -171,9 +230,9 @@ class WhisperProvider(BaseASR):
             is_french_model = "hf_repo" in model_config
             
             if is_french_model:
-                print(f"🔄 Loading French model ({self.model_size})...")
+                logger.info("Loading French model (%s)...", self.model_size)
             else:
-                print(f"🔄 Loading Whisper ({self.model_size})...")
+                logger.info("Loading Whisper (%s)...", self.model_size)
             
             # Determine device
             if self.device == "auto":
@@ -206,24 +265,24 @@ class WhisperProvider(BaseASR):
                     model_path,
                     device=device,
                     compute_type=compute_type,
-                    cpu_threads=4  # Optimize for CPU
+                    cpu_threads=8
                 )
             except Exception as e:
                 if "cudnn" in str(e).lower() or device == "cuda":
-                    print(f"⚠️ CUDA error, falling back to CPU: {e}")
+                    logger.warning("CUDA error, falling back to CPU: %s", e)
                     device = "cpu"
                     compute_type = "int8"
                     self._model = WhisperModel(
                         model_path,
                         device=device,
                         compute_type=compute_type,
-                        cpu_threads=4  # Optimize for CPU
+                        cpu_threads=8
                     )
                 else:
                     raise
             
             model_name = self.model_size if not is_french_model else f"{self.model_size} 🇫🇷"
-            print(f"✅ {model_name} loaded! (device={device}, compute={compute_type})")
+            logger.info("%s loaded (device=%s, compute=%s)", model_name, device, compute_type)
             
         return self._model
     
@@ -256,11 +315,11 @@ class WhisperProvider(BaseASR):
             # Log audio file info for debugging
             import os
             file_size = os.path.getsize(audio_path)
-            print(f"🎤 Transcribing {audio_path.name} ({file_size/1024:.1f} KB)")
+            logger.info("Transcribing %s (%.1f KB)", audio_path.name, file_size / 1024)
             transcribe_input = str(audio_path)
         else:
             # Numpy array
-            print(f"🎤 Transcribing audio buffer ({len(audio_input)} samples)")
+            logger.info("Transcribing audio buffer (%s samples)", len(audio_input))
             transcribe_input = audio_input
         
         # Normalize language setting
@@ -270,41 +329,46 @@ class WhisperProvider(BaseASR):
         # Use provided prompt or instance default
         effective_prompt = initial_prompt or self.initial_prompt
         
-        # Transcribe with faster-whisper (same approach as Open-LLM-VTuber)
+        # Transcribe with faster-whisper
+        # NOTE: vad_filter disabled — Silero VAD already runs upstream in the pipeline.
+        # word_timestamps disabled — not needed for conversational use, saves ~30-50% time.
         segments, info = model.transcribe(
             transcribe_input,
             language=effective_language,
-            beam_size=self.BEAM_SIZE,
-            word_timestamps=True,
-            vad_filter=True,  # Filter out silence using Silero VAD
-            vad_parameters=dict(
-                min_silence_duration_ms=500,  # Minimum silence to split
-                speech_pad_ms=400,  # Padding around speech
-            ),
+            beam_size=self.beam_size,
+            word_timestamps=False,
+            vad_filter=False,
             # Anti-hallucination settings:
-            condition_on_previous_text=False,  # Prevents repeated hallucinations
-            initial_prompt=effective_prompt,  # Guides language detection
-            no_speech_threshold=0.6,  # Higher = more strict (default 0.6)
-            log_prob_threshold=-1.0,  # Filter low confidence (default -1.0)
-            compression_ratio_threshold=2.4,  # Filter repetitive text (default 2.4)
-            temperature=0.0,  # Deterministic output (no sampling)
+            condition_on_previous_text=False,
+            initial_prompt=effective_prompt,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
+            temperature=0.0,
         )
         
         # Collect all segments
         all_segments = []
         full_text_parts = []
-        
+        no_speech_values: list[float] = []
+
         for segment in segments:
             # Log each segment for debugging
             avg_logprob = getattr(segment, 'avg_logprob', 0)
             no_speech_prob = getattr(segment, 'no_speech_prob', 0)
-            print(f"   📝 [{segment.start:.1f}s-{segment.end:.1f}s] "
-                  f"'{segment.text.strip()}' "
-                  f"(logprob={avg_logprob:.2f}, no_speech={no_speech_prob:.2f})")
+            no_speech_values.append(float(no_speech_prob))
+            logger.info(
+                "Segment [%.1fs-%.1fs] '%s' (logprob=%.2f, no_speech=%.2f)",
+                segment.start,
+                segment.end,
+                segment.text.strip(),
+                avg_logprob,
+                no_speech_prob,
+            )
             
             # Filter out low-confidence segments
             if avg_logprob < -1.0 or no_speech_prob > 0.5:
-                print(f"   ⚠️ Segment filtered (low confidence)")
+                logger.warning("Segment filtered (low confidence)")
                 continue
                 
             full_text_parts.append(segment.text)
@@ -316,11 +380,36 @@ class WhisperProvider(BaseASR):
             })
         
         full_text = " ".join(full_text_parts).strip()
-        
+        language_confidence = getattr(info, "language_probability", None)
+        avg_no_speech = (
+            sum(no_speech_values) / len(no_speech_values)
+            if no_speech_values
+            else 0.0
+        )
+
+        if (
+            effective_language is None
+            and full_text
+            and self._looks_repetitive_hallucination(full_text)
+            and (
+                language_confidence is None
+                or float(language_confidence) < self.REPETITIVE_HALLUCINATION_LANGUAGE_CONFIDENCE
+                or avg_no_speech >= 0.35
+            )
+        ):
+            logger.warning(
+                "Rejecting likely Whisper hallucination: language=%s probability=%.2f avg_no_speech=%.2f text=%r",
+                getattr(info, "language", None),
+                float(language_confidence or 0.0),
+                avg_no_speech,
+                full_text[:120],
+            )
+            full_text = ""
+
         return ASRResult(
             text=full_text,
             language=info.language,
-            confidence=info.language_probability,
+            confidence=language_confidence,
             duration=info.duration,
             segments=all_segments
         )
@@ -370,6 +459,7 @@ class WhisperProvider(BaseASR):
         info["model_size"] = self.model_size
         info["device"] = self.device
         info["compute_type"] = self.compute_type
+        info["beam_size"] = self.beam_size
         info["loaded"] = self._model is not None
         return info
 
@@ -440,7 +530,7 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
                 "pip install sounddevice soundfile numpy"
             )
         
-        print("🎤 Listening... (speak now)")
+        logger.info("Listening... (speak now)")
         
         # Recording parameters
         duration = timeout or 10.0  # Default 10 seconds max
@@ -460,7 +550,7 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
         except KeyboardInterrupt:
             sd.stop()
         
-        print("✅ Recording complete, transcribing...")
+        logger.info("Recording complete, transcribing...")
         
         # Trim silence from end (simple energy-based)
         audio = recording.flatten()

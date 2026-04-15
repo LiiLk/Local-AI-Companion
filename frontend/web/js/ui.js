@@ -378,13 +378,13 @@ class UIController {
      */
     resetSettings() {
         // Default values
-        document.getElementById('asr-provider').value = 'parakeet';
-        document.getElementById('asr-language').value = '';
-        document.getElementById('tts-provider').value = 'f5tts';
+        document.getElementById('asr-provider').value = 'whisper';
+        document.getElementById('asr-language').value = 'fr';
+        document.getElementById('tts-provider').value = 'qwen3';
         document.getElementById('auto-detect-language').checked = true;
         document.getElementById('stream-tts').checked = true;
-        document.getElementById('character-name').value = 'Juri';
-        document.getElementById('character-prompt').value = 'You are Juri Han from Street Fighter. You are sarcastic, sadistic, but helpful.';
+        document.getElementById('character-name').value = 'March 7th';
+        document.getElementById('character-prompt').value = 'You are March 7th from Honkai: Star Rail. Reply in the same language as the user and keep answers short for real-time voice chat.';
 
         // Remove from localStorage
         localStorage.removeItem('aria-settings');
@@ -406,7 +406,7 @@ class UIController {
             if (settings.asr) {
                 const provider = document.getElementById('asr-provider');
                 const language = document.getElementById('asr-language');
-                if (provider) provider.value = settings.asr.provider || 'parakeet';
+                if (provider) provider.value = settings.asr.provider || 'whisper';
                 if (language) language.value = settings.asr.language || '';
             }
 
@@ -414,7 +414,7 @@ class UIController {
                 const provider = document.getElementById('tts-provider');
                 const autoDetect = document.getElementById('auto-detect-language');
                 const streaming = document.getElementById('stream-tts');
-                if (provider) provider.value = settings.tts.provider || 'f5tts';
+                if (provider) provider.value = settings.tts.provider || 'qwen3';
                 if (autoDetect) autoDetect.checked = settings.tts.autoDetect !== false;
                 if (streaming) streaming.checked = settings.tts.streaming !== false;
             }
@@ -422,7 +422,7 @@ class UIController {
             if (settings.character) {
                 const name = document.getElementById('character-name');
                 const personality = document.getElementById('character-prompt');
-                if (name) name.value = settings.character.name || 'Juri';
+                if (name) name.value = settings.character.name || 'March 7th';
                 if (personality) personality.value = settings.character.personality || '';
             }
 

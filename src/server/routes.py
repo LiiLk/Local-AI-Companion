@@ -61,10 +61,23 @@ async def get_config(request: Request):
         tts_voice = "minicpmo"
         asr_model = "minicpmo"
     else:
-        llm = config.get("llm", {}).get("ollama", {})
-        llm_model = llm.get("model", "unknown")
+        llm_config = config.get("llm", {})
+        llm_provider = llm_config.get("provider", "ollama")
+        if llm_provider == "gemma":
+            llm_model = config.get("gemma", {}).get("model_id", "google/gemma-4-E4B-it")
+        else:
+            llm = llm_config.get("ollama", {})
+            llm_model = llm.get("model", "unknown")
         tts_provider = tts.get("provider", "kokoro")
-        tts_voice = tts.get("kokoro_voice", "ff_siwis")
+        if tts_provider == "chatterbox":
+            tts_voice = config.get("character", {}).get("voice", {}).get("chatterbox_ref_audio", "chatterbox")
+        elif tts_provider == "qwen3":
+            tts_voice = (
+                config.get("character", {}).get("voice", {}).get("qwen_ref_audio")
+                or tts.get("qwen3", {}).get("ref_audio_path", "qwen3")
+            )
+        else:
+            tts_voice = tts.get("kokoro_voice", tts.get("voice", "ff_siwis"))
         asr_model = asr.get("model_size", "base")
 
     return ConfigResponse(

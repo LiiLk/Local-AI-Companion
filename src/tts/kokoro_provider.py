@@ -18,11 +18,10 @@ Disadvantages:
 """
 
 import io
-import tempfile
 from pathlib import Path
 from typing import AsyncGenerator
 import asyncio
-import re
+import time
 
 import soundfile as sf
 import numpy as np
@@ -127,6 +126,7 @@ class KokoroProvider(BaseTTS):
         self.voice = voice
         self.speed = speed
         self._pipeline = None
+        self._pipelines: dict[str, object] = {}
         
         # Auto-detect language code from voice prefix
         # ff_siwis -> f (French), af_heart -> a (US English)
@@ -160,17 +160,46 @@ class KokoroProvider(BaseTTS):
         The model is automatically downloaded on first call
         from HuggingFace (~300MB).
         """
-        if self._pipeline is None:
+        cached = self._pipelines.get(self.lang_code)
+        if cached is None:
             from kokoro import KPipeline
-            
-            print(f"🔄 Loading Kokoro (lang={self.lang_code})...")
-            self._pipeline = KPipeline(
+
+            print(f"Loading Kokoro (lang={self.lang_code})...")
+            cached = KPipeline(
                 lang_code=self.lang_code,
-                repo_id="hexgrad/Kokoro-82M"  # Explicit to suppress warning
+                repo_id="hexgrad/Kokoro-82M"
             )
-            print("✅ Kokoro loaded!")
-        
-        return self._pipeline
+            self._pipelines[self.lang_code] = cached
+            print(f"Kokoro loaded! (lang={self.lang_code})")
+
+        self._pipeline = cached
+        return cached
+
+    @staticmethod
+    def _normalize_language(language: str | None) -> str | None:
+        if not language:
+            return None
+
+        value = language.strip().lower()
+        if value.startswith("fr"):
+            return "fr-FR"
+        if value.startswith("en-gb") or value == "en-uk":
+            return "en-GB"
+        if value.startswith("en"):
+            return "en-US"
+        if value.startswith("ja"):
+            return "ja-JP"
+        if value.startswith("zh"):
+            return "zh-CN"
+        if value.startswith("es"):
+            return "es-ES"
+        if value.startswith("hi"):
+            return "hi-IN"
+        if value.startswith("it"):
+            return "it-IT"
+        if value.startswith("pt"):
+            return "pt-BR"
+        return None
     
     async def synthesize(
         self,
@@ -189,23 +218,31 @@ class KokoroProvider(BaseTTS):
         """
         # Kokoro is synchronous, run in a thread
         loop = asyncio.get_event_loop()
+        synth_started = time.perf_counter()
         audio_data = await loop.run_in_executor(
             None, 
             self._synthesize_sync, 
             text
         )
-        
-        # Define output path
+        synth_ms = (time.perf_counter() - synth_started) * 1000
+
+        metadata = {
+            "synth_ms": synth_ms,
+            "provider": "kokoro",
+            "voice": self.voice,
+            "lang_code": self.lang_code,
+        }
+
         if output_path is None:
-            # Create temporary WAV file
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            output_path = Path(tmp.name)
-            tmp.close()
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_data, self.SAMPLE_RATE, format='WAV')
+            buffer.seek(0)
+            return TTSResult(audio_data=buffer.read(), metadata=metadata)
         
         # Save as WAV
         sf.write(str(output_path), audio_data, self.SAMPLE_RATE)
         
-        return TTSResult(audio_path=output_path)
+        return TTSResult(audio_path=output_path, metadata=metadata)
     
     def _synthesize_sync(self, text: str) -> np.ndarray:
         """
@@ -326,7 +363,7 @@ class KokoroProvider(BaseTTS):
         
         # If language changed, force pipeline reload
         if old_lang != self.lang_code:
-            self._pipeline = None
+            self._pipeline = self._pipelines.get(self.lang_code)
     
     def set_speed(self, speed: float) -> None:
         """Change speech speed (0.5 to 2.0)."""
@@ -362,6 +399,27 @@ class KokoroProvider(BaseTTS):
         """
         # Kokoro does not support pitch, silently ignore
         pass
+
+    def set_language(self, language: str | None) -> None:
+        """
+        Switch to a recommended voice for the requested language.
+
+        The desktop pipeline sends short language codes ("fr", "en"), so
+        normalize them to Kokoro locales before selecting a voice.
+        """
+        locale = self._normalize_language(language)
+        if not locale:
+            return
+        self.set_voice(self.get_recommended_voice(locale))
+
+    def preload(self) -> None:
+        """Preload the current Kokoro pipeline."""
+        self._load_pipeline()
+
+    def warmup(self) -> None:
+        """Warm up the current language pipeline with a tiny synthesis."""
+        warmup_text = "Bonjour." if self.lang_code == "f" else "Hello."
+        self._synthesize_sync(warmup_text)
     
     @staticmethod
     def get_recommended_voice(language: str) -> str:

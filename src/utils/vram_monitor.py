@@ -22,7 +22,7 @@ class VRAMMonitor:
             self._available = torch.cuda.is_available()
             if self._available:
                 self._torch = torch
-                self._total = torch.cuda.get_device_properties(0).total_mem
+                self._total = torch.cuda.get_device_properties(0).total_memory
         except ImportError:
             pass
 
