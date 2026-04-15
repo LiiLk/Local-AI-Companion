@@ -28,10 +28,15 @@ from src.tts.base import prefers_full_response_tts
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.assistant.pipeline_runtime import (
+    close_pipeline_runtime_services,
     create_pipeline_asr,
     create_pipeline_llm,
     create_pipeline_rvc,
     create_pipeline_tts,
+    preload_pipeline_asr,
+    preload_pipeline_llm,
+    preload_pipeline_rvc,
+    preload_pipeline_tts,
     resolve_initial_tts_language,
 )
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
@@ -134,12 +139,8 @@ class ConversationState:
 
     def preload_rvc(self):
         """Preload RVC backend/model when enabled."""
-        rvc = self.get_rvc()
-        if rvc and hasattr(rvc, "preload"):
-            rvc.preload()
-        if rvc and hasattr(rvc, "warmup"):
-            rvc.warmup()
-        return rvc
+        self.rvc = preload_pipeline_rvc(self.get_rvc(), warmup=True)
+        return self.rvc
 
     def get_vad(self):
         """Get or create VAD engine (lazy loading)."""
@@ -167,12 +168,32 @@ class ConversationState:
 
     def preload_llm(self):
         """Preload the configured pipeline LLM when it supports it."""
-        if self.llm is None:
-            return None
-        preload = getattr(self.llm, "preload", None)
-        if callable(preload):
-            preload()
+        self.llm = preload_pipeline_llm(self.llm)
         return self.llm
+
+    def preload_asr(self):
+        """Preload the configured ASR provider when it supports it."""
+        self.asr = preload_pipeline_asr(self.get_asr())
+        return self.asr
+
+    def preload_tts(self):
+        """Preload and optionally warm up the configured TTS provider."""
+        self.tts = preload_pipeline_tts(
+            self.get_tts(),
+            warmup=bool(self.config.get("tts", {}).get("warmup_on_start", False)),
+            on_load_error=self._fallback_tts_after_preload_error,
+        )
+        return self.tts
+
+    def _fallback_tts_after_preload_error(self, tts: Any, exc: Exception) -> Any:
+        if tts.__class__.__name__ != "Qwen3TTSProvider":
+            raise exc
+
+        voice_config = self.config.get("character", {}).get("voice", {})
+        fallback_voice = voice_config.get("kokoro_voice") or self.config.get("tts", {}).get("kokoro_voice", "ff_siwis")
+        print(f"   Qwen3-TTS preload failed, falling back to Kokoro: {exc}")
+        self.tts = KokoroProvider(voice=fallback_voice)
+        return self.tts
 
     def get_omni(self):
         """Get or create the omni model and pipeline (lazy loading)."""
@@ -281,14 +302,12 @@ class ConversationState:
                 await self.response_task
             except asyncio.CancelledError:
                 pass
-        if self.tts and hasattr(self.tts, "cleanup"):
-            self.tts.cleanup()
-        if self.asr and hasattr(self.asr, "cleanup"):
-            self.asr.cleanup()
-        if self.llm:
-            await self.llm.close()
-        if self.rvc and hasattr(self.rvc, "close"):
-            self.rvc.close()
+        await close_pipeline_runtime_services(
+            llm=self.llm,
+            tts=self.tts,
+            asr=self.asr,
+            rvc=self.rvc,
+        )
 
 
 class WebSocketManager:
@@ -1558,25 +1577,7 @@ class WebSocketManager:
                         "progress": 60
                     })
                     try:
-                        def _preload_tts():
-                            tts = state.get_tts()
-                            if hasattr(tts, "preload"):
-                                tts.preload()
-                            elif hasattr(tts, '_load_model'):
-                                try:
-                                    tts._load_model()
-                                except Exception as exc:
-                                    if tts.__class__.__name__ == "Qwen3TTSProvider":
-                                        fallback_voice = state.config.get("tts", {}).get("kokoro_voice", "ff_siwis")
-                                        print(f"   Qwen3-TTS preload failed, falling back to Kokoro: {exc}")
-                                        state.tts = KokoroProvider(voice=fallback_voice)
-                                        tts = state.tts
-                                    else:
-                                        raise
-                            tts_warmup_on_start = bool(state.config.get("tts", {}).get("warmup_on_start", False))
-                            if tts_warmup_on_start and hasattr(tts, "warmup"):
-                                tts.warmup()
-                        await loop.run_in_executor(None, _preload_tts)
+                        await loop.run_in_executor(None, state.preload_tts)
                         print(f"   TTS loaded for {client_id}")
                         await safe_send({
                             "type": "model_loaded",
@@ -1599,12 +1600,7 @@ class WebSocketManager:
                         "progress": 82
                     })
                     try:
-                        def _preload_asr():
-                            asr = state.get_asr()
-                            if hasattr(asr, "preload"):
-                                asr.preload()
-
-                        await loop.run_in_executor(None, _preload_asr)
+                        await loop.run_in_executor(None, state.preload_asr)
                         print(f"   ASR loaded for {client_id}")
                         await safe_send({
                             "type": "model_loaded",
@@ -1736,11 +1732,11 @@ class WebSocketManager:
 
                 async def load_asr():
                     if not state.asr:
-                        await loop.run_in_executor(None, state.get_asr)
+                        await loop.run_in_executor(None, state.preload_asr)
 
                 async def load_tts():
                     if not state.tts:
-                        await loop.run_in_executor(None, state.get_tts)
+                        await loop.run_in_executor(None, state.preload_tts)
 
                 async def load_llm():
                     if state.config.get("llm", {}).get("provider", "ollama") == "gemma":

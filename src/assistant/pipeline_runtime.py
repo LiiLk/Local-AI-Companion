@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+import inspect
 import logging
 from typing import Any
 
@@ -320,9 +322,132 @@ def create_pipeline_runtime_components(
     )
 
 
+def preload_pipeline_llm(llm: Any) -> Any:
+    """Preload the configured LLM when supported."""
+    if llm is None:
+        return None
+
+    preload = getattr(llm, "preload", None)
+    if callable(preload):
+        preload()
+    return llm
+
+
+def preload_pipeline_asr(asr: Any) -> Any:
+    """Preload the configured ASR backend when supported."""
+    if asr is None:
+        return None
+
+    preload = getattr(asr, "preload", None)
+    if callable(preload):
+        preload()
+    elif hasattr(asr, "_get_model"):
+        asr._get_model()
+    return asr
+
+
+def preload_pipeline_tts(
+    tts: Any,
+    *,
+    warmup: bool = False,
+    on_load_error: Callable[[Any, Exception], Any] | None = None,
+) -> Any:
+    """Preload and optionally warm up the configured TTS backend."""
+    if tts is None:
+        return None
+
+    try:
+        _load_tts_model(tts)
+    except Exception as exc:
+        if on_load_error is None:
+            raise
+        replacement = on_load_error(tts, exc)
+        if replacement is None:
+            raise
+        tts = replacement
+        _load_tts_model(tts)
+
+    if warmup and hasattr(tts, "warmup"):
+        tts.warmup()
+    return tts
+
+
+def preload_pipeline_rvc(
+    rvc: Any | None,
+    *,
+    warmup: bool = True,
+) -> Any | None:
+    """Preload and optionally warm up RVC when enabled."""
+    if rvc is None:
+        return None
+
+    preload = getattr(rvc, "preload", None)
+    if callable(preload):
+        preload()
+    if warmup and hasattr(rvc, "warmup"):
+        rvc.warmup()
+    return rvc
+
+
+def preload_pipeline_runtime_services(
+    *,
+    llm: Any = None,
+    asr: Any = None,
+    tts: Any = None,
+    rvc: Any | None = None,
+    tts_warmup_on_start: bool = False,
+    tts_on_load_error: Callable[[Any, Exception], Any] | None = None,
+    rvc_warmup_on_start: bool = True,
+) -> tuple[Any, Any | None]:
+    """Preload pipeline services in the same order across entry points."""
+    preload_pipeline_llm(llm)
+    preload_pipeline_asr(asr)
+    tts = preload_pipeline_tts(
+        tts,
+        warmup=tts_warmup_on_start,
+        on_load_error=tts_on_load_error,
+    )
+    rvc = preload_pipeline_rvc(rvc, warmup=rvc_warmup_on_start)
+    return tts, rvc
+
+
+async def close_pipeline_runtime_services(
+    *,
+    llm: Any = None,
+    tts: Any = None,
+    asr: Any = None,
+    rvc: Any | None = None,
+) -> None:
+    """Close pipeline services consistently across entry points."""
+    if tts and hasattr(tts, "cleanup"):
+        tts.cleanup()
+    if asr and hasattr(asr, "cleanup"):
+        asr.cleanup()
+
+    if llm is not None:
+        close = getattr(llm, "close", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        elif hasattr(llm, "cleanup"):
+            llm.cleanup()
+
+    if rvc and hasattr(rvc, "close"):
+        rvc.close()
+
+
 def _maybe_set_tts_language(tts: Any, language: str | None) -> None:
     if language and hasattr(tts, "set_language"):
         try:
             tts.set_language(language)
         except Exception as exc:
             logger.debug("Initial TTS language setup failed: %s", exc)
+
+
+def _load_tts_model(tts: Any) -> None:
+    preload = getattr(tts, "preload", None)
+    if callable(preload):
+        preload()
+    elif hasattr(tts, "_load_model"):
+        tts._load_model()

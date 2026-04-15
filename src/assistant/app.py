@@ -46,7 +46,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.assistant.audio_service import AudioService, AudioServiceConfig, MicState
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
-from src.assistant.pipeline_runtime import create_pipeline_runtime_components
+from src.assistant.pipeline_runtime import (
+    close_pipeline_runtime_services,
+    create_pipeline_runtime_components,
+    preload_pipeline_runtime_services,
+)
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
 
@@ -896,23 +900,16 @@ class Live2DAssistant:
                 asr = getattr(self.pipeline, 'asr', None)
                 tts = getattr(self.pipeline, 'tts', None)
                 rvc = getattr(self.pipeline, 'rvc', None)
-                if hasattr(llm, 'preload'):
-                    llm.preload()
-                if hasattr(asr, 'preload'):
-                    asr.preload()
-                elif hasattr(asr, '_get_model'):
-                    asr._get_model()
-                if hasattr(tts, 'preload'):
-                    tts.preload()
-                elif hasattr(tts, '_load_model'):
-                    tts._load_model()
-                tts_warmup_on_start = bool(self.config.get('tts', {}).get('warmup_on_start', False))
-                if tts_warmup_on_start and hasattr(tts, 'warmup'):
-                    tts.warmup()
-                if rvc and hasattr(rvc, 'preload'):
-                    rvc.preload()
-                    if hasattr(rvc, 'warmup'):
-                        rvc.warmup()
+                tts, rvc = preload_pipeline_runtime_services(
+                    llm=llm,
+                    asr=asr,
+                    tts=tts,
+                    rvc=rvc,
+                    tts_warmup_on_start=bool(self.config.get('tts', {}).get('warmup_on_start', False)),
+                    rvc_warmup_on_start=True,
+                )
+                self.pipeline.tts = tts
+                self.pipeline.rvc = rvc
                 logger.info("✅ Pipeline models ready")
 
             degraded_reason = self._collect_degraded_reason()
@@ -1111,14 +1108,16 @@ class Live2DAssistant:
             tts = getattr(self.pipeline, 'tts', None)
             asr = getattr(self.pipeline, 'asr', None)
             rvc = getattr(self.pipeline, 'rvc', None)
-            if hasattr(tts, 'cleanup'):
-                tts.cleanup()
-            if hasattr(asr, 'cleanup'):
-                asr.cleanup()
-            if hasattr(llm, 'cleanup'):
-                llm.cleanup()
-            if rvc and hasattr(rvc, 'close'):
-                rvc.close()
+            try:
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        close_pipeline_runtime_services(llm=llm, tts=tts, asr=asr, rvc=rvc),
+                        self._loop,
+                    ).result(timeout=10)
+                else:
+                    asyncio.run(close_pipeline_runtime_services(llm=llm, tts=tts, asr=asr, rvc=rvc))
+            except Exception as exc:
+                logger.debug("Pipeline cleanup error: %s", exc, exc_info=True)
         
         if self._bridge_server and self._loop:
             try:
