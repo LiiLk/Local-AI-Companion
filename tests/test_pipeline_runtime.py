@@ -1,6 +1,7 @@
 from src.assistant.pipeline_runtime import (
     build_pipeline_conversation_config,
     close_pipeline_runtime_services,
+    create_pipeline_runtime,
     preload_pipeline_asr,
     preload_pipeline_tts,
     resolve_initial_tts_language,
@@ -143,3 +144,48 @@ async def test_close_pipeline_runtime_services_closes_all_backends():
     assert asr.cleaned is True
     assert llm.closed is True
     assert rvc.closed is True
+
+
+def test_pipeline_runtime_uses_reply_language_for_initial_tts(monkeypatch):
+    config = {
+        "pipeline": {"reply_language": "en"},
+        "tts": {"provider": "kokoro"},
+    }
+    runtime = create_pipeline_runtime(config, initial_tts_language="fr")
+
+    marker = object()
+
+    def fake_create_pipeline_tts(runtime_config, *, initial_language=None):
+        assert runtime_config is config
+        assert initial_language == "en"
+        return marker, "Kokoro"
+
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_tts", fake_create_pipeline_tts)
+
+    assert runtime.ensure_tts() is marker
+    assert runtime.tts_summary == "Kokoro"
+
+
+def test_pipeline_runtime_reports_ready_when_all_services_exist():
+    runtime = create_pipeline_runtime({"llm": {"provider": "openrouter"}, "tts": {"rvc": {"enabled": True}}})
+    runtime.llm = object()
+    runtime.tts = object()
+    runtime.asr = object()
+    runtime.rvc = object()
+
+    assert runtime.is_ready() is True
+
+
+def test_pipeline_runtime_resolves_degraded_backend_status():
+    runtime = create_pipeline_runtime({})
+    runtime.tts = type("FakeTTS", (), {"degraded_reason": "fallback active"})()
+
+    status = runtime.resolve_backend_status(
+        requested_state="ready",
+        runtime_error=None,
+        extra_degraded_reason="slow mode",
+    )
+
+    assert status.state == "degraded"
+    assert status.degraded_reason == "fallback active | slow mode"
+    assert status.runtime_error is None

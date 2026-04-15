@@ -27,6 +27,187 @@ class PipelineRuntimeComponents:
     rvc_summary: str | None
 
 
+@dataclass
+class PipelineBackendStatus:
+    state: str
+    degraded_reason: str | None
+    runtime_error: str | None
+
+
+class PipelineRuntime:
+    """Own the lifecycle and readiness state of pipeline-mode services."""
+
+    def __init__(
+        self,
+        config: dict,
+        *,
+        initial_tts_language: str | None = None,
+    ):
+        self.config = config
+        self._tts_language = resolve_initial_tts_language(config, initial_tts_language)
+        self.llm: Any | None = None
+        self.tts: Any | None = None
+        self.asr: Any | None = None
+        self.rvc: Any | None = None
+        self.llm_summary: str | None = None
+        self.tts_summary: str | None = None
+        self.asr_summary: str | None = None
+        self.rvc_summary: str | None = None
+
+    def build_conversation_config(self) -> ConversationConfig:
+        return build_pipeline_conversation_config(self.config)
+
+    def ensure_llm(self) -> Any:
+        if self.llm is None:
+            self.llm, self.llm_summary = create_pipeline_llm(self.config)
+        return self.llm
+
+    def ensure_tts(self, language: str | None = None) -> Any:
+        if language:
+            self._tts_language = resolve_initial_tts_language(self.config, language)
+        if self.tts is None:
+            self.tts, self.tts_summary = create_pipeline_tts(
+                self.config,
+                initial_language=self._tts_language,
+            )
+        elif language:
+            self.set_tts_language(language)
+        return self.tts
+
+    def ensure_asr(self) -> Any:
+        if self.asr is None:
+            self.asr, self.asr_summary = create_pipeline_asr(self.config)
+        return self.asr
+
+    def ensure_rvc(self) -> Any | None:
+        if self.rvc is None:
+            self.rvc, self.rvc_summary = create_pipeline_rvc(self.config)
+        return self.rvc
+
+    def build_components(self) -> PipelineRuntimeComponents:
+        return PipelineRuntimeComponents(
+            llm=self.ensure_llm(),
+            tts=self.ensure_tts(),
+            asr=self.ensure_asr(),
+            rvc=self.ensure_rvc(),
+            conversation_config=self.build_conversation_config(),
+            llm_summary=self.llm_summary or "unknown",
+            tts_summary=self.tts_summary or "unknown",
+            asr_summary=self.asr_summary or "unknown",
+            rvc_summary=self.rvc_summary,
+        )
+
+    def set_tts_language(self, language: str | None) -> None:
+        resolved = resolve_initial_tts_language(self.config, language)
+        if resolved:
+            self._tts_language = resolved
+        if self.tts is not None:
+            _maybe_set_tts_language(self.tts, self._tts_language)
+
+    def preload_llm(self) -> Any:
+        self.llm = preload_pipeline_llm(self.ensure_llm())
+        return self.llm
+
+    def preload_asr(self) -> Any:
+        self.asr = preload_pipeline_asr(self.ensure_asr())
+        return self.asr
+
+    def preload_tts(
+        self,
+        *,
+        on_load_error: Callable[[Any, Exception], Any] | None = None,
+    ) -> Any:
+        self.tts = preload_pipeline_tts(
+            self.ensure_tts(),
+            warmup=bool(self.config.get("tts", {}).get("warmup_on_start", False)),
+            on_load_error=on_load_error,
+        )
+        return self.tts
+
+    def preload_rvc(self) -> Any | None:
+        self.rvc = preload_pipeline_rvc(
+            self.ensure_rvc(),
+            warmup=bool(self.config.get("tts", {}).get("rvc", {}).get("enabled", False)),
+        )
+        return self.rvc
+
+    def preload_all(
+        self,
+        *,
+        tts_on_load_error: Callable[[Any, Exception], Any] | None = None,
+    ) -> tuple[Any, Any | None]:
+        self.preload_llm()
+        self.preload_asr()
+        self.preload_tts(on_load_error=tts_on_load_error)
+        self.preload_rvc()
+        return self.tts, self.rvc
+
+    async def close(self) -> None:
+        await close_pipeline_runtime_services(
+            llm=self.llm,
+            tts=self.tts,
+            asr=self.asr,
+            rvc=self.rvc,
+        )
+
+    def collect_degraded_reason(self, extra_reason: str | None = None) -> str | None:
+        parts: list[str] = []
+        llm_reason = getattr(self.llm, "degraded_reason", None)
+        if llm_reason:
+            parts.append(str(llm_reason))
+
+        tts_reason = getattr(self.tts, "degraded_reason", None)
+        if tts_reason:
+            parts.append(str(tts_reason))
+
+        if extra_reason:
+            parts.append(str(extra_reason))
+
+        unique_parts: list[str] = []
+        for part in parts:
+            if part and part not in unique_parts:
+                unique_parts.append(part)
+        return " | ".join(unique_parts) if unique_parts else None
+
+    def resolve_backend_status(
+        self,
+        *,
+        requested_state: str = "ready",
+        runtime_error: str | None = None,
+        extra_degraded_reason: str | None = None,
+    ) -> PipelineBackendStatus:
+        degraded_reason = self.collect_degraded_reason(extra_reason=extra_degraded_reason)
+        state = requested_state
+        if runtime_error:
+            state = "error"
+        elif state != "warming_up" and degraded_reason:
+            state = "degraded"
+        return PipelineBackendStatus(
+            state=state,
+            degraded_reason=degraded_reason,
+            runtime_error=runtime_error,
+        )
+
+    def is_ready(self) -> bool:
+        return (
+            self._llm_is_ready()
+            and self.asr is not None
+            and self.tts is not None
+            and self._rvc_is_ready()
+        )
+
+    def _llm_is_ready(self) -> bool:
+        if self.llm is None:
+            return False
+        if self.config.get("llm", {}).get("provider", "ollama") == "gemma":
+            return bool(getattr(getattr(self.llm, "gemma", None), "_model", None))
+        return True
+
+    def _rvc_is_ready(self) -> bool:
+        rvc_enabled = bool(self.config.get("tts", {}).get("rvc", {}).get("enabled", False))
+        return self.rvc is not None or not rvc_enabled
+
+
 def resolve_initial_tts_language(
     config: dict,
     fallback_language: str | None = None,
@@ -302,24 +483,18 @@ def create_pipeline_runtime_components(
     *,
     initial_tts_language: str | None = None,
 ) -> PipelineRuntimeComponents:
-    llm, llm_summary = create_pipeline_llm(config)
-    tts, tts_summary = create_pipeline_tts(
+    return create_pipeline_runtime(
         config,
-        initial_language=resolve_initial_tts_language(config, initial_tts_language),
-    )
-    asr, asr_summary = create_pipeline_asr(config)
-    rvc, rvc_summary = create_pipeline_rvc(config)
-    return PipelineRuntimeComponents(
-        llm=llm,
-        tts=tts,
-        asr=asr,
-        rvc=rvc,
-        conversation_config=build_pipeline_conversation_config(config),
-        llm_summary=llm_summary,
-        tts_summary=tts_summary,
-        asr_summary=asr_summary,
-        rvc_summary=rvc_summary,
-    )
+        initial_tts_language=initial_tts_language,
+    ).build_components()
+
+
+def create_pipeline_runtime(
+    config: dict,
+    *,
+    initial_tts_language: str | None = None,
+) -> PipelineRuntime:
+    return PipelineRuntime(config, initial_tts_language=initial_tts_language)
 
 
 def preload_pipeline_llm(llm: Any) -> Any:

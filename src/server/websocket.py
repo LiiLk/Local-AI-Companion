@@ -29,15 +29,7 @@ from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
-    create_pipeline_asr,
-    create_pipeline_llm,
-    create_pipeline_rvc,
-    create_pipeline_tts,
-    preload_pipeline_asr,
-    preload_pipeline_llm,
-    preload_pipeline_rvc,
-    preload_pipeline_tts,
-    resolve_initial_tts_language,
+    create_pipeline_runtime,
 )
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
 from src.utils.character_loader import resolve_character_config
@@ -84,6 +76,7 @@ class ConversationState:
     gemma_model: Optional[Any] = None
     gemma_pipeline: Optional[Any] = None
     rvc: Optional[Any] = None
+    pipeline_runtime: Optional[Any] = None
     response_task: Optional[asyncio.Task] = None
     response_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -102,9 +95,8 @@ class ConversationState:
             # Defer model loading to get_gemma_omni()
             pass
         else:
-            # Pipeline mode: initialize LLM
-            if self.llm is None:
-                self.llm, _ = create_pipeline_llm(self.config)
+            runtime = self._get_pipeline_runtime()
+            self.llm = runtime.ensure_llm()
 
         # Initialize conversation with system prompt
         if not self.messages:
@@ -112,34 +104,39 @@ class ConversationState:
             system_prompt = character.get("system_prompt", "You are a helpful assistant.")
             self.messages.append(Message(role="system", content=system_prompt))
 
+    def _get_pipeline_runtime(self):
+        if self.pipeline_runtime is None:
+            self.pipeline_runtime = create_pipeline_runtime(
+                self.config,
+                initial_tts_language=self.current_language,
+            )
+        return self.pipeline_runtime
+
+    def get_llm(self):
+        """Get or create the pipeline LLM."""
+        self.llm = self._get_pipeline_runtime().ensure_llm()
+        return self.llm
+
     def get_tts(self):
         """Get or create TTS provider (lazy loading). Pipeline mode only."""
-        if self.tts is None:
-            self.tts, _ = create_pipeline_tts(
-                self.config,
-                initial_language=resolve_initial_tts_language(self.config, self.current_language),
-            )
-
+        self.tts = self._get_pipeline_runtime().ensure_tts(self.current_language)
         return self.tts
 
     def get_rvc(self):
         """Get or create RVC voice converter (lazy loading). Returns None if disabled."""
-        if self.rvc is None:
-            self.rvc, _ = create_pipeline_rvc(self.config)
+        self.rvc = self._get_pipeline_runtime().ensure_rvc()
         return self.rvc
 
     def get_asr(self):
         """Get or create ASR provider (lazy loading). Pipeline mode only."""
-        if self.asr is None:
-            self.asr, _ = create_pipeline_asr(self.config)
-            asr_config = self.config.get("asr", {})
-            self.asr_language = asr_config.get("language", "")
-
+        self.asr = self._get_pipeline_runtime().ensure_asr()
+        asr_config = self.config.get("asr", {})
+        self.asr_language = asr_config.get("language", "")
         return self.asr
 
     def preload_rvc(self):
         """Preload RVC backend/model when enabled."""
-        self.rvc = preload_pipeline_rvc(self.get_rvc(), warmup=True)
+        self.rvc = self._get_pipeline_runtime().preload_rvc()
         return self.rvc
 
     def get_vad(self):
@@ -168,19 +165,17 @@ class ConversationState:
 
     def preload_llm(self):
         """Preload the configured pipeline LLM when it supports it."""
-        self.llm = preload_pipeline_llm(self.llm)
+        self.llm = self._get_pipeline_runtime().preload_llm()
         return self.llm
 
     def preload_asr(self):
         """Preload the configured ASR provider when it supports it."""
-        self.asr = preload_pipeline_asr(self.get_asr())
+        self.asr = self._get_pipeline_runtime().preload_asr()
         return self.asr
 
     def preload_tts(self):
         """Preload and optionally warm up the configured TTS provider."""
-        self.tts = preload_pipeline_tts(
-            self.get_tts(),
-            warmup=bool(self.config.get("tts", {}).get("warmup_on_start", False)),
+        self.tts = self._get_pipeline_runtime().preload_tts(
             on_load_error=self._fallback_tts_after_preload_error,
         )
         return self.tts
@@ -193,7 +188,13 @@ class ConversationState:
         fallback_voice = voice_config.get("kokoro_voice") or self.config.get("tts", {}).get("kokoro_voice", "ff_siwis")
         print(f"   Qwen3-TTS preload failed, falling back to Kokoro: {exc}")
         self.tts = KokoroProvider(voice=fallback_voice)
+        if self.pipeline_runtime is not None:
+            self.pipeline_runtime.tts = self.tts
         return self.tts
+
+    def pipeline_ready(self) -> bool:
+        runtime = self.pipeline_runtime
+        return bool(runtime and runtime.is_ready())
 
     def get_omni(self):
         """Get or create the omni model and pipeline (lazy loading)."""
@@ -302,12 +303,15 @@ class ConversationState:
                 await self.response_task
             except asyncio.CancelledError:
                 pass
-        await close_pipeline_runtime_services(
-            llm=self.llm,
-            tts=self.tts,
-            asr=self.asr,
-            rvc=self.rvc,
-        )
+        if self.pipeline_runtime is not None:
+            await self.pipeline_runtime.close()
+        else:
+            await close_pipeline_runtime_services(
+                llm=self.llm,
+                tts=self.tts,
+                asr=self.asr,
+                rvc=self.rvc,
+            )
 
 
 class WebSocketManager:
@@ -466,7 +470,10 @@ class WebSocketManager:
             return None
 
         state.current_language = normalized
-        if state.tts and hasattr(state.tts, "set_language"):
+        if state.pipeline_runtime is not None:
+            state.pipeline_runtime.set_tts_language(normalized)
+            state.tts = state.pipeline_runtime.tts
+        elif state.tts and hasattr(state.tts, "set_language"):
             state.tts.set_language(normalized)
         return normalized
 
@@ -586,7 +593,10 @@ class WebSocketManager:
                 print(f"Language switch detected: {state.current_language} -> {lang_code}")
                 state.current_language = lang_code
 
-                if state.tts and hasattr(state.tts, "set_language"):
+                if state.pipeline_runtime is not None:
+                    state.pipeline_runtime.set_tts_language(lang_code)
+                    state.tts = state.pipeline_runtime.tts
+                elif state.tts and hasattr(state.tts, "set_language"):
                     state.tts.set_language(lang_code)
 
                 tts_config = state.config.get("tts", {})
@@ -1112,7 +1122,8 @@ class WebSocketManager:
         await tts_mgr.start()
 
         try:
-            async for chunk in state.llm.chat_stream(llm_messages):
+            llm = state.get_llm()
+            async for chunk in llm.chat_stream(llm_messages):
                 if "llm_first_token_epoch_ms" not in trace_data:
                     trace_data["llm_first_token_epoch_ms"] = int(time.time() * 1000)
                 full_response += chunk
@@ -1681,12 +1692,7 @@ class WebSocketManager:
                 })
                 return
         else:
-            llm_ready = True
-            if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
-                llm_ready = bool(getattr(getattr(state.llm, "gemma", None), "_model", None))
-            rvc_enabled = state.config.get("tts", {}).get("rvc", {}).get("enabled", False)
-            rvc_ready = state.rvc is not None or not rvc_enabled
-            if state.vad and state.asr and state.tts and llm_ready and rvc_ready:
+            if state.vad and state.pipeline_ready():
                 await self.send_json(client_id, {
                     "type": "models_ready",
                     "message": "Models already loaded"

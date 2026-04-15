@@ -47,9 +47,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.assistant.audio_service import AudioService, AudioServiceConfig, MicState
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
 from src.assistant.pipeline_runtime import (
-    close_pipeline_runtime_services,
-    create_pipeline_runtime_components,
-    preload_pipeline_runtime_services,
+    create_pipeline_runtime,
 )
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
@@ -326,6 +324,7 @@ class Live2DAssistant:
         # Components (initialized in start())
         self.audio_service: Optional[AudioService] = None
         self.pipeline: Optional[ConversationPipeline] = None
+        self._pipeline_runtime = None
         
         # Current audio playback state
         self._current_volumes: list[float] = []
@@ -338,6 +337,7 @@ class Live2DAssistant:
         """Create ASR, LLM, TTS, and pipeline components."""
         character_config = self.config.get('character', {})
         mode = self.config.get('mode', 'pipeline')
+        self._pipeline_runtime = None
 
         logger.info("=" * 50)
         logger.info("STACK CONFIGURATION")
@@ -466,7 +466,8 @@ class Live2DAssistant:
             self.pipeline = None
 
         else:
-            runtime = create_pipeline_runtime_components(self.config)
+            self._pipeline_runtime = create_pipeline_runtime(self.config)
+            runtime = self._pipeline_runtime.build_components()
             logger.info("LLM: %s", runtime.llm_summary)
             logger.info("TTS: %s", runtime.tts_summary)
             logger.info("ASR: %s", runtime.asr_summary)
@@ -582,8 +583,12 @@ class Live2DAssistant:
         return llm.__class__.__name__
 
     def _collect_degraded_reason(self) -> Optional[str]:
-        pipeline = self._get_active_pipeline()
+        pipeline_runtime = getattr(self, "_pipeline_runtime", None)
+        if pipeline_runtime is not None:
+            return pipeline_runtime.collect_degraded_reason(extra_reason=self._degraded_reason)
+
         parts: list[str] = []
+        pipeline = self._get_active_pipeline()
         llm = getattr(pipeline, "llm", None)
         tts = getattr(pipeline, "tts", None)
 
@@ -667,12 +672,22 @@ class Live2DAssistant:
     def get_runtime_state(self) -> dict:
         mic_state = self.audio_service.state.value if self.audio_service else "loading"
         active_future = self._active_response_future
-        degraded_reason = self._collect_degraded_reason()
-        backend_state = self._backend_state
-        if self._runtime_error:
-            backend_state = "error"
-        elif backend_state != "warming_up" and degraded_reason:
-            backend_state = "degraded"
+        pipeline_runtime = getattr(self, "_pipeline_runtime", None)
+        if pipeline_runtime is not None:
+            backend_status = pipeline_runtime.resolve_backend_status(
+                requested_state=self._backend_state,
+                runtime_error=self._runtime_error,
+                extra_degraded_reason=self._degraded_reason,
+            )
+            degraded_reason = backend_status.degraded_reason
+            backend_state = backend_status.state
+        else:
+            degraded_reason = self._collect_degraded_reason()
+            backend_state = self._backend_state
+            if self._runtime_error:
+                backend_state = "error"
+            elif backend_state != "warming_up" and degraded_reason:
+                backend_state = "degraded"
         return {
             "mode": self.config.get('mode', 'pipeline'),
             "backend_state": backend_state,
@@ -896,20 +911,12 @@ class Live2DAssistant:
 
             if self.pipeline:
                 logger.info("⏳ Pre-loading pipeline models in background...")
-                llm = getattr(self.pipeline, 'llm', None)
-                asr = getattr(self.pipeline, 'asr', None)
-                tts = getattr(self.pipeline, 'tts', None)
-                rvc = getattr(self.pipeline, 'rvc', None)
-                tts, rvc = preload_pipeline_runtime_services(
-                    llm=llm,
-                    asr=asr,
-                    tts=tts,
-                    rvc=rvc,
-                    tts_warmup_on_start=bool(self.config.get('tts', {}).get('warmup_on_start', False)),
-                    rvc_warmup_on_start=True,
-                )
-                self.pipeline.tts = tts
-                self.pipeline.rvc = rvc
+                if self._pipeline_runtime is not None:
+                    tts, rvc = self._pipeline_runtime.preload_all()
+                    self.pipeline.llm = self._pipeline_runtime.llm
+                    self.pipeline.asr = self._pipeline_runtime.asr
+                    self.pipeline.tts = tts
+                    self.pipeline.rvc = rvc
                 logger.info("✅ Pipeline models ready")
 
             degraded_reason = self._collect_degraded_reason()
@@ -1104,18 +1111,14 @@ class Live2DAssistant:
             ).result(timeout=10)
 
         if self.pipeline:
-            llm = getattr(self.pipeline, 'llm', None)
-            tts = getattr(self.pipeline, 'tts', None)
-            asr = getattr(self.pipeline, 'asr', None)
-            rvc = getattr(self.pipeline, 'rvc', None)
             try:
-                if self._loop and self._loop.is_running():
+                if self._pipeline_runtime is not None and self._loop and self._loop.is_running():
                     asyncio.run_coroutine_threadsafe(
-                        close_pipeline_runtime_services(llm=llm, tts=tts, asr=asr, rvc=rvc),
+                        self._pipeline_runtime.close(),
                         self._loop,
                     ).result(timeout=10)
-                else:
-                    asyncio.run(close_pipeline_runtime_services(llm=llm, tts=tts, asr=asr, rvc=rvc))
+                elif self._pipeline_runtime is not None:
+                    asyncio.run(self._pipeline_runtime.close())
             except Exception as exc:
                 logger.debug("Pipeline cleanup error: %s", exc, exc_info=True)
         
