@@ -15,7 +15,6 @@ import emoji
 import tempfile
 import time
 import numpy as np
-from langdetect import detect, LangDetectException
 from pathlib import Path
 from typing import Optional, Dict, Any, Coroutine
 from dataclasses import dataclass, field
@@ -23,17 +22,28 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import yaml
 
-from src.llm import OllamaLLM, GemmaTextVisionLLM
+from src.llm import OllamaLLM, OpenRouterLLM, GemmaTextVisionLLM
 from src.llm.base import Message
-from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider, Qwen3TTSProvider
+from src.tts import (
+    ChatterboxTTSProvider,
+    EdgeTTSProvider,
+    KokoroProvider,
+    Qwen3TTSProvider,
+    RoutedTTSProvider,
+)
 from src.tts.base import prefers_full_response_tts
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
 from src.utils.character_loader import resolve_character_config
+from src.utils.config_loader import load_yaml_config
 from src.utils.emotion_detector import EmotionDetector, strip_emotion_markers
 from src.utils.rvc_config import build_rvc_runtime_config
-from src.utils.language_detection import detect_language as detect_text_language
+from src.utils.language_detection import (
+    detect_language as detect_text_language,
+    get_language_name,
+    normalize_language_code,
+)
 from src.tts.tts_task_manager import TTSTaskManager
 from src.utils.sentence_splitter import SentenceSplitter
 
@@ -43,8 +53,7 @@ websocket_router = APIRouter()
 def load_config() -> dict:
     """Load configuration from config.yaml"""
     config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return load_yaml_config(config_path)
 
 
 @dataclass
@@ -62,7 +71,7 @@ class ConversationState:
     config: dict = field(default_factory=dict)
     is_recording: bool = False
     audio_buffer: list = field(default_factory=list)
-    current_language: str = "fr"
+    current_language: str = "en"
     emotion_detector: Optional[EmotionDetector] = None
     current_expression: str = "neutral"
     mode: str = "pipeline"  # "pipeline", "omni", or "gemma-omni"
@@ -112,11 +121,27 @@ class ConversationState:
                         gemma=gemma_model,
                         screen_config=gemma_config.get("screen", {}),
                     )
+                elif llm_provider == "openrouter":
+                    openrouter_config = llm_config.get("openrouter", {})
+                    self.llm = OpenRouterLLM(
+                        model=openrouter_config.get("model", "openai/gpt-4.1-mini"),
+                        api_key=openrouter_config.get("api_key"),
+                        api_key_env=openrouter_config.get("api_key_env", "OPENROUTER_API_KEY"),
+                        base_url=openrouter_config.get("base_url", "https://openrouter.ai/api/v1"),
+                        app_url=openrouter_config.get("app_url"),
+                        app_title=openrouter_config.get("app_title", "Local-AI-Companion"),
+                        options=openrouter_config.get("options"),
+                        required_input_modalities=openrouter_config.get("required_input_modalities"),
+                        request_timeout_sec=openrouter_config.get("request_timeout_sec", 180),
+                        preload_timeout_sec=openrouter_config.get("preload_timeout_sec", 60),
+                    )
                 else:
                     ollama_config = llm_config.get("ollama", {})
                     self.llm = OllamaLLM(
                         model=ollama_config.get("model", "llama3.2:3b"),
-                        base_url=ollama_config.get("base_url", "http://localhost:11434")
+                        base_url=ollama_config.get("base_url", "http://localhost:11434"),
+                        think=ollama_config.get("think"),
+                        options=ollama_config.get("options"),
                     )
 
         # Initialize conversation with system prompt
@@ -153,20 +178,35 @@ class ConversationState:
                     f"   Qwen3-TTS config: model={qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base')}, "
                     f"ref={ref_audio}"
                 )
-                try:
-                    if not Qwen3TTSProvider.is_available(
-                        backend=qwen3_config.get("backend", "worker"),
-                        python_path=qwen3_config.get("python_path"),
-                        site_packages_dir=qwen3_config.get("site_packages_dir"),
-                        worker_script=qwen3_config.get("worker_script"),
-                    ):
-                        raise RuntimeError(
-                            "Qwen3-TTS runtime is not installed. "
-                            "Run scripts/install_qwen3_tts_windows.ps1 first."
-                        )
-                    self.tts = Qwen3TTSProvider(
+                kokoro_voice = voice_config.get("kokoro_voice") or tts_config.get("kokoro_voice", "ff_siwis")
+                kokoro = KokoroProvider(voice=kokoro_voice)
+                chatterbox_config = tts_config.get("chatterbox", {})
+                chatterbox = ChatterboxTTSProvider(
+                    model_id=chatterbox_config.get("model_id", "onnx-community/chatterbox-multilingual-ONNX"),
+                    ref_audio_path=voice_config.get("chatterbox_ref_audio"),
+                    exaggeration=voice_config.get("chatterbox_exaggeration", 0.5),
+                    cfg_weight=chatterbox_config.get("cfg_weight", 0.5),
+                    language=voice_config.get("chatterbox_language", "en"),
+                    prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
+                )
+                qwen3_provider = None
+                degraded_reason = None
+                resolved_qwen_mode, qwen_mode_reason = Qwen3TTSProvider.resolve_mode_for_model(
+                    qwen3_config.get("model_id", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+                    qwen3_config.get("mode", "voice_clone"),
+                )
+                if qwen_mode_reason:
+                    degraded_reason = qwen_mode_reason
+                    print(f"   Warning: {qwen_mode_reason}")
+                if Qwen3TTSProvider.is_available(
+                    backend=qwen3_config.get("backend", "worker"),
+                    python_path=qwen3_config.get("python_path"),
+                    site_packages_dir=qwen3_config.get("site_packages_dir"),
+                    worker_script=qwen3_config.get("worker_script"),
+                ):
+                    qwen3_provider = Qwen3TTSProvider(
                         model_id=qwen3_config.get("model_id", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
-                        mode=qwen3_config.get("mode", "voice_clone"),
+                        mode=resolved_qwen_mode,
                         language=qwen3_config.get("language", "auto"),
                         speaker=qwen3_config.get("speaker"),
                         instruct=qwen3_config.get("instruct"),
@@ -180,17 +220,29 @@ class ConversationState:
                         python_path=qwen3_config.get("python_path"),
                         site_packages_dir=qwen3_config.get("site_packages_dir"),
                         worker_script=qwen3_config.get("worker_script"),
+                        request_timeout_sec=qwen3_config.get("request_timeout_sec", 20),
                     )
-                except Exception as exc:
-                    print(f"   Qwen3-TTS init failed, falling back to Kokoro: {exc}")
-                    voice = tts_config.get("kokoro_voice", "ff_siwis")
-                    self.tts = KokoroProvider(voice=voice)
+                else:
+                    runtime_reason = "Qwen3-TTS runtime unavailable; using Chatterbox/Kokoro fallback."
+                    degraded_reason = f"{degraded_reason} {runtime_reason}".strip() if degraded_reason else runtime_reason
+
+                self.tts = RoutedTTSProvider(
+                    qwen3=qwen3_provider,
+                    chatterbox=chatterbox,
+                    kokoro=kokoro,
+                    default_language=qwen3_config.get("language", "auto"),
+                    provider_order_by_language=tts_config.get("routed", {}).get("provider_order_by_language"),
+                    preload_fallbacks=tts_config.get("routed", {}).get("preload_fallbacks", False),
+                    warmup_fallbacks=tts_config.get("routed", {}).get("warmup_fallbacks", False),
+                )
+                if degraded_reason:
+                    self.tts.degraded_reason = degraded_reason
             elif provider == "chatterbox":
                 voice_config = self.config.get("character", {}).get("voice", {})
                 chatterbox_config = tts_config.get("chatterbox", {})
                 ref_audio = voice_config.get("chatterbox_ref_audio")
                 exaggeration = voice_config.get("chatterbox_exaggeration", 0.5)
-                language = voice_config.get("chatterbox_language", "fr")
+                language = voice_config.get("chatterbox_language", "en")
                 print(f"   Chatterbox config: ref={ref_audio}, language={language}")
                 self.tts = ChatterboxTTSProvider(
                     model_id=chatterbox_config.get("model_id", "onnx-community/chatterbox-multilingual-ONNX"),
@@ -201,12 +253,16 @@ class ConversationState:
                     prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
                 )
             else:
-                voice = tts_config.get("voice", "fr-FR-DeniseNeural")
+                voice = tts_config.get("voice", "en-US-JennyNeural")
                 print(f"   Edge TTS config: voice={voice}")
                 self.tts = EdgeTTSProvider(voice=voice)
 
-            if self.tts and hasattr(self.tts, "set_language"):
-                self.tts.set_language(self.current_language)
+            initial_tts_language = (
+                self.config.get("pipeline", {}).get("reply_language")
+                or self.current_language
+            )
+            if self.tts and hasattr(self.tts, "set_language") and initial_tts_language:
+                self.tts.set_language(initial_tts_language)
 
         return self.tts
 
@@ -275,6 +331,7 @@ class ConversationState:
                     device=device,
                     compute_type=compute_type,
                     initial_prompt=initial_prompt,
+                    beam_size=asr_config.get("beam_size", 1),
                 )
             self.asr_language = asr_config.get("language", "")
 
@@ -352,6 +409,7 @@ class ConversationState:
             pipeline_config = ConversationConfig(
                 character_name=character.get("name", "AI"),
                 system_prompt=character.get("system_prompt", "You are a helpful assistant."),
+                reply_language=self.config.get("pipeline", {}).get("reply_language"),
             )
             self.omni_pipeline = OmniPipeline(
                 omni=self.omni_model,
@@ -376,7 +434,7 @@ class ConversationState:
 
             ref_audio = voice_config.get("chatterbox_ref_audio")
             exaggeration = voice_config.get("chatterbox_exaggeration", 0.5)
-            language = voice_config.get("chatterbox_language", "fr")
+            language = voice_config.get("chatterbox_language", "en")
 
             print("Loading Gemma E2B + Chatterbox...")
             self.gemma_model = GemmaProvider(
@@ -405,6 +463,7 @@ class ConversationState:
                 character_name=character.get("name", "AI"),
                 system_prompt=character.get("system_prompt", "You are a helpful assistant."),
                 stream_tts=tts_config.get("stream_tts", True),
+                reply_language=self.config.get("pipeline", {}).get("reply_language"),
             )
             self.gemma_pipeline = GemmaOmniPipeline(
                 gemma=self.gemma_model,
@@ -427,6 +486,10 @@ class ConversationState:
                 await self.response_task
             except asyncio.CancelledError:
                 pass
+        if self.tts and hasattr(self.tts, "cleanup"):
+            self.tts.cleanup()
+        if self.asr and hasattr(self.asr, "cleanup"):
+            self.asr.cleanup()
         if self.llm:
             await self.llm.close()
         if self.rvc and hasattr(self.rvc, "close"):
@@ -581,21 +644,59 @@ class WebSocketManager:
 
     @staticmethod
     def _normalize_supported_language(language: Optional[str]) -> Optional[str]:
-        if not language:
+        return normalize_language_code(language)
+
+    def _apply_language_hint(self, state: ConversationState, language: Optional[str]) -> Optional[str]:
+        normalized = self._normalize_supported_language(language)
+        if not normalized:
             return None
-        value = str(language).strip().lower()
-        if not value or value == "auto":
-            return None
-        if value.startswith("fr"):
-            return "fr"
-        if value.startswith("en"):
-            return "en"
-        return None
+
+        state.current_language = normalized
+        if state.tts and hasattr(state.tts, "set_language"):
+            state.tts.set_language(normalized)
+        return normalized
+
+    def _build_llm_messages(
+        self,
+        messages: list[Message],
+        language_code: Optional[str],
+    ) -> list[Message]:
+        llm_messages = list(messages)
+        normalized = self._normalize_supported_language(language_code)
+        if not normalized or not llm_messages or llm_messages[-1].role != "user":
+            return llm_messages
+
+        language_name = get_language_name(normalized)
+        if not language_name:
+            return llm_messages
+
+        last_msg = llm_messages[-1]
+        llm_messages[-1] = Message(
+            role="user",
+            content=(
+                f"(System: The user is speaking {language_name}. "
+                f"Reply ONLY in {language_name}. Do not switch languages.)\n\n"
+                f"{last_msg.content}"
+            ),
+        )
+        return llm_messages
+
+    def _resolve_turn_language(
+        self,
+        state: ConversationState,
+        content: str,
+        explicit_language: Optional[str] = None,
+    ) -> str:
+        explicit = self._normalize_supported_language(explicit_language)
+        detected = self._normalize_supported_language(
+            str(detect_text_language(content, default=state.current_language or "en"))
+        )
+        return explicit or detected or state.current_language or "en"
 
     async def _transcribe_with_guard(self, state: ConversationState, audio_input) -> Any:
         """
-        Guard auto-detect for short FR/EN utterances that come back with an
-        out-of-scope language code. Retry once with current session language.
+        Retry once with the current session language when ASR auto-detect
+        returns a code we do not normalize locally.
         """
         asr = state.get_asr()
         requested_language = getattr(state, "asr_language", "")
@@ -614,20 +715,21 @@ class WebSocketManager:
             and getattr(result, "language", None)
             and detected_lang is None
         ):
-            retry_language = state.current_language or "fr"
-            print(
-                f"ASR auto-detect returned out-of-scope language={getattr(result, 'language', None)}, "
-                f"retrying with forced language={retry_language}"
-            )
-            retry = await loop.run_in_executor(None, lambda: _do_transcribe(retry_language))
-            if retry.text and retry.text.strip():
-                result = retry
+            retry_language = state.current_language or None
+            if retry_language:
+                print(
+                    f"ASR auto-detect returned out-of-scope language={getattr(result, 'language', None)}, "
+                    f"retrying with forced language={retry_language}"
+                )
+                retry = await loop.run_in_executor(None, lambda: _do_transcribe(retry_language))
+                if retry.text and retry.text.strip():
+                    result = retry
 
         normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
         if normalized_lang:
             result.language = normalized_lang
         else:
-            result.language = state.current_language
+            result.language = state.current_language or "en"
 
         return result
 
@@ -660,13 +762,10 @@ class WebSocketManager:
             return
 
         try:
-            lang = detect(text)
-
-            if lang in ['fr', 'fr-fr']:
-                lang_code = 'fr'
-            elif lang in ['en', 'en-us', 'en-gb']:
-                lang_code = 'en'
-            else:
+            lang_code = self._normalize_supported_language(
+                str(detect_text_language(text, default=state.current_language or "en"))
+            )
+            if not lang_code:
                 return
 
             if state.current_language != lang_code:
@@ -686,8 +785,6 @@ class WebSocketManager:
                         state.tts.set_voice(new_voice)
                         print(f"   Switched {provider_name} voice to: {new_voice}")
 
-        except LangDetectException:
-            pass
         except Exception as e:
             print(f"Voice switch error: {e}")
 
@@ -1106,7 +1203,13 @@ class WebSocketManager:
     # Pipeline mode handlers
     # ------------------------------------------------------------------
 
-    async def _handle_text_message_turn(self, client_id: str, content: str, language: str | None = None):
+    async def _handle_text_message_turn(
+        self,
+        client_id: str,
+        content: str,
+        language: str | None = None,
+        trace: Optional[dict[str, Any]] = None,
+    ):
         """Handle a text message from the client."""
         state = self._get_state(client_id)
         if not state:
@@ -1122,6 +1225,11 @@ class WebSocketManager:
             return
 
         # Pipeline mode
+        trace_data = dict(trace or {})
+        now_ms = int(time.time() * 1000)
+        trace_data.setdefault("turn_start_epoch_ms", now_ms)
+        trace_data.setdefault("text_submit_epoch_ms", now_ms)
+        trace_data.setdefault("asr_done_epoch_ms", now_ms)
         state.messages.append(Message(role="user", content=content))
 
         await self.send_json(client_id, {"type": "text_start"})
@@ -1132,30 +1240,10 @@ class WebSocketManager:
         first_sentence_logged = False
         first_audio_logged = False
 
-        llm_messages = list(state.messages)
-
-        if language:
-            normalized_lang = language.lower()
-            if normalized_lang.startswith("fr"):
-                state.current_language = "fr"
-            elif normalized_lang.startswith("en"):
-                state.current_language = "en"
-
-            if state.tts and hasattr(state.tts, "set_language"):
-                state.tts.set_language(state.current_language)
-
-            lang_map = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "ja": "Japanese"}
-            lang_name = lang_map.get(language, language)
-
-            if llm_messages and llm_messages[-1].role == "user":
-                last_msg = llm_messages[-1]
-                new_content = (
-                    f"(System: The user is speaking {lang_name}. "
-                    f"Reply ONLY in {lang_name}. Do not mix languages.)\n\n"
-                    f"{last_msg.content}"
-                )
-                llm_messages[-1] = Message(role="user", content=new_content)
-                print(f"Enforcing language: {lang_name}")
+        response_language = self._resolve_turn_language(state, content, explicit_language=language)
+        self._apply_language_hint(state, response_language)
+        llm_messages = self._build_llm_messages(state.messages, response_language)
+        trace_data["llm_start_epoch_ms"] = int(time.time() * 1000)
 
         # --- Decoupled TTS pipeline ---
         # LLM tokens stream into SentenceSplitter, complete sentences are
@@ -1170,6 +1258,9 @@ class WebSocketManager:
             if not first_audio_logged:
                 first_audio_logged = True
                 print(f"First TTS audio latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+
+            payload_trace = dict(trace_data)
+            payload_trace["backend_audio_ready_epoch_ms"] = int(time.time() * 1000)
 
             expression = payload.get("expression")
             if expression and state.emotion_detector:
@@ -1191,6 +1282,7 @@ class WebSocketManager:
                 },
                 "expression": expression,
                 "text": payload["text"],
+                "trace": payload_trace,
             })
 
         tts_obj = state.get_tts()
@@ -1207,6 +1299,8 @@ class WebSocketManager:
 
         try:
             async for chunk in state.llm.chat_stream(llm_messages):
+                if "llm_first_token_epoch_ms" not in trace_data:
+                    trace_data["llm_first_token_epoch_ms"] = int(time.time() * 1000)
                 full_response += chunk
 
                 await self.send_json(client_id, {
@@ -1219,6 +1313,7 @@ class WebSocketManager:
                     for sentence in splitter.get_sentences():
                         if not first_sentence_logged:
                             first_sentence_logged = True
+                            trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                             print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
                         await self._update_voice_for_language(state, sentence)
                         clean = self._clean_text_for_tts(sentence)
@@ -1228,6 +1323,9 @@ class WebSocketManager:
             if single_shot_tts:
                 clean = self._clean_text_for_tts(full_response)
                 if clean.strip():
+                    if not first_sentence_logged:
+                        first_sentence_logged = True
+                        trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                     await self._update_voice_for_language(state, clean)
                     await tts_mgr.submit(clean)
             else:
@@ -1235,6 +1333,7 @@ class WebSocketManager:
                 if remaining:
                     if not first_sentence_logged:
                         first_sentence_logged = True
+                        trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                         print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
                     clean = self._clean_text_for_tts(remaining)
                     if clean.strip():
@@ -1255,11 +1354,17 @@ class WebSocketManager:
         })
         await self.send_json(client_id, {"type": "audio_end"})
 
-    async def handle_text_message(self, client_id: str, content: str, language: str | None = None):
+    async def handle_text_message(
+        self,
+        client_id: str,
+        content: str,
+        language: str | None = None,
+        trace: Optional[dict[str, Any]] = None,
+    ):
         """Schedule a text turn, interrupting any active turn for this client."""
         await self._schedule_turn(
             client_id,
-            self._handle_text_message_turn(client_id, content, language=language),
+            self._handle_text_message_turn(client_id, content, language=language, trace=trace),
         )
 
     async def generate_and_send_audio(self, client_id: str, text: str):
@@ -1310,6 +1415,10 @@ class WebSocketManager:
             return
 
         asr = state.get_asr()
+        trace = {
+            "turn_start_epoch_ms": int(time.time() * 1000),
+            "speech_end_epoch_ms": int(time.time() * 1000),
+        }
 
         try:
             audio_bytes = base64.b64decode(audio_data)
@@ -1342,6 +1451,7 @@ class WebSocketManager:
 
             await self.send_json(client_id, {"type": "transcribing"})
             result = await self._transcribe_with_guard(state, wav_path)
+            trace["asr_done_epoch_ms"] = int(time.time() * 1000)
 
             wav_path.unlink(missing_ok=True)
 
@@ -1351,7 +1461,12 @@ class WebSocketManager:
                     "text": result.text,
                     "language": result.language
                 })
-                await self._handle_text_message_turn(client_id, result.text, language=result.language)
+                await self._handle_text_message_turn(
+                    client_id,
+                    result.text,
+                    language=result.language,
+                    trace=trace,
+                )
             else:
                 await self.send_json(client_id, {
                     "type": "transcription",
@@ -1421,6 +1536,10 @@ class WebSocketManager:
             return
 
         asr = state.get_asr()
+        trace = {
+            "turn_start_epoch_ms": int(time.time() * 1000),
+            "speech_end_epoch_ms": int(time.time() * 1000),
+        }
 
         try:
             audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -1440,6 +1559,7 @@ class WebSocketManager:
 
             await self.send_json(client_id, {"type": "transcribing"})
             result = await self._transcribe_with_guard(state, audio_float)
+            trace["asr_done_epoch_ms"] = int(time.time() * 1000)
 
             if result.text.strip():
                 await self.send_json(client_id, {
@@ -1447,7 +1567,12 @@ class WebSocketManager:
                     "text": result.text,
                     "language": result.language
                 })
-                await self._handle_text_message_turn(client_id, result.text, language=result.language)
+                await self._handle_text_message_turn(
+                    client_id,
+                    result.text,
+                    language=result.language,
+                    trace=trace,
+                )
             else:
                 await self.send_json(client_id, {
                     "type": "transcription",
@@ -1883,16 +2008,11 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             if msg_type == "text":
                 content = data.get("content", "")
                 if content.strip():
-                    lang = None
-                    try:
-                        detected = str(detect_text_language(content))
-                        if detected.startswith('fr'):
-                            lang = 'fr'
-                        elif detected.startswith('en'):
-                            lang = 'en'
-                    except:
-                        pass
-
+                    state = manager.states.get(client_id)
+                    default_language = getattr(state, "current_language", "en") if state else "en"
+                    lang = normalize_language_code(
+                        str(detect_text_language(content, default=default_language))
+                    )
                     await manager.handle_text_message(client_id, content, language=lang)
 
             elif msg_type == "audio":

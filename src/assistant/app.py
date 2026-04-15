@@ -47,6 +47,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.assistant.audio_service import AudioService, AudioServiceConfig, MicState
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
 from src.utils.character_loader import resolve_character_config
+from src.utils.config_loader import load_yaml_config
 from src.utils.rvc_config import build_rvc_runtime_config
 
 # Conditional imports
@@ -81,12 +82,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 CURRENT_DESKTOP_TURN_ID: ContextVar[Optional[int]] = ContextVar("desktop_turn_id", default=None)
+_HEALTH_UNSET = object()
+
+
+def _describe_exception(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return message
+    return exc.__class__.__name__
+
+
+def resolve_turn_timeout_sec(config: dict) -> int:
+    llm_config = config.get("llm", {})
+    provider = llm_config.get("provider", "ollama")
+
+    if provider == "ollama":
+        ollama_config = llm_config.get("ollama", {})
+        return int(
+            ollama_config.get(
+                "turn_timeout_sec",
+                max(int(ollama_config.get("request_timeout_sec", 180)) + 30, 90),
+            )
+        )
+
+    if provider == "openrouter":
+        openrouter_config = llm_config.get("openrouter", {})
+        return int(
+            openrouter_config.get(
+                "turn_timeout_sec",
+                max(int(openrouter_config.get("request_timeout_sec", 180)) + 30, 90),
+            )
+        )
+
+    return int(config.get("gemma", {}).get("turn_timeout_sec", 75))
 
 
 def load_config(config_path: Path) -> dict:
     """Load configuration from YAML file."""
-    with open(config_path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
+    return load_yaml_config(config_path)
 
 
 class DesktopBridgeApi:
@@ -275,12 +308,15 @@ class Live2DAssistant:
         self._bridge_server: Optional[DesktopBridgeServer] = None
         self._bridge_only = False
         self._active_response_future = None
-        self._turn_timeout_sec = int(self.config.get('gemma', {}).get('turn_timeout_sec', 75))
+        self._turn_timeout_sec = resolve_turn_timeout_sec(self.config)
         self._turn_counter = 0
         self._active_turn_id: Optional[int] = None
         self._latest_audio_turn_id: Optional[int] = None
         self._playback_deadline: float = 0.0
         self._debug_visible = False
+        self._backend_state = "warming_up"
+        self._degraded_reason: Optional[str] = None
+        self._runtime_error: Optional[str] = None
         self._js_api = DesktopBridgeApi(self)
         
         # Components (initialized in start())
@@ -333,6 +369,7 @@ class Live2DAssistant:
                 character_name=character_config.get('name', 'AI'),
                 system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
                 stream_tts=omni_config.get('stream_tts', False),
+                reply_language=self.config.get('pipeline', {}).get('reply_language'),
                 omni_use_single_pass=omni_config.get('use_single_pass', True),
                 omni_transcribe_for_history=omni_config.get('transcribe_for_history', False),
                 omni_generate_audio=omni_config.get('generate_audio', True),
@@ -368,7 +405,7 @@ class Live2DAssistant:
             voice_config = character_config.get('voice', {})
             ref_audio = voice_config.get('chatterbox_ref_audio')
             exaggeration = voice_config.get('chatterbox_exaggeration', 0.5)
-            language = voice_config.get('chatterbox_language', 'fr')
+            language = voice_config.get('chatterbox_language', 'en')
 
             # Create Gemma provider
             self._gemma_model = GemmaProvider(
@@ -400,6 +437,7 @@ class Live2DAssistant:
                 character_name=character_config.get('name', 'AI'),
                 system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
                 stream_tts=tts_config.get('stream_tts', True),
+                reply_language=self.config.get('pipeline', {}).get('reply_language'),
             )
             self._gemma_pipeline = GemmaOmniPipeline(
                 gemma=self._gemma_model,
@@ -424,8 +462,14 @@ class Live2DAssistant:
             self.pipeline = None
 
         else:
-            from src.llm import OllamaLLM, GemmaTextVisionLLM
-            from src.tts import KokoroProvider, EdgeTTSProvider, ChatterboxTTSProvider, Qwen3TTSProvider
+            from src.llm import OllamaLLM, OpenRouterLLM, GemmaTextVisionLLM
+            from src.tts import (
+                ChatterboxTTSProvider,
+                EdgeTTSProvider,
+                KokoroProvider,
+                Qwen3TTSProvider,
+                RoutedTTSProvider,
+            )
             from src.asr import WhisperProvider
             from src.omni import GemmaProvider
             from src.tts.rvc_provider import RVCConverter
@@ -458,11 +502,30 @@ class Live2DAssistant:
                     "LLM: Gemma text+vision (%s)",
                     gemma_config.get('model_id', 'google/gemma-4-E4B-it'),
                 )
+            elif llm_provider == 'openrouter':
+                openrouter_cfg = llm_config.get('openrouter', {})
+                llm = OpenRouterLLM(
+                    model=openrouter_cfg.get('model', 'openai/gpt-4.1-mini'),
+                    api_key=openrouter_cfg.get('api_key'),
+                    api_key_env=openrouter_cfg.get('api_key_env', 'OPENROUTER_API_KEY'),
+                    base_url=openrouter_cfg.get('base_url', 'https://openrouter.ai/api/v1'),
+                    app_url=openrouter_cfg.get('app_url'),
+                    app_title=openrouter_cfg.get('app_title', 'Local-AI-Companion'),
+                    options=openrouter_cfg.get('options'),
+                    required_input_modalities=openrouter_cfg.get('required_input_modalities'),
+                        request_timeout_sec=openrouter_cfg.get('request_timeout_sec', 180),
+                        preload_timeout_sec=openrouter_cfg.get('preload_timeout_sec', 60),
+                    )
+                logger.info("LLM: OpenRouter (%s)", openrouter_cfg.get('model', 'openai/gpt-4.1-mini'))
             else:
                 ollama_cfg = llm_config.get('ollama', {})
                 llm = OllamaLLM(
                     model=ollama_cfg.get('model', 'llama3.2:3b'),
-                    base_url=ollama_cfg.get('base_url', 'http://localhost:11434')
+                    base_url=ollama_cfg.get('base_url', 'http://localhost:11434'),
+                    think=ollama_cfg.get('think'),
+                    options=ollama_cfg.get('options'),
+                    request_timeout_sec=ollama_cfg.get('request_timeout_sec', 180),
+                    preload_timeout_sec=ollama_cfg.get('preload_timeout_sec', 120),
                 )
                 logger.info(f"LLM: Ollama ({ollama_cfg.get('model')})")
 
@@ -481,20 +544,35 @@ class Live2DAssistant:
                     or qwen3_config.get('ref_audio_path')
                 )
                 ref_text = voice_config.get('qwen_ref_text') or qwen3_config.get('ref_text')
-                try:
-                    if not Qwen3TTSProvider.is_available(
-                        backend=qwen3_config.get('backend', 'worker'),
-                        python_path=qwen3_config.get('python_path'),
-                        site_packages_dir=qwen3_config.get('site_packages_dir'),
-                        worker_script=qwen3_config.get('worker_script'),
-                    ):
-                        raise RuntimeError(
-                            "Qwen3-TTS runtime is not installed. "
-                            "Run scripts/install_qwen3_tts_windows.ps1 first."
-                        )
-                    tts = Qwen3TTSProvider(
+                kokoro_voice = voice_config.get('kokoro_voice') or tts_config.get('kokoro_voice', 'ff_siwis')
+                kokoro = KokoroProvider(voice=kokoro_voice)
+                chatterbox_config = tts_config.get('chatterbox', {})
+                chatterbox = ChatterboxTTSProvider(
+                    model_id=chatterbox_config.get('model_id', 'onnx-community/chatterbox-multilingual-ONNX'),
+                    ref_audio_path=voice_config.get('chatterbox_ref_audio'),
+                    exaggeration=voice_config.get('chatterbox_exaggeration', 0.5),
+                    cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
+                    language=voice_config.get('chatterbox_language', 'en'),
+                    prefer_full_gpu=chatterbox_config.get('prefer_full_gpu', False),
+                )
+                qwen3_provider = None
+                degraded_reason = None
+                resolved_qwen_mode, qwen_mode_reason = Qwen3TTSProvider.resolve_mode_for_model(
+                    qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
+                    qwen3_config.get('mode', 'voice_clone'),
+                )
+                if qwen_mode_reason:
+                    degraded_reason = qwen_mode_reason
+                    logger.warning(qwen_mode_reason)
+                if Qwen3TTSProvider.is_available(
+                    backend=qwen3_config.get('backend', 'worker'),
+                    python_path=qwen3_config.get('python_path'),
+                    site_packages_dir=qwen3_config.get('site_packages_dir'),
+                    worker_script=qwen3_config.get('worker_script'),
+                ):
+                    qwen3_provider = Qwen3TTSProvider(
                         model_id=qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
-                        mode=qwen3_config.get('mode', 'voice_clone'),
+                        mode=resolved_qwen_mode,
                         language=qwen3_config.get('language', 'auto'),
                         speaker=qwen3_config.get('speaker'),
                         instruct=qwen3_config.get('instruct'),
@@ -508,23 +586,37 @@ class Live2DAssistant:
                         python_path=qwen3_config.get('python_path'),
                         site_packages_dir=qwen3_config.get('site_packages_dir'),
                         worker_script=qwen3_config.get('worker_script'),
+                        request_timeout_sec=qwen3_config.get('request_timeout_sec', 20),
                     )
-                    logger.info(
-                        "TTS: Qwen3-TTS (%s, mode=%s, ref=%s)",
-                        qwen3_config.get('model_id', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'),
-                        qwen3_config.get('mode', 'voice_clone'),
-                        ref_audio,
+                else:
+                    runtime_reason = (
+                        "Qwen3-TTS runtime is not installed. "
+                        "Falling back to Chatterbox/Kokoro."
                     )
-                except Exception as exc:
-                    logger.warning("Qwen3-TTS init failed, falling back to Kokoro: %s", exc)
-                    voice = tts_config.get('kokoro_voice', 'ff_siwis')
-                    tts = KokoroProvider(voice=voice)
-                    logger.info(f"TTS fallback: Kokoro ({voice})")
+                    degraded_reason = f"{degraded_reason} {runtime_reason}".strip() if degraded_reason else runtime_reason
+
+                tts = RoutedTTSProvider(
+                    qwen3=qwen3_provider,
+                    chatterbox=chatterbox,
+                    kokoro=kokoro,
+                    default_language=qwen3_config.get('language', 'auto'),
+                    provider_order_by_language=tts_config.get('routed', {}).get('provider_order_by_language'),
+                    preload_fallbacks=tts_config.get('routed', {}).get('preload_fallbacks', False),
+                    warmup_fallbacks=tts_config.get('routed', {}).get('warmup_fallbacks', False),
+                )
+                if degraded_reason:
+                    tts.degraded_reason = degraded_reason
+                logger.info(
+                    "TTS: routed (qwen3=%s, chatterbox=%s, kokoro=%s)",
+                    "ready" if qwen3_provider else "fallback-only",
+                    chatterbox.__class__.__name__,
+                    kokoro.voice,
+                )
             elif tts_provider == 'chatterbox':
                 chatterbox_config = tts_config.get('chatterbox', {})
                 ref_audio = voice_config.get('chatterbox_ref_audio')
                 exaggeration = voice_config.get('chatterbox_exaggeration', 0.5)
-                language = voice_config.get('chatterbox_language', 'fr')
+                language = voice_config.get('chatterbox_language', 'en')
                 tts = ChatterboxTTSProvider(
                     model_id=chatterbox_config.get('model_id', 'onnx-community/chatterbox-multilingual-ONNX'),
                     ref_audio_path=ref_audio,
@@ -540,15 +632,34 @@ class Live2DAssistant:
                 logger.info(f"TTS: Edge ({voice})")
 
             # Create ASR
-            device = asr_config.get('device', 'cpu')
-            model_size = asr_config.get('model_size', 'base')
-            prompt = asr_config.get('prompt')
-            asr = WhisperProvider(
-                model_size=model_size,
-                device=device,
-                initial_prompt=prompt
-            )
-            logger.info(f"ASR: Whisper {model_size} on {device}")
+            asr_provider = asr_config.get('provider', 'whisper')
+            if asr_provider == 'qwen3':
+                from src.asr.qwen3_asr_provider import Qwen3ASRProvider
+                qwen3_cfg = asr_config.get('qwen3', {})
+                asr = Qwen3ASRProvider(
+                    model_id=qwen3_cfg.get('model_id', 'Qwen/Qwen3-ASR-0.6B'),
+                    device=qwen3_cfg.get('device', 'cuda:0'),
+                    dtype=qwen3_cfg.get('dtype', 'bfloat16'),
+                    max_new_tokens=qwen3_cfg.get('max_new_tokens', 256),
+                    backend=qwen3_cfg.get('backend', 'worker'),
+                    python_path=qwen3_cfg.get('python_path'),
+                    site_packages_dir=qwen3_cfg.get('site_packages_dir'),
+                    worker_script=qwen3_cfg.get('worker_script'),
+                )
+                logger.info(f"ASR: Qwen3-ASR ({qwen3_cfg.get('model_id', '0.6B')})")
+            else:
+                device = asr_config.get('device', 'cpu')
+                model_size = asr_config.get('model_size', 'base')
+                compute_type = asr_config.get('compute_type', 'float16')
+                prompt = asr_config.get('prompt')
+                asr = WhisperProvider(
+                    model_size=model_size,
+                    device=device,
+                    compute_type=compute_type,
+                    initial_prompt=prompt,
+                    beam_size=asr_config.get('beam_size', 1),
+                )
+                logger.info(f"ASR: Whisper {model_size} on {device}")
 
             # Create optional RVC post-processor
             rvc = None
@@ -588,6 +699,7 @@ class Live2DAssistant:
                 stream_tts=tts_config.get('stream_tts', True),
                 auto_detect_language=tts_config.get('auto_detect_language', True),
                 asr_language=asr_config.get('language', 'auto'),
+                reply_language=self.config.get('pipeline', {}).get('reply_language'),
             )
 
             self.pipeline = ConversationPipeline(
@@ -612,13 +724,16 @@ class Live2DAssistant:
         # Create audio service (shared by both modes)
         llm_provider = self.config.get('llm', {}).get('provider', 'ollama')
         gemma_vad_config = self.config.get('gemma', {}) if mode == 'gemma-omni' or (mode == 'pipeline' and llm_provider == 'gemma') else {}
+        pipeline_config = self.config.get('pipeline', {})
+        default_misses = pipeline_config.get('vad_required_misses', 30)
+        start_muted = self._resolve_audio_start_muted()
         audio_config = AudioServiceConfig(
             sample_rate=16000,
-            start_muted=False,
+            start_muted=start_muted,
             vad_prob_threshold=gemma_vad_config.get('vad_prob_threshold', 0.5),
             vad_db_threshold=gemma_vad_config.get('vad_db_threshold', -50),
             vad_required_hits=gemma_vad_config.get('vad_required_hits', 3),
-            vad_required_misses=gemma_vad_config.get('vad_required_misses', 30),
+            vad_required_misses=gemma_vad_config.get('vad_required_misses', default_misses),
         )
         self.audio_service = AudioService(audio_config)
         self.audio_service.on_speech_start = self._on_speech_start
@@ -627,6 +742,18 @@ class Live2DAssistant:
         self.audio_service.on_state_change = self._on_mic_state_change
 
         logger.info("All components created")
+
+    def _resolve_audio_start_muted(self) -> bool:
+        audio_config = self.config.get("audio", {})
+        bridge_start_muted = audio_config.get("bridge_start_muted")
+        if bridge_start_muted is not None:
+            return bool(bridge_start_muted)
+        if self._bridge_only:
+            return True
+        start_muted = audio_config.get("start_muted")
+        if start_muted is not None:
+            return bool(start_muted)
+        return False
     
     # ==================== Callbacks ====================
 
@@ -651,6 +778,74 @@ class Live2DAssistant:
             (self._active_response_future and not self._active_response_future.done())
             or self._has_active_playback()
         )
+
+    def _active_tts_provider_name(self) -> Optional[str]:
+        pipeline = self._get_active_pipeline()
+        tts = getattr(pipeline, "tts", None)
+        if tts is None:
+            return None
+
+        provider_name = getattr(tts, "active_provider_name", None)
+        if provider_name:
+            return provider_name
+
+        class_name = tts.__class__.__name__
+        if class_name.endswith("Provider"):
+            class_name = class_name[:-8]
+        return class_name.lower()
+
+    def _active_llm_model_name(self) -> Optional[str]:
+        pipeline = self._get_active_pipeline()
+        llm = getattr(pipeline, "llm", None)
+        if llm is None:
+            return None
+
+        model_name = getattr(llm, "model", None)
+        if model_name:
+            return str(model_name)
+
+        gemma = getattr(llm, "gemma", None)
+        if gemma is not None:
+            return str(getattr(gemma, "model_id", "gemma"))
+
+        return llm.__class__.__name__
+
+    def _collect_degraded_reason(self) -> Optional[str]:
+        pipeline = self._get_active_pipeline()
+        parts: list[str] = []
+        llm = getattr(pipeline, "llm", None)
+        tts = getattr(pipeline, "tts", None)
+
+        llm_reason = getattr(llm, "degraded_reason", None)
+        if llm_reason:
+            parts.append(str(llm_reason))
+
+        tts_reason = getattr(tts, "degraded_reason", None)
+        if tts_reason:
+            parts.append(str(tts_reason))
+
+        if self._degraded_reason:
+            parts.append(self._degraded_reason)
+
+        unique_parts: list[str] = []
+        for part in parts:
+            if part and part not in unique_parts:
+                unique_parts.append(part)
+        return " | ".join(unique_parts) if unique_parts else None
+
+    def _set_backend_health(
+        self,
+        *,
+        state: Optional[str] = None,
+        degraded_reason: Optional[str] | object = _HEALTH_UNSET,
+        runtime_error: Optional[str] | object = _HEALTH_UNSET,
+    ) -> None:
+        if state is not None:
+            self._backend_state = state
+        if degraded_reason is not _HEALTH_UNSET:
+            self._degraded_reason = degraded_reason
+        if runtime_error is not _HEALTH_UNSET:
+            self._runtime_error = runtime_error
 
     def _interrupt_current_turn(self, reason: str = "interrupt") -> dict:
         future = self._active_response_future
@@ -701,14 +896,26 @@ class Live2DAssistant:
     def get_runtime_state(self) -> dict:
         mic_state = self.audio_service.state.value if self.audio_service else "loading"
         active_future = self._active_response_future
+        degraded_reason = self._collect_degraded_reason()
+        backend_state = self._backend_state
+        if self._runtime_error:
+            backend_state = "error"
+        elif backend_state != "warming_up" and degraded_reason:
+            backend_state = "degraded"
         return {
             "mode": self.config.get('mode', 'pipeline'),
+            "backend_state": backend_state,
             "mic_state": mic_state,
             "active_turn_id": self._active_turn_id,
             "response_active": bool(active_future and not active_future.done()),
             "playback_active": self._has_active_playback(),
             "debug_visible": self._debug_visible,
             "character_name": self.config.get('character', {}).get('name', 'AI'),
+            "active_language": getattr(self._get_active_pipeline(), "_current_language_code", None),
+            "active_llm_model": self._active_llm_model_name(),
+            "active_tts_provider": self._active_tts_provider_name(),
+            "degraded_reason": degraded_reason,
+            "runtime_error": self._runtime_error,
         }
 
     def _get_active_pipeline(self):
@@ -762,9 +969,18 @@ class Live2DAssistant:
             except FutureCancelledError:
                 logger.info("%s turn %s cancelled after %.1fs", source, turn_id, elapsed)
             except asyncio.TimeoutError:
+                if callable(cancel_active_run):
+                    cancel_active_run(f"{source} turn {turn_id} timeout")
                 logger.error("%s turn %s timed out after %.1fs", source, turn_id, elapsed)
             except Exception as e:
-                logger.error("%s turn %s failed after %.1fs: %s", source, turn_id, elapsed, e, exc_info=True)
+                logger.error(
+                    "%s turn %s failed after %.1fs: %s",
+                    source,
+                    turn_id,
+                    elapsed,
+                    _describe_exception(e),
+                    exc_info=True,
+                )
             finally:
                 if self._active_response_future is f:
                     self._active_response_future = None
@@ -778,6 +994,12 @@ class Live2DAssistant:
 
         if not self._loop:
             return {"status": "error", "message": "Event loop not available"}
+
+        runtime = self.get_runtime_state()
+        if runtime.get("backend_state") == "warming_up":
+            return {"status": "warming_up", "message": "Backend is still warming up.", **runtime}
+        if runtime.get("backend_state") == "error":
+            return {"status": "error", "message": runtime.get("runtime_error") or "Backend failed to start.", **runtime}
 
         active_pipeline = self._get_active_pipeline()
         process_text = getattr(active_pipeline, "process_text", None)
@@ -836,6 +1058,7 @@ class Live2DAssistant:
     
     async def _on_response_end(self, full_text: str):
         """Called when LLM finishes generating."""
+        logger.info("LLM response complete (%s chars): %r", len(full_text or ""), (full_text or "")[:160])
         self._dispatch_frontend_event("onResponseEnd", full_text, self._resolve_turn_id())
     
     async def _on_audio_ready(self, payload: AudioPayload):
@@ -863,6 +1086,7 @@ class Live2DAssistant:
             'turn_id': turn_id,
             'tts_metrics': payload.tts_metrics,
             'trace': {
+                **(payload.trace or {}),
                 'backend_audio_ready_epoch_ms': emitted_at_ms,
             },
         }
@@ -874,7 +1098,7 @@ class Live2DAssistant:
 
     async def _on_error(self, error_msg: str):
         """Called when the active pipeline surfaces an error."""
-        logger.error(f"Pipeline surfaced error: {error_msg}")
+        logger.error("Pipeline surfaced error: %s", error_msg or "Unknown pipeline error")
         self._dispatch_frontend_event("onError", error_msg, self._resolve_turn_id())
     
     def _evaluate_js(self, code: str):
@@ -888,6 +1112,7 @@ class Live2DAssistant:
     def _preload_models_and_start_audio(self):
         """Load heavy models in the background, then start audio capture."""
         try:
+            self._set_backend_health(state="warming_up", runtime_error=None)
             if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
                 logger.info("⏳ Pre-loading omni model in background...")
                 self._omni_pipeline.preload()
@@ -906,25 +1131,14 @@ class Live2DAssistant:
                 rvc = getattr(self.pipeline, 'rvc', None)
                 if hasattr(llm, 'preload'):
                     llm.preload()
-                if hasattr(asr, '_get_model'):
+                if hasattr(asr, 'preload'):
+                    asr.preload()
+                elif hasattr(asr, '_get_model'):
                     asr._get_model()
                 if hasattr(tts, 'preload'):
                     tts.preload()
                 elif hasattr(tts, '_load_model'):
-                    try:
-                        tts._load_model()
-                    except Exception as exc:
-                        if tts.__class__.__name__ == "Qwen3TTSProvider":
-                            from src.tts import KokoroProvider
-
-                            fallback_voice = self.config.get('tts', {}).get('kokoro_voice', 'ff_siwis')
-                            logger.warning("Qwen3-TTS preload failed, falling back to Kokoro: %s", exc)
-                            fallback_tts = KokoroProvider(voice=fallback_voice)
-                            fallback_tts._load_pipeline()
-                            self.pipeline.tts = fallback_tts
-                            tts = fallback_tts
-                        else:
-                            raise
+                    tts._load_model()
                 tts_warmup_on_start = bool(self.config.get('tts', {}).get('warmup_on_start', False))
                 if tts_warmup_on_start and hasattr(tts, 'warmup'):
                     tts.warmup()
@@ -934,12 +1148,21 @@ class Live2DAssistant:
                         rvc.warmup()
                 logger.info("✅ Pipeline models ready")
 
+            degraded_reason = self._collect_degraded_reason()
+            self._set_backend_health(
+                state="degraded" if degraded_reason else "ready",
+                degraded_reason=degraded_reason,
+                runtime_error=None,
+            )
             if self.audio_service and self._loop and not self.audio_service._running:
                 self.audio_service.start(self._loop)
                 logger.info("✅ Audio capture enabled after model preload")
+            self._dispatch_frontend_event("onBackendReady", self.get_runtime_state())
 
         except Exception as e:
+            self._set_backend_health(state="error", runtime_error=str(e))
             logger.error(f"Background preload failed: {e}", exc_info=True)
+            self._dispatch_frontend_event("onError", str(e), self._resolve_turn_id())
 
     def _start_background_preload(self):
         """Start model preload without blocking the UI."""
@@ -1119,9 +1342,12 @@ class Live2DAssistant:
         if self.pipeline:
             llm = getattr(self.pipeline, 'llm', None)
             tts = getattr(self.pipeline, 'tts', None)
+            asr = getattr(self.pipeline, 'asr', None)
             rvc = getattr(self.pipeline, 'rvc', None)
             if hasattr(tts, 'cleanup'):
                 tts.cleanup()
+            if hasattr(asr, 'cleanup'):
+                asr.cleanup()
             if hasattr(llm, 'cleanup'):
                 llm.cleanup()
             if rvc and hasattr(rvc, 'close'):

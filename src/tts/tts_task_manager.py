@@ -82,6 +82,7 @@ class TTSTaskManager:
             await self._worker_task
 
     async def cancel(self):
+        self._abort_inflight_tts()
         if self._worker_task and not self._worker_task.done():
             self._worker_task.cancel()
             try:
@@ -93,6 +94,15 @@ class TTSTaskManager:
                 self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+
+    def _abort_inflight_tts(self) -> None:
+        cancel_fn = getattr(self._tts, "cancel_inflight", None)
+        if not callable(cancel_fn):
+            return
+        try:
+            cancel_fn()
+        except Exception as exc:
+            logger.debug("TTS cancel_inflight failed: %s", exc)
 
     async def _worker(self):
         while True:
@@ -127,7 +137,11 @@ class TTSTaskManager:
 
         synth_started = time.perf_counter()
         queue_wait_ms = (synth_started - queued_at) * 1000
-        result = await self._tts.synthesize(text)
+        try:
+            result = await self._tts.synthesize(text)
+        except asyncio.CancelledError:
+            self._abort_inflight_tts()
+            raise
         synth_elapsed_ms = (time.perf_counter() - synth_started) * 1000
 
         if result.metadata:
@@ -135,6 +149,8 @@ class TTSTaskManager:
 
         file_read_ms = float(metadata.get("file_read_ms", 0.0) or 0.0)
         file_write_ms = float(metadata.get("file_write_ms", 0.0) or 0.0)
+        provider_roundtrip_ms = float(metadata.get("provider_roundtrip_ms", synth_elapsed_ms) or synth_elapsed_ms)
+        provider_wait_ms = max(0.0, provider_roundtrip_ms - float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms))
 
         if result.audio_data:
             full_wav = result.audio_data
@@ -160,10 +176,11 @@ class TTSTaskManager:
         attn_used = metadata.get("attn_implementation") or metadata.get("attn_implementation_actual")
 
         logger.info(
-            "TTS sentence metrics: text=%r queue_wait_ms=%.1f synth_ms=%.1f total_ms=%.1f file_write_ms=%.1f file_read_ms=%.1f rvc_ms=%.1f attn=%s",
+            "TTS sentence metrics: text=%r queue_wait_ms=%.1f synth_ms=%.1f provider_wait_ms=%.1f total_ms=%.1f file_write_ms=%.1f file_read_ms=%.1f rvc_ms=%.1f attn=%s",
             text[:80],
             queue_wait_ms,
             float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
+            provider_wait_ms,
             total_tts_ms,
             file_write_ms,
             file_read_ms,
@@ -182,6 +199,8 @@ class TTSTaskManager:
             "expression": expression,
             "tts_metrics": {
                 "synth_ms": float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
+                "provider_roundtrip_ms": provider_roundtrip_ms,
+                "provider_wait_ms": provider_wait_ms,
                 "total_ms": total_tts_ms,
                 "file_write_ms": file_write_ms,
                 "file_read_ms": file_read_ms,

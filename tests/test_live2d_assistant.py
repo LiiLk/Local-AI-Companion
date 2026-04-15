@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from src.assistant.app import CURRENT_DESKTOP_TURN_ID, Live2DAssistant
+from src.assistant.app import CURRENT_DESKTOP_TURN_ID, Live2DAssistant, resolve_turn_timeout_sec
 from src.assistant.conversation_pipeline import AudioPayload
 
 
@@ -55,8 +55,18 @@ def _make_assistant() -> Live2DAssistant:
     assistant._playback_deadline = 0.0
     assistant._debug_visible = False
     assistant._turn_counter = 0
+    assistant._backend_state = "ready"
+    assistant._degraded_reason = None
+    assistant._runtime_error = None
     assistant.audio_service = SimpleNamespace(state=SimpleNamespace(value="listening"))
     assistant.config = {"mode": "pipeline", "character": {"name": "March 7th"}}
+    assistant.pipeline = SimpleNamespace(
+        llm=SimpleNamespace(model="qwen3.5:4b", degraded_reason=None),
+        tts=SimpleNamespace(active_provider_name="qwen3", degraded_reason=None),
+        _current_language_code="en",
+    )
+    assistant._omni_pipeline = None
+    assistant._gemma_pipeline = None
     return assistant
 
 
@@ -107,6 +117,7 @@ def test_on_audio_ready_includes_trace_and_tts_metrics():
         text="Hello from desktop",
         expression="happy",
         tts_metrics={"synth_ms": 42.0},
+        trace={"speech_end_epoch_ms": 111, "asr_done_epoch_ms": 222},
     )
 
     token = CURRENT_DESKTOP_TURN_ID.set(7)
@@ -119,6 +130,7 @@ def test_on_audio_ready_includes_trace_and_tts_metrics():
     assert assistant._playback_deadline > 0.0
     assert any('"turn_id": 7' in call for call in assistant._window.calls)
     assert any('"backend_audio_ready_epoch_ms"' in call for call in assistant._window.calls)
+    assert any('"speech_end_epoch_ms": 111' in call for call in assistant._window.calls)
     assert any('"tts_metrics": {"synth_ms": 42.0}' in call for call in assistant._window.calls)
     assert any("window.onAudioReady?.(" in call for call in assistant._window.calls)
 
@@ -170,3 +182,57 @@ def test_start_turn_cancels_previous_pipeline_without_waiting(monkeypatch):
     assert captured["loop"] is assistant._loop
     assert previous_future.cancelled is True
     assert cancel_reasons == ["superseded by speech turn 5"]
+
+
+def test_get_runtime_state_exposes_backend_health_fields():
+    assistant = _make_assistant()
+
+    runtime = assistant.get_runtime_state()
+
+    assert runtime["backend_state"] == "ready"
+    assert runtime["active_language"] == "en"
+    assert runtime["active_llm_model"] == "qwen3.5:4b"
+    assert runtime["active_tts_provider"] == "qwen3"
+    assert runtime["degraded_reason"] is None
+    assert runtime["runtime_error"] is None
+
+
+def test_submit_text_returns_warming_up_until_backend_ready():
+    assistant = _make_assistant()
+    assistant._loop = object()
+    assistant._backend_state = "warming_up"
+    assistant.pipeline.process_text = lambda _text: None
+
+    runtime = assistant.submit_text("Hello")
+
+    assert runtime["status"] == "warming_up"
+    assert runtime["backend_state"] == "warming_up"
+
+
+def test_resolve_audio_start_muted_defaults_to_bridge_muted():
+    assistant = _make_assistant()
+    assistant._bridge_only = True
+    assistant.config["audio"] = {}
+
+    assert assistant._resolve_audio_start_muted() is True
+
+
+def test_resolve_audio_start_muted_bridge_override_can_unmute():
+    assistant = _make_assistant()
+    assistant._bridge_only = True
+    assistant.config["audio"] = {"bridge_start_muted": False}
+
+    assert assistant._resolve_audio_start_muted() is False
+
+
+def test_resolve_turn_timeout_uses_openrouter_request_timeout():
+    config = {
+        "llm": {
+            "provider": "openrouter",
+            "openrouter": {
+                "request_timeout_sec": 180,
+            },
+        }
+    }
+
+    assert resolve_turn_timeout_sec(config) == 210

@@ -1,6 +1,7 @@
 # LLM Module - Large Language Model implementations
 from .base import BaseLLM, Message, LLMResponse
 from .ollama_llm import OllamaLLM
+from .openrouter_llm import OpenRouterLLM
 from .gemma_text_vision_llm import GemmaTextVisionLLM
 
 __all__ = [
@@ -8,5 +9,6 @@ __all__ = [
     "Message",
     "LLMResponse",
     "OllamaLLM",
+    "OpenRouterLLM",
     "GemmaTextVisionLLM",
 ]
