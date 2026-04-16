@@ -5,7 +5,6 @@ This module creates and configures the FastAPI application
 with WebSocket support for real-time AI conversation.
 """
 
-import yaml
 import logging
 import sys
 from pathlib import Path
@@ -17,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .routes import router
 from .websocket import websocket_router
 from ..utils.character_loader import resolve_character_config, get_available_characters
+from ..utils.config_loader import load_yaml_config
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,7 @@ _configure_console_output()
 def load_config() -> dict:
     """Load configuration from config.yaml and resolve character preset"""
     config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_yaml_config(config_path)
     
     # Resolve character preset if specified
     config = resolve_character_config(config)

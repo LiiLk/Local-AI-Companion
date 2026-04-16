@@ -376,8 +376,8 @@ class AudioService:
                 if audio_float.size == 0:
                     return
 
-            # Process through VAD
-            for event in self._vad.process_audio(audio_float.tolist()):
+            # Process through VAD without an intermediate Python list conversion.
+            for event in self._vad.process_audio(audio_float):
                 if event == b"<|START|>":
                     logger.debug("Speech started")
                     if self.on_speech_start:

@@ -164,17 +164,17 @@ class SileroVAD:
                     self.audio_buffer.clear()
                     yield b"<|END|>"
     
-    def process_audio(self, audio_data: list[float]) -> Generator[bytes, None, None]:
+    def process_audio(self, audio_data: list[float] | np.ndarray) -> Generator[bytes, None, None]:
         """
-        Process audio data (list of float samples).
+        Process audio data (list or ndarray of float samples).
         
         Args:
-            audio_data: List of float samples (-1 to 1)
+            audio_data: Float samples (-1 to 1)
             
         Yields:
             Speech events and audio segments
         """
-        audio_np = np.array(audio_data, dtype=np.float32)
+        audio_np = np.asarray(audio_data, dtype=np.float32)
         
         # Process in chunks
         for i in range(0, len(audio_np), self.chunk_size):

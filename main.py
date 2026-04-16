@@ -19,7 +19,6 @@ import logging
 import subprocess
 import tempfile
 import re
-import yaml
 from pathlib import Path
 
 from src.llm import OllamaLLM
@@ -28,6 +27,7 @@ from src.tts import EdgeTTSProvider, KokoroProvider
 from src.tts.base import BaseTTS
 from src.asr import RealtimeWhisperProvider
 from src.asr.base import BaseASR
+from src.utils.config_loader import load_yaml_config
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -36,8 +36,7 @@ logger = logging.getLogger(__name__)
 def load_config() -> dict:
     """Load configuration from config.yaml"""
     config_path = Path(__file__).parent / "config" / "config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return load_yaml_config(config_path)
 
 
 def play_audio(audio_path: Path) -> subprocess.Popen:
@@ -114,6 +113,7 @@ def create_tts(provider: str, tts_config: dict) -> BaseTTS:
             python_path=qwen3_config.get("python_path"),
             site_packages_dir=qwen3_config.get("site_packages_dir"),
             worker_script=qwen3_config.get("worker_script"),
+            request_timeout_sec=qwen3_config.get("request_timeout_sec", 20),
         )
     else:
         # Edge TTS - Microsoft Cloud (fallback)
