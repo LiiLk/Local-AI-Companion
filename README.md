@@ -1,320 +1,450 @@
-# 🤖 Local AI Companion
+# Local AI Companion
 
 <p align="center">
   <img src="assets/cortana.jpg" alt="Local AI Companion Banner" width="600">
 </p>
 
 <p align="center">
-  <strong>An interactive voice AI assistant with Live2D avatar, built from scratch for learning.</strong>
+  <strong>Offline-first desktop AI companion with Live2D, realtime voice conversation, and a pragmatic local voice pipeline.</strong>
 </p>
 
 <p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-architecture">Architecture</a> •
-  <a href="#-installation">Installation</a> •
-  <a href="#-roadmap">Roadmap</a> •
-  <a href="#-what-i-learned">What I Learned</a>
+  <a href="#current-state">Current State</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#entry-points">Entry Points</a> •
+  <a href="#testing">Testing</a>
 </p>
 
 ---
 
-## 🎯 About
+## Current State
 
-This project is a **100% local and private AI assistant** capable of:
-- 🔒 **Fully offline** - No cloud, no data sent anywhere
-- 💬 Real-time conversation (text and voice)
-- 🎤 Understanding your voice (Speech-to-Text)
-- 🔊 Responding vocally (Text-to-Speech)
-- 🎭 Animating via Live2D avatar (coming soon)
-- 👁️ Seeing your screen to help you (coming soon)
+`Local AI Companion` is a Windows-first AI assistant project built around one main goal: a responsive local voice companion with a Live2D shell and a maintainable backend.
 
-### 🎓 Why this project?
+The current stable path on `main` is:
 
-Instead of forking an existing project, I chose to **rebuild from scratch** to:
-- **Keep everything local** - No cloud APIs, your data stays on YOUR machine
-- **Deeply understand** the architecture of an AI assistant
-- **Master the concepts**: async Python, WebSockets, local LLMs, TTS, ASR
-- **Demonstrate my skills** in software development and AI Engineering
+```text
+Microphone -> Silero VAD -> Faster-Whisper -> LLM text -> Kokoro TTS -> RVC -> Audio playback
+```
 
-> 💡 Inspired by [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber), but entirely rewritten for learning purposes.
+### What this repository is today
 
----
+- An **offline-first** assistant: ASR and TTS are local by default.
+- A **desktop companion** with Live2D shell support.
+- A **pipeline-first** architecture with explicit runtime ownership and test coverage.
+- A project that can run with a **local LLM** by default (`Ollama`) or an **optional cloud LLM** (`OpenRouter`) when you choose to enable it.
 
-## ✨ Features
+### What is considered stable right now
 
-### Implemented ✅
-- [x] **Local LLM module** - Multiple providers, runs 100% on your machine
-  - 🦙 **llama.cpp** (Qwen3-VL-8B) - 8B vision-language state-of-the-art model
-  - 🦣 **Ollama** - Easy-to-use with pre-packaged models
-- [x] **Privacy-first** - Your conversations never leave your computer
-- [x] **Response streaming** - Real-time display of generation
-- [x] **YAML configuration** - Personality and settings without touching code
-- [x] **CLI Chatbot** - Functional command-line interface
-- [x] **Text-to-Speech (TTS)** - Voice synthesis with:
-  - 🎤 **OpenAudio S1-mini** (local, 0.5B params, #1 TTS-Arena2, voice cloning) - *Best quality*
-  - 🎤 **F5-TTS** (local, high quality, voice cloning)
-  - 🔊 **Kokoro TTS** (local, 82M params, high quality, fast) - *Recommended*
-  - 🌐 **Edge TTS** (cloud fallback, Microsoft voices)
+- `mode: "pipeline"`
+- `ASR: faster-whisper`
+- `LLM: Ollama` by default, `OpenRouter` optional
+- `TTS: Kokoro`
+- `Voice conversion: RVC`
+- Desktop overlay + WebSocket backend + CLI entry points
 
-- [x] **Speech-to-Text (ASR)** - Voice recognition with:
-  - 🦜 **NVIDIA Parakeet TDT** (0.6B, fast, 25 languages) - *Recommended*
-  - 🎤 **Faster-Whisper** (local, multiple model sizes)
-  - 🐤 **NVIDIA Canary** (1B, state-of-the-art accuracy)
-- [x] **Full Voice Conversation** - Speak to the AI, hear its response!
-- [x] **Web Interface** - Frontend with real-time WebSocket communication
-- [x] **Voice Activity Detection** - Silero VAD for automatic speech detection
+### What is not the primary production path
 
-### In Development 🚧
-- [ ] **Live2D Avatar** - Animation synchronized with voice
+These remain supported or experimental, but they are not the default architecture we optimize around:
 
-### Planned 📋
-- [ ] **Vision** - Screen capture, camera input for visual understanding
-- [ ] **Document RAG** - Query and understand your local documents
-- [ ] **Persistent memory** - Long-term conversation history
-- [ ] **PC Control** - Execute actions on your computer (open apps, search, etc.)
-- [ ] **Desktop Pet mode** - Transparent widget always on screen
+- `Qwen3-TTS` as premium local TTS path
+- `Qwen3-ASR`
+- `mode: "omni"` (MiniCPM-o)
+- `mode: "gemma-omni"`
+- `Chatterbox` and `Edge TTS` as secondary/fallback providers
 
 ---
 
-## 🏗️ Architecture
+## Why This Project Exists
+
+This repository started as a from-scratch rebuild to understand and own the whole assistant stack instead of forking a monolithic VTuber project.
+
+The project priorities are now clear:
+
+- Keep the **main path simple and debuggable**
+- Favor **one stable architecture** over many half-working ones
+- Optimize for **single-GPU desktop reality**
+- Stay **config-driven** and easy to iterate on
+- Keep room for advanced paths without polluting the default runtime
+
+Inspired by [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber), but implemented here with a smaller and more opinionated architecture.
+
+---
+
+## Features
+
+### Implemented
+
+- Realtime voice pipeline with sentence-level streaming
+- Local ASR with `faster-whisper`
+- Local TTS with `Kokoro`
+- Local voice conversion with `RVC`
+- Live2D desktop companion backend
+- Browser/WebSocket server for frontend integration
+- Character presets in YAML
+- Local config overrides via `config/config.local.yaml`
+- Runtime lifecycle management for preload, warmup, cleanup, and degraded state handling
+- Test suite covering pipeline, TTS routing, RVC, websocket flows, config loading, and language strategy
+
+### Available but secondary
+
+- `OpenRouter` LLM provider
+- `Gemma` text+vision pipeline
+- `MiniCPM-o` omni mode
+- `Qwen3-TTS` worker-based local premium TTS path
+- `Chatterbox` multilingual ONNX TTS
+- `Edge TTS` cloud fallback
+
+### Planned / active improvement areas
+
+- Better ASR quality on the stable path (`Whisper large-v3` / `large-v3-turbo` evaluation)
+- Better March 7th voice fidelity on the `Kokoro -> RVC` path
+- Further codebase cleanup around the single stable architecture
+- Stronger desktop UX and Live2D polish
+- Vision and multimodal workflows once the voice core is settled
+
+---
+
+## Architecture
+
+### Stable Reference Pipeline
 
 ```mermaid
-flowchart TB
-    subgraph Frontend["🖥️ FRONTEND"]
-        UI["Web UI / Desktop"]
-        Live2D["Live2D Avatar"]
-    end
-    
-    subgraph Backend["⚙️ BACKEND (FastAPI)"]
-        ASR["🎤 ASR<br/>Whisper<br/>Voice → Text"]
-        LLM["🧠 LLM<br/>Ollama<br/>Brain"]
-        TTS["🔊 TTS<br/>Kokoro/Edge<br/>Text → Voice"]
-    end
-    
-    Frontend <-->|WebSocket| Backend
-    ASR --> LLM --> TTS
+flowchart LR
+    Mic["Microphone"] --> VAD["Silero VAD"]
+    VAD --> ASR["Faster-Whisper"]
+    ASR --> LLM["LLM Text Layer\nOllama by default\nOpenRouter optional"]
+    LLM --> Splitter["Sentence Splitter + TTS Task Manager"]
+    Splitter --> TTS["Kokoro TTS"]
+    TTS --> RVC["RVC Voice Conversion"]
+    RVC --> Audio["Audio Playback + Desktop/Web Payloads"]
 ```
 
-### Design Principles
+### Runtime Principles
 
-| Principle | Description |
-|-----------|-------------|
-| **Abstraction** | Each module (LLM, TTS, ASR) implements an abstract interface |
-| **Modularity** | Easily switch between different local models |
-| **Async-first** | Using `async/await` for performance and streaming |
-| **External config** | YAML to separate code from configuration |
+| Principle | Meaning |
+|---|---|
+| `pipeline` is the default | The separate ASR -> LLM -> TTS stack is the main product path |
+| One CUDA-heavy TTS path at a time | Sequential synthesis to stay safe on a single GPU |
+| Config-driven | Behavior lives in `config/config.yaml` and `config/config.local.yaml` |
+| Explicit lifecycle | Preload, warmup, cleanup, degraded state, and timeouts are owned centrally |
+| Optional advanced paths | `Qwen3`, `Gemma`, `MiniCPM-o` exist, but do not define the stable architecture |
+
+### Runtime Modes
+
+| Mode | Purpose | Status |
+|---|---|---|
+| `pipeline` | Separate ASR -> LLM -> TTS chain | Primary / stable |
+| `omni` | MiniCPM-o single-model multimodal path | Secondary / experimental |
+| `gemma-omni` | Gemma multimodal path with separate TTS | Secondary / experimental |
+
 ---
 
-## 📁 Project Structure
+## Project Layout
 
-```
+```text
 Local-AI-Companion/
-├── src/
-│   ├── llm/                 # Large Language Model module
-│   │   ├── base.py          # Abstract interface BaseLLM
-│   │   └── ollama_llm.py    # Ollama implementation
-│   ├── tts/                 # Text-to-Speech module
-│   │   ├── base.py          # Abstract interface BaseTTS
-│   │   ├── edge_provider.py # Edge TTS (cloud)
-│   │   └── kokoro_provider.py # Kokoro TTS (local)
-│   ├── asr/                 # Speech Recognition module
-│   │   ├── base.py          # Abstract interface BaseASR
-│   │   └── whisper_provider.py # Whisper ASR (local)
-│   └── core/                # Core logic
 ├── config/
-│   └── config.yaml          # Configuration (model, personality)
-├── frontend/                # User interface (coming)
-├── main.py                  # CLI entry point
-├── requirements.txt
-└── README.md
+│   ├── config.yaml
+│   ├── config.local.example.yaml
+│   └── characters/
+├── frontend/
+│   ├── index.html
+│   └── live2d/
+├── resources/
+│   └── voices/
+├── scripts/
+│   ├── install_rvc_windows.ps1
+│   ├── install_qwen3_tts_windows.ps1
+│   ├── rvc_worker.py
+│   ├── qwen3_tts_worker.py
+│   └── benchmark / smoke test utilities
+├── src/
+│   ├── assistant/
+│   │   ├── app.py
+│   │   ├── conversation_pipeline.py
+│   │   ├── audio_service.py
+│   │   └── pipeline_runtime.py
+│   ├── asr/
+│   ├── llm/
+│   ├── server/
+│   ├── tts/
+│   ├── utils/
+│   └── vad/
+├── tests/
+├── main.py
+└── run_assistant.py
 ```
+
+### Key Files
+
+| Area | Files |
+|---|---|
+| Desktop app | `run_assistant.py`, `src/assistant/app.py` |
+| Voice pipeline | `src/assistant/conversation_pipeline.py`, `src/assistant/pipeline_runtime.py` |
+| ASR | `src/asr/whisper_provider.py` |
+| TTS | `src/tts/kokoro_provider.py`, `src/tts/rvc_provider.py`, `src/tts/tts_task_manager.py` |
+| Optional premium TTS | `src/tts/qwen3_tts_provider.py` |
+| WebSocket server | `src/server/app.py`, `src/server/websocket.py` |
+| Character system | `config/characters/*.yaml` |
+| Core config | `config/config.yaml`, `config/config.local.yaml` |
 
 ---
 
-## 🚀 Installation
+## Quick Start
 
-### Prerequisites
+### 1. Prerequisites
+
+- Windows 11 is the primary target
 - Python 3.11+
-- GPU recommended (NVIDIA RTX for best performance)
-- ~10GB disk space for models
+- NVIDIA GPU recommended for the intended desktop experience
+- `ffplay` or `mpv` if you want local audio playback from the CLI path
+- [Ollama](https://ollama.com/) if you want the default local LLM path
 
-### Setup
+### 2. Clone and install Python dependencies
 
-```bash
-# Clone the repository
+```powershell
 git clone https://github.com/LiiLk/Local-AI-Companion.git
 cd Local-AI-Companion
 
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
-
-# Install dependencies
+python -m venv venv
+venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### LLM Setup (Choose one)
+### 3. Configure local overrides
 
-#### Option A: Qwen3-VL-8B (Recommended for vision tasks)
-This is the default configuration.
-
-```bash
-./scripts/setup_qwen_vl.sh
-```
-# 3. Start the LLM server
-./scripts/start_llm_server.sh --daemon
+```powershell
+copy config\config.local.example.yaml config\config.local.yaml
 ```
 
-#### Option B: Ollama (Simpler setup)
-```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
+Use `config/config.local.yaml` for:
 
-# Download a model
-ollama pull llama3.2:3b
+- secrets such as `OPENROUTER_API_KEY`
+- machine-specific paths
+- local experiments you do not want to commit
 
-# Update config/config.yaml to use provider: "ollama"
+### 4. Set up the default LLM path
+
+#### Option A: local LLM with Ollama (default)
+
+```powershell
+ollama pull qwen3.5:4b
 ```
 
-### OpenAudio S1-mini Setup (Optional - for voice cloning)
+Make sure Ollama is running on `http://localhost:11434`.
 
-OpenAudio S1-mini is the #1 rated TTS model on TTS-Arena2, offering:
-- Voice cloning with 10-30 seconds of reference audio
-- Emotion markers: `(excited)`, `(whispering)`, `(sad)`, `(laughing)`
-- Native multilingual support (French, English, Japanese, etc.)
+#### Option B: OpenRouter (optional)
 
-```bash
-# 1. Install Fish Speech
-git clone https://github.com/fishaudio/fish-speech.git ~/tools/fish-speech
-cd ~/tools/fish-speech
-pip install -e .[cpu]  # or pip install -e . for GPU
+Set `OPENROUTER_API_KEY` in your environment or in `config/config.local.yaml`, then switch:
 
-# 2. Download the model (~3.5GB)
-mkdir -p ~/models/openaudio-s1-mini
-cd ~/models/openaudio-s1-mini
-huggingface-cli download fishaudio/openaudio-s1-mini --local-dir .
-
-# 3. Configure voice cloning (optional)
-# Record 10-30 seconds of clear speech and add to config.yaml:
-# tts:
-#   openaudio:
-#     speaker_wav: "~/voices/my_voice.wav"
-#     speaker_text: "Exact transcription of the reference audio..."
+```yaml
+llm:
+  provider: "openrouter"
 ```
 
-**Performance notes:**
-- GPU: ~2s generation for 2s audio (8.9x RTF), 4.9GB VRAM
-- CPU: ~50s generation for 2s audio (50x RTF) - not recommended for real-time
+### 5. Install the default voice conversion worker
 
-### Usage
+The stable voice path on `main` uses `Kokoro -> RVC`, so install the RVC worker once:
 
-```bash
-# Run the CLI chatbot (text only)
-python main.py
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1
+```
 
-# Run with OpenAudio TTS (best quality, voice cloning) - requires GPU
-python main.py --voice --tts openaudio
+If you want a plain Kokoro path first, you can temporarily disable RVC:
 
-# Run with Kokoro TTS (local, fast)
-python main.py --voice
+```yaml
+tts:
+  rvc:
+    enabled: false
+```
 
-# Run with Edge TTS (cloud)
-python main.py --voice --tts edge
+### 6. Run the app
 
-# Full voice conversation (speak + hear) 🎤🔊
-python main.py --listen
+#### Desktop companion
 
-# Start the web server
+```powershell
+python run_assistant.py
+```
+
+#### Desktop backend only (bridge mode for Tauri / external shell)
+
+```powershell
+python run_assistant.py --bridge-server --bridge-port 8765
+```
+
+#### Browser / WebSocket server
+
+```powershell
 python -m src.server
-# Then open http://localhost:8000 in your browser
+```
+
+Then open `http://localhost:8000`.
+
+#### CLI chatbot
+
+```powershell
+python main.py
+python main.py --voice
+python main.py --voice --listen
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## Configuration
 
-| Category | Technologies |
-|----------|--------------|
-| **Language** | Python 3.12 |
-| **LLM** | Qwen3-VL-8B (8B, vision) via llama.cpp + Ollama fallback |
-| **TTS** | OpenAudio S1-mini + F5-TTS + Kokoro (82M) + Edge TTS |
-| **ASR** | NVIDIA Parakeet TDT (0.6B) + Faster-Whisper + Canary |
-| **VAD** | Silero VAD (voice activity detection) |
-| **Backend** | FastAPI + WebSockets |
-| **Frontend** | HTML/CSS/JS vanilla |
-| **HTTP Client** | httpx (async) |
-| **Configuration** | PyYAML |
+The repository is intentionally config-driven.
 
----
+### Config files
 
-## 📚 What I Learned
+- Tracked defaults: `config/config.yaml`
+- Local overrides: `config/config.local.example.yaml`
+- Character presets: `config/characters/*.yaml`
 
-This project allowed me to deepen my knowledge in:
+All main entry points now load config through the shared config loader, so `config.local.yaml` overrides are applied consistently.
 
-### Advanced Python
-- **Abstract Base Classes (ABC)** - Pattern for extensibility
-- **Asynchronous programming** - `async/await`, `AsyncGenerator`
-- **Type hints** - Self-documenting and IDE-friendly code
-- **Dataclasses** - Clean data structures
+### Important settings
 
-### Software Architecture
-- **SOLID principles** - Especially Dependency Inversion
-- **Design patterns** - Factory, Strategy (for providers)
-- **Separation of concerns** - Config/Code/Interface
+```yaml
+mode: "pipeline"
 
-### AI & APIs
-- **LLM APIs** - Message format, streaming, tokens
-- **Prompt engineering** - System prompts, personality
-- **Audio pipelines** - ASR → LLM → TTS (coming)
+pipeline:
+  reply_language: "en"
 
----
+llm:
+  provider: "ollama"   # or "openrouter", "gemma"
 
-## 📈 Roadmap
+tts:
+  provider: "kokoro"
+  warmup_on_start: true
+  rvc:
+    enabled: true
 
-```
-Phase 1: Foundations         ████████████████ 100% ✅
-├── ✅ Modular architecture
-├── ✅ LLM Module (Ollama + llama.cpp)
-├── ✅ CLI Chatbot
-├── ✅ TTS Module (Kokoro + Edge)
-└── ✅ ASR Module (Whisper + Canary + Parakeet)
-
-Phase 2: Web Interface       ████████████▒▒▒▒ 85%
-├── ✅ WebSocket Server
-├── ✅ Web Frontend
-├── ✅ Voice Activity Detection (Silero VAD)
-└── 🚧 Live2D Avatar (In Progress)
-
-Phase 3: Advanced Features   ░░░░░░░░░░░░░░░░ 0%
-├── ⬜ Voice Cloning (XTTS v2)
-├── ⬜ Vision (screen/camera)
-├── ⬜ Persistent Memory
-└── ⬜ PC Control
+asr:
+  provider: "whisper"
+  model_size: "small"
+  device: "cuda"
 ```
 
----
+### Character presets
 
-## 🙏 Acknowledgments & Inspirations
+The current default preset is `march7th`.
 
-- [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber) - Main architecture inspiration
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) - Fast local inference with Vulkan/CUDA
-- [Qwen3-VL](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF) - Vision-language state-of-the-art model
-- [Ollama](https://ollama.com/) - Easy-to-use local LLM
-- [Kokoro TTS](https://github.com/hexgrad/kokoro) - High-quality local TTS (82M params)
-- [Fish Speech / OpenAudio](https://github.com/fishaudio/fish-speech) - #1 TTS-Arena2 with voice cloning
-- [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) - Fast local ASR (4x faster than original)
-- [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) - Canary and Parakeet ASR models
-- [Edge TTS](https://github.com/rany2/edge-tts) - Free cloud TTS fallback
+Relevant assets already wired in the repo:
+
+- Live2D model under `assets/models/march7th/`
+- RVC files under `resources/voices/march7th/`
+- reference audio for premium voice paths under `resources/voices/march7th/`
 
 ---
 
-## 📝 License
+## Entry Points
 
-MIT License - See [LICENSE](LICENSE)
+| Command | Purpose |
+|---|---|
+| `python run_assistant.py` | Desktop Live2D assistant |
+| `python run_assistant.py --bridge-server` | Desktop backend without pywebview, websocket bridge mode |
+| `python -m src.server` | FastAPI + WebSocket server for browser frontend |
+| `python main.py` | CLI chatbot |
+| `python main.py --voice --listen` | CLI voice conversation path |
 
 ---
 
-<p align="center">
-  <i>Built with ❤️ to learn and share</i>
-</p>
+## Optional Advanced Providers
+
+These are intentionally not part of the primary README quick path, but they still exist in the codebase.
+
+### Qwen3-TTS
+
+For the worker-based Qwen3 premium path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_qwen3_tts_windows.ps1
+```
+
+Then switch config:
+
+```yaml
+tts:
+  provider: "qwen3"
+```
+
+This path is useful for experimentation and premium local voice cloning, but it is not the default stable path on `main`.
+
+### Gemma / MiniCPM-o
+
+Both multimodal paths are available in the codebase, but they are secondary modes and should be treated as such:
+
+```yaml
+mode: "omni"
+# or
+mode: "gemma-omni"
+```
+
+---
+
+## Testing
+
+Run the full repository test suite:
+
+```bash
+pytest tests -q
+```
+
+Run a specific file:
+
+```bash
+pytest tests/test_pipeline_runtime.py -q
+pytest tests/test_conversation_pipeline_rvc.py -q
+pytest tests/test_websocket_openrouter.py -q
+```
+
+There are also utility scripts in `scripts/` for smoke tests, latency profiling, and provider benchmarking.
+
+---
+
+## Known Constraints
+
+- The project is optimized for **single-GPU desktop usage**, so heavyweight providers should not all be enabled blindly.
+- The default stable ASR is still `whisper small`; higher-accuracy upgrades are planned but not the current default.
+- `Qwen3-TTS`, `Qwen3-ASR`, `Gemma`, and `MiniCPM-o` are not the baseline that the repository is currently simplified around.
+- Windows is the primary target; some advanced runtimes may behave differently on Linux/WSL.
+
+---
+
+## Roadmap
+
+### Near term
+
+- Improve ASR quality on the stable path
+- Improve March 7th voice fidelity on `Kokoro -> RVC`
+- Continue removing dead code and old architecture leftovers
+- Tighten desktop UX and preload behavior
+
+### Later
+
+- Stronger multimodal workflows
+- Better screen understanding and vision
+- Memory and long-term personalization
+- More polished Live2D and desktop-pet behavior
+
+---
+
+## Acknowledgments
+
+- [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber)
+- [Ollama](https://ollama.com/)
+- [OpenRouter](https://openrouter.ai/)
+- [Kokoro](https://github.com/hexgrad/kokoro)
+- [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)
+- [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper)
+- [Silero VAD](https://github.com/snakers4/silero-vad)
+- [Live2D Cubism SDK](https://www.live2d.com/en/sdk/)
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
