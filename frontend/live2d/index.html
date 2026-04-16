@@ -447,6 +447,36 @@
             ui.debugMic.textContent = state.runtime?.mic_state ?? 'loading';
         }
 
+        function runtimeSummary(runtime) {
+            const parts = [];
+            if (runtime?.active_llm_model) {
+                parts.push(runtime.active_llm_model);
+            }
+            if (runtime?.active_tts_provider) {
+                parts.push(`tts:${runtime.active_tts_provider}`);
+            }
+            if (runtime?.active_language) {
+                parts.push(String(runtime.active_language).toUpperCase());
+            }
+            return parts.join(' · ');
+        }
+
+        function syncComposerAvailability(runtime) {
+            const backendState = runtime?.backend_state ?? 'warming_up';
+            const locked = backendState === 'warming_up' || backendState === 'error';
+            ui.textInput.disabled = locked;
+            ui.sendButton.disabled = locked;
+            ui.interruptButton.disabled = backendState === 'warming_up';
+
+            if (backendState === 'warming_up') {
+                ui.textInput.placeholder = 'Backend warming up...';
+            } else if (backendState === 'error') {
+                ui.textInput.placeholder = 'Backend unavailable';
+            } else {
+                ui.textInput.placeholder = 'Type to the assistant...';
+            }
+        }
+
         function setUserText(text) {
             ui.userText.textContent = text || 'Waiting for speech or text input...';
         }
@@ -549,9 +579,11 @@
                     bytes[index] = binary.charCodeAt(index);
                 }
 
+                const decodeStartedEpochMs = Date.now();
                 const decodeStartedAt = performance.now();
                 const decoded = await audioContext.decodeAudioData(bytes.buffer.slice(0));
                 const decodeFinishedAt = performance.now();
+                const decodeFinishedEpochMs = Date.now();
                 if (generation !== state.playbackGeneration) {
                     state.isPlaying = false;
                     return;
@@ -597,11 +629,20 @@
 
                 source.start(0);
                 const playbackStartedAt = performance.now();
+                const playbackStartedEpochMs = Date.now();
                 metrics.decodeStartedAt = decodeStartedAt;
                 metrics.decodeFinishedAt = decodeFinishedAt;
                 metrics.playbackStartedAt = playbackStartedAt;
+                item.trace = {
+                    ...(item.trace || {}),
+                    frontend_decode_start_epoch_ms: decodeStartedEpochMs,
+                    frontend_decode_done_epoch_ms: decodeFinishedEpochMs,
+                    playback_start_epoch_ms: playbackStartedEpochMs,
+                };
                 logTrace('audio_playback_start', {
                     turnId,
+                    decodeDoneEpochMs: decodeFinishedEpochMs,
+                    playbackStartEpochMs: playbackStartedEpochMs,
                     queueDepthAfterShift: state.audioQueue.length,
                     transportLagMs: item.trace?.transport_lag_ms ?? null,
                     decodeMs: Number((decodeFinishedAt - decodeStartedAt).toFixed(1)),
@@ -631,6 +672,7 @@
             state.runtime = runtime || {};
             ui.muteButton.textContent = runtime?.mic_state === 'muted' ? 'Unmute' : 'Mute';
             syncDebug();
+            syncComposerAvailability(runtime);
 
             if (runtime?.debug_visible) {
                 ui.debugInfo.classList.add('visible');
@@ -638,12 +680,36 @@
                 ui.debugInfo.classList.remove('visible');
             }
 
+            const backendState = runtime?.backend_state ?? 'warming_up';
+            const assistantName = runtime?.character_name || 'Assistant';
+            const summary = runtimeSummary(runtime) || `${assistantName} desktop shell`;
+
+            if (backendState === 'error') {
+                setStatus('Error', runtime?.runtime_error || summary, 'danger');
+                setError(runtime?.runtime_error || 'Backend failed to start');
+                return;
+            }
+
+            if (backendState === 'warming_up') {
+                setStatus('Warming Up', summary || `${assistantName} is loading local models`, 'warn');
+                setError('');
+                return;
+            }
+
+            setError(runtime?.degraded_reason || '');
+
             if (runtime?.mic_state === 'muted') {
-                setStatus('Muted', `${runtime.character_name || 'Assistant'} desktop shell`, 'warn');
+                setStatus('Muted', summary, 'warn');
             } else if (runtime?.response_active || runtime?.playback_active) {
-                setStatus('Busy', `${runtime.character_name || 'Assistant'} is responding`, 'accent');
+                setStatus(
+                    backendState === 'degraded' ? 'Busy (Fallback)' : 'Busy',
+                    summary,
+                    backendState === 'degraded' ? 'warn' : 'accent',
+                );
+            } else if (backendState === 'degraded') {
+                setStatus('Degraded', summary, 'warn');
             } else {
-                setStatus('Listening', `${runtime.character_name || 'Assistant'} ready`, 'ok');
+                setStatus('Listening', summary, 'ok');
             }
         }
 
@@ -666,6 +732,11 @@
 
             const commandStartedAt = performance.now();
             const response = await window.DesktopBridge.sendText(text);
+            applyRuntime(response);
+            if (!response || response.status !== 'ok') {
+                setError(response?.message || 'Text submission failed');
+                return;
+            }
             if (response?.turn_id != null) {
                 promoteTurn(response.turn_id);
                 const metrics = getTurnMetrics(response.turn_id);
@@ -677,7 +748,6 @@
                     backend: response.backend,
                 });
             }
-            applyRuntime(response);
             setStatus('Thinking', 'Generating text response', 'accent');
         }
 
@@ -708,8 +778,6 @@
                 });
 
                 await refreshRuntime();
-                setStatus('Listening', 'Drag window, avatar stays anchored', 'ok');
-                setError('');
             } catch (error) {
                 console.error('Desktop shell init failed', error);
                 setStatus('Error', error.message, 'danger');
@@ -823,15 +891,36 @@
             }
             const metrics = getTurnMetrics(payload.turn_id);
             metrics.audioReceivedAt = performance.now();
+            const frontendReceivedEpochMs = Date.now();
             const backendReadyAt = payload.trace?.backend_audio_ready_epoch_ms;
-            const transportLagMs = backendReadyAt ? Date.now() - backendReadyAt : null;
+            const transportLagMs = backendReadyAt ? frontendReceivedEpochMs - backendReadyAt : null;
             if (payload.trace) {
+                payload.trace.frontend_received_epoch_ms = frontendReceivedEpochMs;
                 payload.trace.transport_lag_ms = transportLagMs;
             } else {
-                payload.trace = { transport_lag_ms: transportLagMs };
+                payload.trace = {
+                    frontend_received_epoch_ms: frontendReceivedEpochMs,
+                    transport_lag_ms: transportLagMs,
+                };
             }
+            const speechToAsrMs = payload.trace?.speech_end_epoch_ms && payload.trace?.asr_done_epoch_ms
+                ? payload.trace.asr_done_epoch_ms - payload.trace.speech_end_epoch_ms
+                : null;
+            const asrToFirstTokenMs = payload.trace?.asr_done_epoch_ms && payload.trace?.llm_first_token_epoch_ms
+                ? payload.trace.llm_first_token_epoch_ms - payload.trace.asr_done_epoch_ms
+                : null;
+            const firstTokenToFirstTtsMs = payload.trace?.llm_first_token_epoch_ms && payload.trace?.tts_first_chunk_epoch_ms
+                ? payload.trace.tts_first_chunk_epoch_ms - payload.trace.llm_first_token_epoch_ms
+                : null;
+            const ttsQueueToBackendAudioMs = payload.trace?.tts_first_chunk_epoch_ms && payload.trace?.backend_audio_ready_epoch_ms
+                ? payload.trace.backend_audio_ready_epoch_ms - payload.trace.tts_first_chunk_epoch_ms
+                : null;
             logTrace('audio_ready', {
                 turnId: payload.turn_id,
+                speechToAsrMs,
+                asrToFirstTokenMs,
+                firstTokenToFirstTtsMs,
+                ttsQueueToBackendAudioMs,
                 transportLagMs,
                 durationMs: payload.duration,
                 queuedChunksBeforePush: state.audioQueue.length,

@@ -7,14 +7,13 @@ Usage:
 
 import uvicorn
 from pathlib import Path
-import yaml
+from ..utils.config_loader import load_yaml_config
 
 
 def load_config() -> dict:
     """Load configuration from config.yaml"""
     config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return load_yaml_config(config_path)
 
 
 def main():
