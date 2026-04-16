@@ -85,6 +85,18 @@ These rules are mandatory for all AI agents working on this repository.
 - **Prefer small, reviewable PRs** that can be tested and reverted easily.
 - **Never hide uncertainty.** If the system seems stable only on a subset of flows, say exactly which flows were validated and which were not.
 
+## Sub-Agent Workflow
+
+These rules are mandatory when using Codex sub-agents on this repository.
+
+- **Use specialized sub-agents for important or risky work.** Especially when a task touches runtime orchestration, `src/server/websocket.py`, `src/assistant/conversation_pipeline.py`, desktop turn control, provider preload/fallback, GPU sequencing, or cross-mode behavior.
+- **Do not create sub-agents by job title alone.** Prefer technical ownership such as runtime orchestration, realtime transport, voice backends, desktop shell, or quality review.
+- **Default to direct work for small tasks.** If a change is limited to one simple flow or a couple of files, the main agent should usually handle it directly.
+- **Use sub-agents for parallel exploration more than parallel editing.** Avoid having multiple agents edit the same hotspot files at once.
+- **Cap active builder sub-agents at two per initiative.** One main agent must remain responsible for decomposition, integration, validation, and the final PR.
+- **One ticket, one branch, one PR.** Sub-agents must not turn a focused branch into a mixed branch with unrelated changes.
+- **Always report validation boundaries clearly.** Any sub-agent handoff must state files touched, tests run, manual checks performed, and known risks or unvalidated flows.
+
 ## Important Constraints
 
 - **Everything local** (except optionally the LLM later). No cloud APIs for ASR or TTS.
