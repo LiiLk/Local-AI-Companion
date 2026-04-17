@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>March 7th Live2D Preview</title>
+    <style>
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: transparent;
+        }
+
+        body {
+            position: relative;
+        }
+
+        #live2d-canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            background: transparent;
+        }
+
+        .debug-overlay {
+            position: absolute;
+            inset: 0;
+            display: none;
+            pointer-events: none;
+        }
+
+        body[data-debug="on"] .debug-overlay {
+            display: block;
+        }
+
+        .debug-overlay::before,
+        .debug-overlay::after {
+            content: "";
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            border-top: 1px dashed rgba(255, 255, 255, 0.18);
+        }
+
+        .debug-overlay::before {
+            top: 22%;
+        }
+
+        .debug-overlay::after {
+            bottom: 22%;
+        }
+    </style>
+</head>
+<body data-debug="off">
+    <canvas id="live2d-canvas"></canvas>
+    <div class="debug-overlay"></div>
+
+    <script>
+        const PREVIEW_MODES = {
+            compact: {
+                scale: 2.68,
+                position: { x: -0.015, y: -1.19 },
+            },
+            expanded: {
+                scale: 1.92,
+                position: { x: -0.015, y: -0.66 },
+            },
+            full: {
+                scale: 1.56,
+                position: { x: -0.015, y: -0.2 },
+            },
+        };
+
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement("script");
+                script.src = src;
+                script.async = false;
+                script.addEventListener("load", resolve, { once: true });
+                script.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), { once: true });
+                document.head.appendChild(script);
+            });
+        }
+
+        function resolveQuery() {
+            const url = new URL(window.location.href);
+            const requestedMode = url.searchParams.get("mode") || "compact";
+            const mode = PREVIEW_MODES[requestedMode] ? requestedMode : "compact";
+            const debug = url.searchParams.get("debug") === "1" ? "on" : "off";
+            return { mode, debug };
+        }
+
+        async function bootstrap() {
+            const { mode, debug } = resolveQuery();
+            document.body.dataset.debug = debug;
+
+            await loadScript("../../frontend/live2d/runtime-assets/live2d_sdk_web/Core/live2dcubismcore.min.js");
+            await loadScript("../../frontend/live2d/live2d.js");
+
+            const config = PREVIEW_MODES[mode];
+            await window.Live2DManager.init({
+                canvasId: "live2d-canvas",
+                modelPath: "../../frontend/live2d/runtime-assets/models/march7th_tauri/",
+                modelName: "march7th.model3.json",
+                scale: config.scale,
+                position: config.position,
+                defaultExpression: "neutral",
+                debug: false,
+            });
+        }
+
+        bootstrap().catch((error) => {
+            console.error(error);
+        });
+    </script>
+</body>
+</html>
