@@ -4,9 +4,9 @@ import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
 import { UiMode, useShellStore } from "../store/shellStore";
 
 const WINDOW_PRESETS: Record<UiMode, { width: number; height: number }> = {
-  pet: { width: 288, height: 362 },
-  chat: { width: 864, height: 596 },
-  expand: { width: 1100, height: 664 },
+  pet: { width: 840, height: 720 },
+  chat: { width: 1040, height: 720 },
+  expand: { width: 1220, height: 780 },
 };
 
 export function useWindowMode() {

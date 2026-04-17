@@ -33,12 +33,12 @@ export const CHARACTER_PRESETS: Record<string, CharacterPreset> = {
     },
     cameraPresets: {
       petBust: {
-        scale: 1.88,
-        position: { x: 1.22, y: 0.52 },
+        scale: 1.44,
+        position: { x: 0.82, y: 0.38 },
       },
       chatBust: {
-        scale: 1.38,
-        position: { x: 0.9, y: 0.16 },
+        scale: 1.18,
+        position: { x: 0.8, y: 0.18 },
       },
       fullBody: {
         scale: 0.92,

@@ -85,15 +85,24 @@ export function PetShell({
   return (
     <motion.section
       {...shellMotion}
-      className={`pointer-events-none relative z-20 ${compact ? "h-[330px] w-[290px]" : "h-[600px] w-[420px]"}`}
+      className={`pointer-events-none relative z-20 ${compact ? "h-[620px] w-[560px]" : "h-[670px] w-[500px]"}`}
     >
+      <div
+        {...interactive}
+        data-tauri-drag-region
+        className={`pointer-events-auto absolute z-10 rounded-full bg-transparent ${
+          compact ? "right-[84px] top-10 h-12 w-[220px]" : "right-[86px] top-8 h-12 w-[260px]"
+        }`}
+      />
+
       <StatusChip {...status} />
 
-      <div className={`absolute ${compact ? "bottom-[78px] right-0" : "bottom-[86px] right-0"}`} {...interactive}>
+      <div className={`absolute ${compact ? "bottom-[112px] right-6" : "bottom-[86px] right-0"}`} {...interactive}>
         <AvatarHalo
           glowPrimary={character.glow.primary}
           glowSecondary={character.glow.secondary}
-          className={compact ? "h-[228px] w-[228px]" : "h-[520px] w-[420px]"}
+          compact={compact}
+          className={compact ? "h-[420px] w-[312px]" : "h-[520px] w-[420px]"}
         >
           <AvatarOrb
             compact={compact}
@@ -123,11 +132,11 @@ export function PetShell({
         </AvatarHalo>
       </div>
 
-      <div className={`absolute bottom-0 right-0 flex items-end gap-3 ${compact ? "w-[290px]" : "w-[420px]"}`} {...interactive}>
-        <div className="pointer-events-auto min-w-0 flex-1 rounded-[28px] border border-white/10 bg-black/35 px-4 py-3 backdrop-blur-sm">
+      <div className={`absolute bottom-0 right-0 flex items-end gap-3 ${compact ? "w-[520px]" : "w-[500px]"}`} {...interactive}>
+        <div className="pointer-events-auto min-w-0 flex-1 rounded-[28px] border border-white/10 bg-black/32 px-4 py-3 backdrop-blur-sm">
           <div className="text-sm font-semibold text-white">{character.name}</div>
           <div className="mt-1 text-xs text-shell-muted">
-            {compact ? "Pet vocal mode. Click her to reveal the fallback chat." : "Expanded mode keeps the avatar visible while text stays secondary."}
+            {compact ? "Voice-first portrait shell with a clean head-and-shoulders crop." : "Expanded mode keeps the avatar visible while text stays secondary."}
           </div>
         </div>
 

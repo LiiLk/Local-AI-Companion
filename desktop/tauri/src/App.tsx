@@ -142,9 +142,7 @@ export default function App() {
     <div className="min-h-screen w-screen bg-transparent text-shell-text antialiased">
       <WindowChromeController />
 
-      <div className="pointer-events-none absolute inset-0 bg-shell-mesh opacity-90" />
-
-      <div className="relative flex min-h-screen w-screen items-end justify-end p-5">
+      <div className="relative flex min-h-screen w-screen items-end justify-end p-8">
         <PetShell
           avatarRef={avatarRef}
           character={character}

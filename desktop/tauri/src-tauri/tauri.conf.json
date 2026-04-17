@@ -22,8 +22,8 @@
       {
         "label": "main",
         "title": "Local AI Companion",
-        "width": 960,
-        "height": 760,
+        "width": 840,
+        "height": 720,
         "minWidth": 800,
         "minHeight": 700,
         "resizable": true,
@@ -43,9 +43,6 @@
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
-    ],
-    "externalBin": [
-      "binaries/local-ai-companion-sidecar"
     ],
     "windows": {
       "webviewInstallMode": {

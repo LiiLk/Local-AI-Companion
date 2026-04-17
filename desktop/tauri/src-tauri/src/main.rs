@@ -29,6 +29,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "companion-tray";
 const SIDECAR_NAME: &str = "binaries/local-ai-companion-sidecar";
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
+const EXTERNAL_BACKEND_PORT_ENV: &str = "LOCAL_AI_COMPANION_BACKEND_PORT";
 
 #[derive(Default)]
 struct AppStateInner {
@@ -61,7 +62,7 @@ impl AppState {
 
 struct BackendProcess {
     port: u16,
-    child: CommandChild,
+    child: Option<CommandChild>,
     runtime: Value,
 }
 
@@ -232,8 +233,17 @@ async fn ensure_backend(app: &AppHandle, state: &AppState) -> Result<BootstrapPa
         }
     }
 
-    let port = find_free_port().map_err(|error| error.to_string())?;
-    let child = spawn_sidecar(app, port).map_err(|error| error.to_string())?;
+    let external_port = external_backend_port();
+    let port = if let Some(port) = external_port {
+        port
+    } else {
+        find_free_port().map_err(|error| error.to_string())?
+    };
+    let child = if external_port.is_some() {
+        None
+    } else {
+        Some(spawn_sidecar(app, port).map_err(|error| error.to_string())?)
+    };
     let runtime = wait_for_backend_ready(port)
         .await
         .map_err(|error| error.to_string())?;
@@ -256,6 +266,12 @@ async fn ensure_backend(app: &AppHandle, state: &AppState) -> Result<BootstrapPa
 
     let _ = app.emit("host://backend-ready", payload.clone());
     Ok(payload)
+}
+
+fn external_backend_port() -> Option<u16> {
+    std::env::var(EXTERNAL_BACKEND_PORT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
 }
 
 fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild> {
@@ -344,13 +360,15 @@ fn stop_backend(state: &AppState) -> Result<(), String> {
     };
 
     if let Some(backend) = backend {
-        let pid = backend.child.pid();
-        let _ = backend.child.kill();
-        #[cfg(target_os = "windows")]
-        {
-            let _ = StdCommand::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+        if let Some(backend_child) = backend.child {
+            let pid = backend_child.pid();
+            let _ = backend_child.kill();
+            #[cfg(target_os = "windows")]
+            {
+                let _ = StdCommand::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .status();
+            }
         }
     }
 

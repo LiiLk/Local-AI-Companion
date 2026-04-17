@@ -20,12 +20,27 @@ body,
 
 body {
   user-select: none;
+  background: transparent !important;
 }
 
 button,
 input,
 textarea {
   font: inherit;
+}
+
+canvas {
+  background: transparent !important;
+}
+
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] input,
+[data-tauri-drag-region] textarea {
+  -webkit-app-region: no-drag;
 }
 
 .glass-panel {

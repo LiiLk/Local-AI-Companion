@@ -33,6 +33,9 @@ import json
 import logging
 import re
 import signal
+import shutil
+import socket
+import subprocess
 import time
 import sys
 import threading
@@ -86,6 +89,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 CURRENT_DESKTOP_TURN_ID: ContextVar[Optional[int]] = ContextVar("desktop_turn_id", default=None)
 _HEALTH_UNSET = object()
+TAURI_BACKEND_PORT_ENV = "LOCAL_AI_COMPANION_BACKEND_PORT"
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -123,6 +127,80 @@ def resolve_turn_timeout_sec(config: dict) -> int:
 def load_config(config_path: Path) -> dict:
     """Load configuration from YAML file."""
     return load_yaml_config(config_path)
+
+
+def _find_free_bridge_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return
+
+    with contextlib.suppress(Exception):
+        process.terminate()
+        process.wait(timeout=5)
+        return
+
+    with contextlib.suppress(Exception):
+        process.kill()
+
+
+def launch_tauri_shell(config_path: Optional[Path], debug: bool) -> int:
+    """Launch the Tauri desktop shell with an external Python bridge backend."""
+    bridge_port = _find_free_bridge_port()
+    tauri_root = PROJECT_ROOT / "desktop" / "tauri"
+
+    npm_executable = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+    if not npm_executable:
+        raise RuntimeError("npm was not found in PATH. Install Node.js and npm before launching the Tauri shell.")
+
+    backend_command = [
+        sys.executable,
+        "-m",
+        "src.assistant.app",
+        "--bridge-server",
+        "--bridge-port",
+        str(bridge_port),
+    ]
+    if config_path:
+        backend_command.extend(["--config", str(config_path)])
+    if debug:
+        backend_command.append("--debug")
+
+    backend_process = subprocess.Popen(
+        backend_command,
+        cwd=str(PROJECT_ROOT),
+    )
+
+    tauri_env = os.environ.copy()
+    tauri_env[TAURI_BACKEND_PORT_ENV] = str(bridge_port)
+
+    tauri_process = subprocess.Popen(
+        [npm_executable, "run", "dev"],
+        cwd=str(tauri_root),
+        env=tauri_env,
+    )
+
+    try:
+        return tauri_process.wait()
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received, stopping Tauri shell")
+        return 130
+    finally:
+        _terminate_process_tree(tauri_process)
+        _terminate_process_tree(backend_process)
 
 
 class DesktopBridgeApi:
@@ -1013,7 +1091,7 @@ class Live2DAssistant:
             easy_drag=False,
             on_top=window_config.get('on_top', True),
             transparent=window_config.get('transparent', True),
-            background_color="#050914",
+            background_color="#111111",
             js_api=self._js_api,
         )
         
@@ -1035,8 +1113,9 @@ class Live2DAssistant:
         # Create components
         self._create_components()
         
-        # Setup hotkeys
-        self._setup_hotkeys()
+        # Setup hotkeys only for the legacy pywebview shell.
+        if not bridge_only:
+            self._setup_hotkeys()
         
         # Create event loop and run it in a background thread
         self._loop = asyncio.new_event_loop()
@@ -1172,21 +1251,30 @@ def main():
         default=8765,
         help='Port for the local desktop bridge websocket server'
     )
+    parser.add_argument(
+        '--desktop-shell',
+        choices=['tauri', 'pywebview'],
+        default='tauri',
+        help='Desktop shell to launch when not in bridge-server mode'
+    )
     
     args = parser.parse_args()
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
+    if not args.bridge_server and args.desktop_shell == 'tauri':
+        raise SystemExit(launch_tauri_shell(args.config, args.debug))
+
     # Handle Ctrl+C gracefully
     app = Live2DAssistant(config_path=args.config)
-    
+
     def signal_handler(sig, frame):
         app.stop()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port)
 
 
