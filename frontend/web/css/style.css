@@ -943,6 +943,11 @@ kbd {
     margin-bottom: var(--space-4);
 }
 
+.settings-provider-fields {
+    display: grid;
+    gap: var(--space-1);
+}
+
 .setting-item label {
     display: block;
     font-size: var(--font-size-sm);
@@ -961,6 +966,7 @@ kbd {
 }
 
 .setting-item input[type="text"],
+.setting-item input[type="password"],
 .setting-item textarea,
 .setting-item select {
     width: 100%;
@@ -975,10 +981,67 @@ kbd {
 }
 
 .setting-item input[type="text"]:focus,
+.setting-item input[type="password"]:focus,
 .setting-item textarea:focus,
 .setting-item select:focus {
     outline: none;
     border-color: var(--color-accent);
+}
+
+.setting-hint {
+    margin-top: var(--space-2);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    line-height: 1.5;
+}
+
+.setting-card {
+    margin-top: var(--space-5);
+    padding: var(--space-4);
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+}
+
+.setting-card-label {
+    margin-bottom: var(--space-2);
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-text-muted);
+}
+
+.setting-card-value {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+}
+
+.settings-feedback {
+    margin-top: var(--space-6);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+}
+
+.settings-feedback.is-info {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-secondary);
+}
+
+.settings-feedback.is-success {
+    background: rgba(52, 211, 153, 0.12);
+    border-color: rgba(52, 211, 153, 0.35);
+    color: #8ef0c5;
+}
+
+.settings-feedback.is-error {
+    background: rgba(248, 113, 113, 0.12);
+    border-color: rgba(248, 113, 113, 0.35);
+    color: #ffb4b4;
 }
 
 .setting-item input[type="checkbox"] {

@@ -234,90 +234,69 @@
             </div>
 
             <div class="settings-content">
-                <!-- Voice Settings -->
                 <section class="settings-section">
                     <h3>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <path d="M12 2L3 7l9 5 9-5-9-5z" />
+                            <path d="M3 17l9 5 9-5" />
+                            <path d="M3 12l9 5 9-5" />
                         </svg>
-                        Reconnaissance Vocale (ASR)
+                        Modèle de langage
                     </h3>
                     <div class="setting-item">
-                        <label for="asr-provider">Moteur</label>
-                        <select id="asr-provider">
-                            <option value="parakeet">Parakeet TDT 0.6B (Rapide)</option>
-                            <option value="whisper">Whisper (Précis)</option>
-                            <option value="canary">Canary 1B (Premium)</option>
+                        <label for="llm-provider">Source</label>
+                        <select id="llm-provider">
+                            <option value="ollama">Ollama local</option>
+                            <option value="openrouter">API OpenRouter</option>
                         </select>
+                        <p class="setting-hint">
+                            Settings v1 pilote seulement les providers LLM réellement supportés par le backend actuel.
+                        </p>
                     </div>
-                    <div class="setting-item">
-                        <label for="asr-language">Langue</label>
-                        <select id="asr-language">
-                            <option value="">Détection auto</option>
-                            <option value="fr">Français</option>
-                            <option value="en">English</option>
-                            <option value="de">Deutsch</option>
-                            <option value="es">Español</option>
-                            <option value="ja">日本語</option>
-                        </select>
+
+                    <div class="settings-provider-fields" id="ollama-fields">
+                        <div class="setting-item">
+                            <label for="ollama-base-url">Base URL</label>
+                            <input type="text" id="ollama-base-url" placeholder="http://localhost:11434">
+                        </div>
+                        <div class="setting-item">
+                            <label for="ollama-model">Model</label>
+                            <input type="text" id="ollama-model" placeholder="qwen3.5:4b">
+                        </div>
+                    </div>
+
+                    <div class="settings-provider-fields" id="openrouter-fields">
+                        <div class="setting-item">
+                            <label for="openrouter-base-url">Base URL</label>
+                            <input type="text" id="openrouter-base-url" placeholder="https://openrouter.ai/api/v1">
+                        </div>
+                        <div class="setting-item">
+                            <label for="openrouter-model">Model</label>
+                            <input type="text" id="openrouter-model" placeholder="x-ai/grok-4.1-fast">
+                        </div>
+                        <div class="setting-item">
+                            <label for="openrouter-api-key">API key</label>
+                            <input type="password" id="openrouter-api-key" placeholder="Leave blank to keep the current saved key">
+                            <p class="setting-hint" id="openrouter-key-hint">
+                                La clé actuelle n'est jamais renvoyée au frontend.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="setting-card">
+                        <div class="setting-card-label">Application</div>
+                        <div class="setting-card-value">
+                            Les changements sont enregistrés dans <code>config/config.local.yaml</code> puis appliqués après rechargement de la page.
+                        </div>
                     </div>
                 </section>
 
-                <!-- TTS Settings -->
-                <section class="settings-section">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                        </svg>
-                        Synthèse Vocale (TTS)
-                    </h3>
-                    <div class="setting-item">
-                        <label for="tts-provider">Moteur</label>
-                        <select id="tts-provider">
-                            <option value="xtts">XTTS v2 (Multilingue)</option>
-                            <option value="kokoro">Kokoro (Rapide)</option>
-                            <option value="edge">Edge TTS (Cloud)</option>
-                        </select>
-                    </div>
-                    <div class="setting-item toggle">
-                        <label for="auto-detect-language">
-                            Détection automatique de la langue
-                        </label>
-                        <input type="checkbox" id="auto-detect-language" checked>
-                    </div>
-                    <div class="setting-item toggle">
-                        <label for="stream-tts">
-                            Streaming audio (réponse plus rapide)
-                        </label>
-                        <input type="checkbox" id="stream-tts" checked>
-                    </div>
-                </section>
-
-                <!-- Character Settings -->
-                <section class="settings-section">
-                    <h3>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                            <circle cx="12" cy="7" r="4" />
-                        </svg>
-                        Personnage
-                    </h3>
-                    <div class="setting-item">
-                        <label for="character-name">Nom</label>
-                        <input type="text" id="character-name" value="March 7th" placeholder="Nom du personnage">
-                    </div>
-                    <div class="setting-item">
-                        <label for="character-prompt">Personnalité</label>
-                        <textarea id="character-prompt" rows="3"
-                            placeholder="Décrivez la personnalité...">You are March 7th from Honkai: Star Rail. Reply in the same language as the user and keep answers short for real-time voice chat.</textarea>
-                    </div>
-                </section>
+                <div class="settings-feedback hidden" id="settings-feedback" aria-live="polite"></div>
             </div>
 
             <div class="settings-footer">
                 <button class="btn btn-ghost" id="reset-settings-btn">Réinitialiser</button>
+                <button class="btn btn-ghost" id="test-settings-btn">Tester</button>
                 <button class="btn btn-primary" id="save-settings-btn">Sauvegarder</button>
             </div>
         </div>

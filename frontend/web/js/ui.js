@@ -39,6 +39,8 @@ class UIController {
         this.theme = localStorage.getItem('theme') || 'dark';
         this.isSidebarOpen = false;
         this.isSettingsOpen = false;
+        this.settingsDefaults = null;
+        this.settingsLoaded = false;
 
         // Initialization
         this.init();
@@ -95,6 +97,8 @@ class UIController {
         // Settings form
         document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
         document.getElementById('reset-settings-btn')?.addEventListener('click', () => this.resetSettings());
+        document.getElementById('test-settings-btn')?.addEventListener('click', () => this.testSettings());
+        document.getElementById('llm-provider')?.addEventListener('change', () => this.updateProviderFields());
 
         // Clear chat
         document.getElementById('clear-chat-btn')?.addEventListener('click', () => this.handleNewChat());
@@ -344,92 +348,175 @@ class UIController {
     /**
      * Save settings
      */
-    saveSettings() {
-        const settings = {
-            asr: {
-                provider: document.getElementById('asr-provider')?.value,
-                language: document.getElementById('asr-language')?.value
-            },
-            tts: {
-                provider: document.getElementById('tts-provider')?.value,
-                autoDetect: document.getElementById('auto-detect-language')?.checked,
-                streaming: document.getElementById('stream-tts')?.checked
-            },
-            character: {
-                name: document.getElementById('character-name')?.value,
-                personality: document.getElementById('character-prompt')?.value
+    async saveSettings() {
+        const settings = this.collectSettingsPayload();
+        this.setSettingsBusy(true);
+        this.showSettingsFeedback('Enregistrement en cours...', 'info');
+
+        try {
+            const response = await fetch('/api/settings/llm', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+            const result = await response.json();
+
+            if (!response.ok) {
+                throw new Error(result.detail || result.message || 'Impossible de sauvegarder les paramètres.');
             }
-        };
 
-        // Save to localStorage
-        localStorage.setItem('aria-settings', JSON.stringify(settings));
+            this.settingsDefaults = result;
+            this.settingsLoaded = true;
+            this.applySettings(result);
+            this.showSettingsFeedback(result.message || 'Paramètres sauvegardés.', 'success');
+            window.dispatchEvent(new CustomEvent('settings-changed', { detail: result }));
 
-        // Emit custom event for app.js to react
-        window.dispatchEvent(new CustomEvent('settings-changed', { detail: settings }));
-
-        // Close settings panel
-        this.closeSettings();
-
-        console.log('[UI] Settings saved:', settings);
+            window.setTimeout(() => {
+                window.location.reload();
+            }, 900);
+        } catch (error) {
+            this.showSettingsFeedback(error.message || 'Impossible de sauvegarder les paramètres.', 'error');
+            console.error('[UI] Error saving settings:', error);
+        } finally {
+            this.setSettingsBusy(false);
+        }
     }
 
     /**
      * Reset settings to default
      */
     resetSettings() {
-        // Default values
-        document.getElementById('asr-provider').value = 'whisper';
-        document.getElementById('asr-language').value = 'fr';
-        document.getElementById('tts-provider').value = 'qwen3';
-        document.getElementById('auto-detect-language').checked = true;
-        document.getElementById('stream-tts').checked = true;
-        document.getElementById('character-name').value = 'March 7th';
-        document.getElementById('character-prompt').value = 'You are March 7th from Honkai: Star Rail. Reply in the same language as the user and keep answers short for real-time voice chat.';
+        if (!this.settingsDefaults) {
+            return;
+        }
 
-        // Remove from localStorage
-        localStorage.removeItem('aria-settings');
-
-        console.log('[UI] Settings reset');
+        this.applySettings(this.settingsDefaults);
+        this.showSettingsFeedback('Formulaire réinitialisé à la dernière configuration chargée.', 'info');
+        console.log('[UI] Settings reset to loaded defaults');
     }
 
     /**
-     * Load settings from localStorage
+     * Test current settings without saving them
      */
-    loadSettings() {
-        const saved = localStorage.getItem('aria-settings');
-        if (!saved) return;
+    async testSettings() {
+        const settings = this.collectSettingsPayload();
+        this.setSettingsBusy(true);
+        this.showSettingsFeedback('Test de connexion en cours...', 'info');
 
         try {
-            const settings = JSON.parse(saved);
+            const response = await fetch('/api/settings/llm/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+            const result = await response.json();
 
-            // Apply to fields
-            if (settings.asr) {
-                const provider = document.getElementById('asr-provider');
-                const language = document.getElementById('asr-language');
-                if (provider) provider.value = settings.asr.provider || 'whisper';
-                if (language) language.value = settings.asr.language || '';
+            if (!response.ok) {
+                throw new Error(result.detail || result.message || 'Test de connexion impossible.');
             }
 
-            if (settings.tts) {
-                const provider = document.getElementById('tts-provider');
-                const autoDetect = document.getElementById('auto-detect-language');
-                const streaming = document.getElementById('stream-tts');
-                if (provider) provider.value = settings.tts.provider || 'qwen3';
-                if (autoDetect) autoDetect.checked = settings.tts.autoDetect !== false;
-                if (streaming) streaming.checked = settings.tts.streaming !== false;
-            }
-
-            if (settings.character) {
-                const name = document.getElementById('character-name');
-                const personality = document.getElementById('character-prompt');
-                if (name) name.value = settings.character.name || 'March 7th';
-                if (personality) personality.value = settings.character.personality || '';
-            }
-
-            console.log('[UI] Settings loaded:', settings);
-        } catch (e) {
-            console.error('[UI] Error loading settings:', e);
+            this.showSettingsFeedback(result.message || 'Connexion réussie.', result.ok ? 'success' : 'error');
+        } catch (error) {
+            this.showSettingsFeedback(error.message || 'Test de connexion impossible.', 'error');
+            console.error('[UI] Error testing settings:', error);
+        } finally {
+            this.setSettingsBusy(false);
         }
+    }
+
+    /**
+     * Load settings from backend
+     */
+    async loadSettings() {
+        try {
+            const response = await fetch('/api/settings/llm');
+            const settings = await response.json();
+
+            if (!response.ok) {
+                throw new Error(settings.detail || settings.message || 'Impossible de charger les paramètres.');
+            }
+
+            this.settingsDefaults = settings;
+            this.settingsLoaded = true;
+            this.applySettings(settings);
+            console.log('[UI] Settings loaded from backend:', settings);
+        } catch (error) {
+            this.showSettingsFeedback(error.message || 'Impossible de charger les paramètres.', 'error');
+            console.error('[UI] Error loading settings:', error);
+        }
+    }
+
+    collectSettingsPayload() {
+        const provider = document.getElementById('llm-provider')?.value || 'ollama';
+        const payload = {
+            provider,
+            ollama: {
+                base_url: document.getElementById('ollama-base-url')?.value?.trim() || '',
+                model: document.getElementById('ollama-model')?.value?.trim() || ''
+            },
+            openrouter: {
+                base_url: document.getElementById('openrouter-base-url')?.value?.trim() || '',
+                model: document.getElementById('openrouter-model')?.value?.trim() || ''
+            }
+        };
+
+        const apiKey = document.getElementById('openrouter-api-key')?.value?.trim();
+        if (apiKey) {
+            payload.openrouter.api_key = apiKey;
+        }
+
+        return payload;
+    }
+
+    applySettings(settings) {
+        const provider = settings?.provider || 'ollama';
+        const providerField = document.getElementById('llm-provider');
+        const ollama = settings?.ollama || {};
+        const openrouter = settings?.openrouter || {};
+        const openrouterHint = document.getElementById('openrouter-key-hint');
+
+        if (providerField) providerField.value = provider;
+        document.getElementById('ollama-base-url').value = ollama.base_url || 'http://localhost:11434';
+        document.getElementById('ollama-model').value = ollama.model || 'llama3.2:3b';
+        document.getElementById('openrouter-base-url').value = openrouter.base_url || 'https://openrouter.ai/api/v1';
+        document.getElementById('openrouter-model').value = openrouter.model || 'openai/gpt-4.1-mini';
+        document.getElementById('openrouter-api-key').value = '';
+
+        if (openrouterHint) {
+            if (openrouter.api_key_configured) {
+                const source = openrouter.api_key_source || 'saved';
+                openrouterHint.textContent = `API key disponible (${source}). Laisse le champ vide pour conserver la clé actuelle.`;
+            } else {
+                openrouterHint.textContent = "Aucune clé API détectée. Elle sera nécessaire pour activer OpenRouter.";
+            }
+        }
+
+        this.updateProviderFields();
+    }
+
+    updateProviderFields() {
+        const provider = document.getElementById('llm-provider')?.value || 'ollama';
+        document.getElementById('ollama-fields')?.classList.toggle('hidden', provider !== 'ollama');
+        document.getElementById('openrouter-fields')?.classList.toggle('hidden', provider !== 'openrouter');
+    }
+
+    showSettingsFeedback(message, type = 'info') {
+        const feedback = document.getElementById('settings-feedback');
+        if (!feedback) return;
+
+        feedback.textContent = message;
+        feedback.classList.remove('hidden', 'is-info', 'is-success', 'is-error');
+        feedback.classList.add(`is-${type}`);
+    }
+
+    setSettingsBusy(isBusy) {
+        const buttonIds = ['save-settings-btn', 'reset-settings-btn', 'test-settings-btn'];
+        buttonIds.forEach((id) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.disabled = isBusy;
+            }
+        });
     }
 }
 
