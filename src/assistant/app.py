@@ -1005,15 +1005,15 @@ class Live2DAssistant:
         window = webview.create_window(
             title="AI Assistant",
             url=f"file://{html_path}",
-            width=window_config.get('width', 400),
-            height=window_config.get('height', 600),
+            width=max(int(window_config.get('width', 900)), 800),
+            height=max(int(window_config.get('height', 760)), 700),
             x=window_config.get('x', -1) if window_config.get('x', -1) >= 0 else None,
             y=window_config.get('y', -1) if window_config.get('y', -1) >= 0 else None,
             frameless=window_config.get('frameless', True),
-            easy_drag=True,
+            easy_drag=False,
             on_top=window_config.get('on_top', True),
             transparent=window_config.get('transparent', True),
-            background_color="#10141d",
+            background_color="#050914",
             js_api=self._js_api,
         )
         
