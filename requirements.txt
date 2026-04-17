@@ -33,6 +33,8 @@ python-multipart>=0.0.6  # For file uploads
 torchaudio>=2.1.0      # Audio processing for TTS
 
 # Live2D Avatar Overlay
+PyQt6>=6.8.0           # Native transparent desktop shell
+PyQt6-WebEngine>=6.8.0 # Embedded Chromium view for Live2D shell
 pywebview>=6.0.0       # Transparent window for Live2D avatar (6.0+ required for transparency)
 pynput>=1.7.0          # Global hotkeys (F11, F12)
 numpy>=1.24.0          # Audio analysis for lip-sync

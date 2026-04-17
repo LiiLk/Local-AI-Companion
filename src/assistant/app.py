@@ -33,9 +33,6 @@ import json
 import logging
 import re
 import signal
-import shutil
-import socket
-import subprocess
 import time
 import sys
 import threading
@@ -89,7 +86,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 CURRENT_DESKTOP_TURN_ID: ContextVar[Optional[int]] = ContextVar("desktop_turn_id", default=None)
 _HEALTH_UNSET = object()
-TAURI_BACKEND_PORT_ENV = "LOCAL_AI_COMPANION_BACKEND_PORT"
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -129,82 +125,8 @@ def load_config(config_path: Path) -> dict:
     return load_yaml_config(config_path)
 
 
-def _find_free_bridge_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
-def _terminate_process_tree(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return
-
-    with contextlib.suppress(Exception):
-        process.terminate()
-        process.wait(timeout=5)
-        return
-
-    with contextlib.suppress(Exception):
-        process.kill()
-
-
-def launch_tauri_shell(config_path: Optional[Path], debug: bool) -> int:
-    """Launch the Tauri desktop shell with an external Python bridge backend."""
-    bridge_port = _find_free_bridge_port()
-    tauri_root = PROJECT_ROOT / "desktop" / "tauri"
-
-    npm_executable = shutil.which("npm.cmd" if os.name == "nt" else "npm")
-    if not npm_executable:
-        raise RuntimeError("npm was not found in PATH. Install Node.js and npm before launching the Tauri shell.")
-
-    backend_command = [
-        sys.executable,
-        "-m",
-        "src.assistant.app",
-        "--bridge-server",
-        "--bridge-port",
-        str(bridge_port),
-    ]
-    if config_path:
-        backend_command.extend(["--config", str(config_path)])
-    if debug:
-        backend_command.append("--debug")
-
-    backend_process = subprocess.Popen(
-        backend_command,
-        cwd=str(PROJECT_ROOT),
-    )
-
-    tauri_env = os.environ.copy()
-    tauri_env[TAURI_BACKEND_PORT_ENV] = str(bridge_port)
-
-    tauri_process = subprocess.Popen(
-        [npm_executable, "run", "dev"],
-        cwd=str(tauri_root),
-        env=tauri_env,
-    )
-
-    try:
-        return tauri_process.wait()
-    except KeyboardInterrupt:
-        logger.info("Keyboard interrupt received, stopping Tauri shell")
-        return 130
-    finally:
-        _terminate_process_tree(tauri_process)
-        _terminate_process_tree(backend_process)
-
-
 class DesktopBridgeApi:
-    """Minimal pywebview bridge for the desktop Live2D shell."""
+    """Bridge exposed to desktop webviews."""
 
     def __init__(self, assistant: "Live2DAssistant"):
         self._assistant = assistant
@@ -224,9 +146,12 @@ class DesktopBridgeApi:
     def toggle_debug(self) -> dict:
         return self._assistant.toggle_debug()
 
+    def set_layout_mode(self, layout: str) -> dict:
+        return self._assistant.set_layout_mode(layout)
+
 
 class DesktopBridgeServer:
-    """Tiny desktop-only websocket bridge for the Tauri shell."""
+    """Tiny desktop-only websocket bridge for external desktop shells."""
 
     def __init__(self, assistant: "Live2DAssistant", host: str = "127.0.0.1", port: int = 8765):
         self._assistant = assistant
@@ -381,7 +306,7 @@ class Live2DAssistant:
 
         # State
         self._running = False
-        self._window: Optional[webview.Window] = None
+        self._window = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._hotkey_listener = None
@@ -1096,6 +1021,33 @@ class Live2DAssistant:
         )
         
         return window
+
+    def _create_qt_window(self):
+        """Create the PyQt6 overlay window."""
+        try:
+            from desktop.qt_avatar_shell import QtAvatarShell
+        except ImportError as exc:
+            logger.error("PyQt6 desktop shell is unavailable: %s", exc)
+            return None
+
+        live2d_config = self.config.get('live2d', {})
+        window_config = live2d_config.get('window', {})
+        html_path = PROJECT_ROOT / "frontend" / "live2d" / "index.html"
+
+        width = max(int(window_config.get('width', 860)), 800)
+        height = max(int(window_config.get('height', 760)), 700)
+        x = window_config.get('x', -1)
+        y = window_config.get('y', -1)
+
+        return QtAvatarShell(
+            self,
+            html_path,
+            width=width,
+            height=height,
+            x=x if isinstance(x, int) and x >= 0 else None,
+            y=y if isinstance(y, int) and y >= 0 else None,
+            always_on_top=window_config.get('on_top', True),
+        )
     
     def _on_window_loaded(self):
         """Called when the webview window is loaded."""
@@ -1104,7 +1056,7 @@ class Live2DAssistant:
     
     # ==================== Main ====================
     
-    def start(self, bridge_only: bool = False, bridge_port: int = 8765):
+    def start(self, bridge_only: bool = False, bridge_port: int = 8765, shell: str = "qt"):
         """Start the assistant application."""
         logger.info("🚀 Starting Live2D Assistant...")
         self._bridge_only = bridge_only
@@ -1147,15 +1099,17 @@ class Live2DAssistant:
                     time.sleep(0.2)
             except KeyboardInterrupt:
                 pass
+        elif shell == "qt":
+            self._window = self._create_qt_window()
+            if self._window is None:
+                raise RuntimeError("PyQt6 shell is unavailable. Install PyQt6 and PyQt6-WebEngine.")
+            self._window.run(self._on_window_loaded)
         elif WEBVIEW_AVAILABLE:
             self._window = self._create_window()
 
             def on_loaded():
                 self._on_window_loaded()
 
-            # Start webview (blocking)
-            # Use 'edgechromium' (WebView2) for transparency support on Windows
-            # Requires pywebview>=6.0.0 for transparency with mouse events
             webview.start(
                 on_loaded,
                 debug=logging.getLogger().isEnabledFor(logging.DEBUG),
@@ -1179,6 +1133,11 @@ class Live2DAssistant:
             return
         
         self._running = False
+
+        if self._window is not None:
+            with contextlib.suppress(Exception):
+                self._window.close()
+            self._window = None
         
         if self.audio_service:
             self.audio_service.stop()
@@ -1225,6 +1184,12 @@ class Live2DAssistant:
         
         logger.info("👋 Goodbye!")
 
+    def set_layout_mode(self, layout: str) -> dict:
+        if self._window and hasattr(self._window, "set_layout_mode"):
+            with contextlib.suppress(Exception):
+                self._window.set_layout_mode(layout)
+        return {"status": "ok", "layout": layout, **self.get_runtime_state()}
+
 
 def main():
     """Main entry point."""
@@ -1243,7 +1208,7 @@ def main():
     parser.add_argument(
         '--bridge-server',
         action='store_true',
-        help='Run the desktop backend without pywebview and expose a local websocket bridge for Tauri'
+        help='Run the desktop backend without a window and expose a local websocket bridge'
     )
     parser.add_argument(
         '--bridge-port',
@@ -1253,8 +1218,8 @@ def main():
     )
     parser.add_argument(
         '--desktop-shell',
-        choices=['tauri', 'pywebview'],
-        default='tauri',
+        choices=['qt', 'pywebview'],
+        default='qt',
         help='Desktop shell to launch when not in bridge-server mode'
     )
     
@@ -1263,9 +1228,6 @@ def main():
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    if not args.bridge_server and args.desktop_shell == 'tauri':
-        raise SystemExit(launch_tauri_shell(args.config, args.debug))
-
     # Handle Ctrl+C gracefully
     app = Live2DAssistant(config_path=args.config)
 
@@ -1275,7 +1237,7 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port)
+    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port, shell=args.desktop_shell)
 
 
 if __name__ == "__main__":
