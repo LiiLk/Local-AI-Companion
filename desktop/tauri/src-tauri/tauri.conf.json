@@ -1,16 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Local AI Companion Desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.khalil.localaicompanion.desktop",
   "build": {
-    "frontendDist": "../../../frontend/live2d"
+    "beforeDevCommand": "npm run dev:web",
+    "beforeBuildCommand": "npm run build:web",
+    "beforeBundleCommand": "python3 ../scripts/build_sidecar.py",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
     "security": {
       "capabilities": [
-        "default"
+        "main"
       ],
       "csp": null
     },
@@ -18,16 +22,18 @@
       {
         "label": "main",
         "title": "Local AI Companion",
-        "url": "index.html?backendPort=8765",
-        "width": 420,
-        "height": 760,
+        "width": 428,
+        "height": 620,
+        "minWidth": 240,
+        "minHeight": 220,
         "resizable": true,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "visible": true,
-        "skipTaskbar": false,
-        "shadow": false
+        "skipTaskbar": true,
+        "shadow": false,
+        "dragDropEnabled": false
       }
     ]
   },
@@ -37,6 +43,9 @@
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/local-ai-companion-sidecar"
     ],
     "windows": {
       "webviewInstallMode": {

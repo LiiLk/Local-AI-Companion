@@ -31,6 +31,7 @@ from contextvars import ContextVar
 import contextlib
 import json
 import logging
+import re
 import signal
 import time
 import sys
@@ -688,6 +689,10 @@ class Live2DAssistant:
                 backend_state = "error"
             elif backend_state != "warming_up" and degraded_reason:
                 backend_state = "degraded"
+        character_name = self.config.get('character', {}).get('name', 'AI')
+        character_slug = re.sub(r'[^a-z0-9]+', '', str(character_name).lower())
+        if 'march7' in character_slug:
+            character_slug = 'march7th'
         return {
             "mode": self.config.get('mode', 'pipeline'),
             "backend_state": backend_state,
@@ -696,7 +701,8 @@ class Live2DAssistant:
             "response_active": bool(active_future and not active_future.done()),
             "playback_active": self._has_active_playback(),
             "debug_visible": self._debug_visible,
-            "character_name": self.config.get('character', {}).get('name', 'AI'),
+            "character_name": character_name,
+            "character_id": character_slug or "default",
             "active_language": getattr(self._get_active_pipeline(), "_current_language_code", None),
             "active_llm_model": self._active_llm_model_name(),
             "active_tts_provider": self._active_tts_provider_name(),
@@ -881,6 +887,7 @@ class Live2DAssistant:
     async def _on_expression_change(self, expression: str):
         """Called when emotion is detected."""
         self._evaluate_js(f"window.Live2DAPI?.setExpression?.({json.dumps(expression, ensure_ascii=False)})")
+        self._dispatch_frontend_event("onExpressionChange", expression, self._resolve_turn_id())
 
     async def _on_error(self, error_msg: str):
         """Called when the active pipeline surfaces an error."""
