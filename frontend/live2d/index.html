@@ -11,7 +11,7 @@
             --text-dim: rgba(238, 246, 255, 0.72);
             --text-soft: rgba(238, 246, 255, 0.48);
             --line-soft: rgba(255, 255, 255, 0.14);
-            --panel-bg: linear-gradient(180deg, rgba(10, 18, 32, 0.72), rgba(9, 16, 28, 0.58));
+            --panel-bg: rgba(9, 16, 28, 0.84);
             --panel-weak: rgba(9, 17, 29, 0.44);
             --panel-border: rgba(255, 255, 255, 0.14);
             --panel-shadow: 0 20px 48px rgba(0, 0, 0, 0.22);
@@ -117,7 +117,6 @@
             pointer-events: auto;
             border: 1px solid var(--panel-border);
             background: var(--panel-bg);
-            backdrop-filter: blur(18px);
             box-shadow: var(--panel-shadow);
         }
 
@@ -153,7 +152,6 @@
             color: #fff3f3;
             background: rgba(255, 122, 122, 0.16);
             border: 1px solid rgba(255, 122, 122, 0.32);
-            backdrop-filter: blur(14px);
         }
 
         #settings-panel,
@@ -379,7 +377,6 @@
             border-radius: 44px;
             background: transparent;
             box-shadow: none;
-            backdrop-filter: none;
             cursor: pointer;
             pointer-events: auto;
             z-index: 4;
@@ -730,15 +727,17 @@
         const MARCH7TH_MODEL_PATH = './runtime-assets/models/march7th_tauri/';
         const AVATAR_LAYOUTS = {
             compact: {
-                scale: 1.5,
-                position: { x: 0.8, y: 0.4 },
+                reference: { width: 860, height: 760 },
+                scaleRange: { min: 1.22, max: 1.42, base: 1.34 },
+                position: { x: 0.82, y: 0.3 },
                 buttonLabel: 'Expand',
                 dockCaption: 'Portrait companion shell',
                 settingsLabel: 'Compact',
             },
             expanded: {
-                scale: 0.88,
-                position: { x: 0.58, y: -0.04 },
+                reference: { width: 1040, height: 980 },
+                scaleRange: { min: 0.56, max: 0.72, base: 0.64 },
+                position: { x: 0.5, y: -0.1 },
                 buttonLabel: 'Reduce',
                 dockCaption: 'Expanded full-body shell',
                 settingsLabel: 'Expanded',
@@ -794,7 +793,31 @@
             metricsByTurn: new Map(),
             avatarReady: false,
             avatarInitPromise: null,
+            resizeApplyRaf: null,
         };
+
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
+
+        function computeLayoutTransform(layoutName) {
+            const layout = AVATAR_LAYOUTS[layoutName];
+            const widthRatio = layout.reference.width / Math.max(window.innerWidth, 1);
+            const heightRatio = layout.reference.height / Math.max(window.innerHeight, 1);
+            const dominantRatio = layoutName === 'compact'
+                ? Math.max(widthRatio * 0.42, heightRatio * 0.92)
+                : Math.max(widthRatio * 0.44, heightRatio * 0.68);
+            const scale = clamp(
+                layout.scaleRange.base * dominantRatio,
+                layout.scaleRange.min,
+                layout.scaleRange.max,
+            );
+
+            return {
+                scale,
+                position: { ...layout.position },
+            };
+        }
 
         function applySidePanels() {
             ui.chatStack.classList.toggle('visible', state.chatVisible);
@@ -1093,7 +1116,7 @@
                 await loadScript(LIVE2D_CORE_SRC);
                 await loadScript(LIVE2D_MANAGER_SRC);
 
-                const layout = AVATAR_LAYOUTS[state.layout];
+                const layout = computeLayoutTransform(state.layout);
                 await Live2DManager.init({
                     canvasId: 'live2d-canvas',
                     modelPath: MARCH7TH_MODEL_PATH,
@@ -1110,13 +1133,14 @@
         }
 
         async function applyAvatarLayout() {
-            const layout = AVATAR_LAYOUTS[state.layout];
+            const layoutMeta = AVATAR_LAYOUTS[state.layout];
+            const layout = computeLayoutTransform(state.layout);
             await ensureAvatar();
             Live2DManager.setScale(layout.scale);
             Live2DManager.setPosition(layout.position.x, layout.position.y);
-            ui.layoutButton.textContent = layout.buttonLabel;
-            ui.dockCaption.textContent = layout.dockCaption;
-            ui.settingsLayout.textContent = layout.settingsLabel;
+            ui.layoutButton.textContent = layoutMeta.buttonLabel;
+            ui.dockCaption.textContent = layoutMeta.dockCaption;
+            ui.settingsLayout.textContent = layoutMeta.settingsLabel;
             ui.avatarOrb.setAttribute('aria-label', state.layout === 'compact' ? 'Expand companion' : 'Reduce companion');
         }
 
@@ -1125,6 +1149,20 @@
             document.body.classList.remove('layout-compact', 'layout-expanded');
             document.body.classList.add(`layout-${layout}`);
             await window.DesktopBridge.setLayoutMode(layout);
+            await applyAvatarLayout();
+        }
+
+        async function setCompactMode() {
+            state.layout = 'compact';
+            document.body.classList.remove('layout-expanded');
+            document.body.classList.add('layout-compact');
+            await applyAvatarLayout();
+        }
+
+        async function setExpandedMode() {
+            state.layout = 'expanded';
+            document.body.classList.remove('layout-compact');
+            document.body.classList.add('layout-expanded');
             await applyAvatarLayout();
         }
 
@@ -1297,6 +1335,21 @@
         document.addEventListener('click', () => {
             ensureAudioContext().catch(() => {});
         }, { once: true });
+
+        window.addEventListener('resize', () => {
+            if (state.resizeApplyRaf) {
+                cancelAnimationFrame(state.resizeApplyRaf);
+            }
+            state.resizeApplyRaf = requestAnimationFrame(() => {
+                if (!state.avatarReady) {
+                    return;
+                }
+                applyAvatarLayout().catch((error) => {
+                    console.error(error);
+                    setError(error.message);
+                });
+            });
+        });
 
         (() => {
             let dragging = false;
@@ -1482,6 +1535,16 @@
             getExpressions: () => Live2DManager.getExpressionNames(),
             getMotions: () => Live2DManager.getMotionGroups(),
         };
+
+        window.setCompactMode = () => setCompactMode().catch((error) => {
+            console.error(error);
+            setError(error.message);
+        });
+
+        window.setExpandedMode = () => setExpandedMode().catch((error) => {
+            console.error(error);
+            setError(error.message);
+        });
     </script>
 </body>
 </html>
