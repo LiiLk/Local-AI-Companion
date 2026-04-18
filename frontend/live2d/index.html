@@ -112,6 +112,7 @@
             pointer-events: none;
             padding: 22px;
             z-index: 2;
+            background: transparent;
         }
 
         .panel {
@@ -320,6 +321,16 @@
             justify-items: end;
             gap: 10px;
             position: relative;
+            opacity: 0;
+            transform: translateY(8px);
+            transition: opacity 180ms ease, transform 180ms ease;
+            pointer-events: none;
+        }
+
+        body.hud-visible #companion-cluster {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
         }
 
         body.layout-compact #companion-cluster {
@@ -334,7 +345,8 @@
             gap: 10px;
             padding: 12px 16px;
             border-radius: 22px;
-            background: transparent;
+            background: rgba(0, 0, 0, 0.36);
+            border: 1px solid rgba(255, 255, 255, 0.16);
         }
 
         body.layout-compact #status-chip {
@@ -418,7 +430,8 @@
             gap: 8px;
             padding: 10px;
             border-radius: 22px;
-            background: transparent;
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.16);
         }
 
         body.layout-compact #dock {
@@ -431,7 +444,7 @@
             min-width: 44px;
             padding: 0 12px;
             border-radius: 14px;
-            border: 1px solid rgba(255, 255, 255, 0.24);
+            border: 1px solid rgba(255, 255, 255, 0.3);
             background: transparent;
             color: var(--text-main);
             display: inline-flex;
@@ -474,6 +487,7 @@
             display: grid;
             gap: 1px;
             padding: 0 6px 0 2px;
+            opacity: 0.86;
         }
 
         body.layout-compact #dock-copy {
@@ -562,7 +576,7 @@
         }
     </style>
 </head>
-<body class="layout-compact">
+<body class="layout-compact hud-visible">
     <canvas id="live2d-canvas" style="background: transparent;"></canvas>
     <div id="window-drag-surface"></div>
 
@@ -757,6 +771,12 @@
                 settingsLabel: 'Expanded',
             },
         };
+        const UI_BEHAVIOR = {
+            // Centralized shell behavior knobs for future mascot interactions.
+            hudHideDelayMs: 4600,
+            hudActivationBottomPx: 170,
+            hudRecheckDelayMs: 120,
+        };
 
         const ui = {
             statusText: document.getElementById('status-text'),
@@ -788,6 +808,7 @@
             settingsChatToggle: document.getElementById('settings-chat-toggle'),
             debugToggleButton: document.getElementById('debug-toggle-button'),
             dragSurface: document.getElementById('window-drag-surface'),
+            companionCluster: document.getElementById('companion-cluster'),
         };
 
         const state = {
@@ -809,6 +830,9 @@
             avatarInitPromise: null,
             resizeApplyRaf: null,
             backendKindPromise: null,
+            hudVisible: true,
+            hudHideTimer: null,
+            hudPointerInside: false,
         };
 
         function clamp(value, min, max) {
@@ -891,6 +915,92 @@
             };
         }
 
+        function clearHudHideTimer() {
+            if (state.hudHideTimer) {
+                clearTimeout(state.hudHideTimer);
+                state.hudHideTimer = null;
+            }
+        }
+
+        function isHudPinned() {
+            return state.chatVisible
+                || state.settingsVisible
+                || state.hudPointerInside
+                || ui.errorBanner.style.display === 'block';
+        }
+
+        function applyHudVisibility(visible) {
+            state.hudVisible = !!visible;
+            document.body.classList.toggle('hud-visible', state.hudVisible);
+        }
+
+        function scheduleHudFade(delayMs = UI_BEHAVIOR.hudHideDelayMs) {
+            clearHudHideTimer();
+            if (isHudPinned()) {
+                applyHudVisibility(true);
+                return;
+            }
+            state.hudHideTimer = window.setTimeout(() => {
+                if (!isHudPinned()) {
+                    applyHudVisibility(false);
+                }
+            }, delayMs);
+        }
+
+        function revealHud({ reschedule = true } = {}) {
+            applyHudVisibility(true);
+            if (reschedule) {
+                scheduleHudFade();
+            }
+        }
+
+        function isPointerNearHudZone(event) {
+            const y = Number.isFinite(event?.clientY) ? event.clientY : window.innerHeight;
+            return y >= window.innerHeight - UI_BEHAVIOR.hudActivationBottomPx;
+        }
+
+        function installHudController() {
+            ui.companionCluster?.addEventListener('pointerenter', () => {
+                state.hudPointerInside = true;
+                revealHud({ reschedule: false });
+            });
+
+            ui.companionCluster?.addEventListener('pointerleave', () => {
+                state.hudPointerInside = false;
+                scheduleHudFade(UI_BEHAVIOR.hudRecheckDelayMs);
+            });
+
+            document.addEventListener('pointermove', (event) => {
+                if (isPointerNearHudZone(event)) {
+                    revealHud();
+                } else if (!isHudPinned()) {
+                    scheduleHudFade(UI_BEHAVIOR.hudRecheckDelayMs);
+                }
+            });
+
+            document.addEventListener('pointerdown', () => {
+                revealHud();
+            });
+
+            document.addEventListener('wheel', () => {
+                revealHud();
+            }, { passive: true });
+
+            document.addEventListener('keydown', () => {
+                revealHud();
+            });
+
+            window.addEventListener('focus', () => {
+                revealHud();
+            });
+
+            window.addEventListener('blur', () => {
+                scheduleHudFade(UI_BEHAVIOR.hudRecheckDelayMs);
+            });
+
+            revealHud();
+        }
+
         function applySidePanels() {
             ui.chatStack.classList.toggle('visible', state.chatVisible);
             ui.composer.classList.toggle('hidden', !state.chatVisible);
@@ -901,6 +1011,12 @@
 
             const hasVisiblePanel = state.chatVisible || state.settingsVisible || ui.errorBanner.style.display === 'block';
             ui.sidePanelStack.classList.toggle('has-visible-panel', hasVisiblePanel);
+
+            if (hasVisiblePanel) {
+                revealHud({ reschedule: false });
+            } else {
+                scheduleHudFade(UI_BEHAVIOR.hudRecheckDelayMs);
+            }
         }
 
         function toggleChat() {
@@ -916,15 +1032,15 @@
         function toneColor(tone) {
             switch (tone) {
                 case 'ok':
-                    return ['var(--ok)', '0 0 18px rgba(141, 255, 178, 0.7)'];
+                    return ['var(--ok)', 'none'];
                 case 'danger':
-                    return ['var(--danger)', '0 0 18px rgba(255, 122, 122, 0.7)'];
+                    return ['var(--danger)', 'none'];
                 case 'accent':
-                    return ['var(--accent)', '0 0 18px rgba(123, 210, 255, 0.7)'];
+                    return ['var(--accent)', 'none'];
                 case 'busy':
-                    return ['var(--busy)', '0 0 18px rgba(255, 215, 189, 0.7)'];
+                    return ['var(--busy)', 'none'];
                 default:
-                    return ['var(--warn)', '0 0 18px rgba(255, 211, 107, 0.7)'];
+                    return ['var(--warn)', 'none'];
             }
         }
 
@@ -1359,6 +1475,7 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
+                installHudController();
                 setStatus('Loading', 'Initializing desktop avatar shell', 'warn');
                 applySidePanels();
                 await setLayout('compact');
