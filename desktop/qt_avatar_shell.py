@@ -217,6 +217,11 @@ class TransparentWebView(QWebEngineView):
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        # In click-through mascot mode, the page may never receive a direct pointer gesture.
+        # Disable media gesture gating so WebAudio playback can start reliably.
+        playback_attr = getattr(QWebEngineSettings.WebAttribute, "PlaybackRequiresUserGesture", None)
+        if playback_attr is not None:
+            settings.setAttribute(playback_attr, False)
 
 
 class DragHandle(QWidget):

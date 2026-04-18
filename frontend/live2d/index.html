@@ -1409,6 +1409,17 @@
             await applyAvatarLayout('expanded');
         }
 
+        async function warmupAudioRuntime(backendKind) {
+            if (backendKind !== 'qt') {
+                return;
+            }
+            try {
+                await ensureAudioContext();
+            } catch (error) {
+                console.warn('AudioContext warmup deferred:', error?.message || error);
+            }
+        }
+
         function toggleLayout() {
             const next = state.layout === 'compact' ? 'expanded' : 'compact';
             setLayout(next).catch((error) => {
@@ -1524,6 +1535,7 @@
                 setStatus('Loading', 'Initializing desktop avatar shell', 'warn');
                 applySidePanels();
                 await setLayout('compact');
+                await warmupAudioRuntime(backendKind);
                 await refreshRuntime();
             } catch (error) {
                 console.error('Desktop shell init failed', error);
