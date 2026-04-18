@@ -12,11 +12,130 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _USER32 = ctypes.windll.user32
+    _DWMAPI = ctypes.windll.dwmapi
+
+    _GWL_STYLE = -16
+    _GWL_EXSTYLE = -20
+
+    _WS_CAPTION = 0x00C00000
+    _WS_THICKFRAME = 0x00040000
+    _WS_MINIMIZEBOX = 0x00020000
+    _WS_MAXIMIZEBOX = 0x00010000
+    _WS_SYSMENU = 0x00080000
+    _WS_BORDER = 0x00800000
+    _WS_DLGFRAME = 0x00400000
+    _WS_OVERLAPPEDWINDOW = 0x00CF0000
+
+    _WS_EX_TOOLWINDOW = 0x00000080
+    _WS_EX_APPWINDOW = 0x00040000
+    _WS_EX_LAYERED = 0x00080000
+    _WS_EX_TRANSPARENT = 0x00000020
+    _WS_EX_NOACTIVATE = 0x08000000
+
+    _SWP_NOSIZE = 0x0001
+    _SWP_NOMOVE = 0x0002
+    _SWP_NOZORDER = 0x0004
+    _SWP_NOACTIVATE = 0x0010
+    _SWP_FRAMECHANGED = 0x0020
+
+    _DWMWA_NCRENDERING_POLICY = 2
+    _DWMNCRP_DISABLED = 1
+    _DWMWA_TRANSITIONS_FORCEDISABLED = 3
+    _DWMWA_WINDOW_CORNER_PREFERENCE = 33
+    _DWMWCP_DONOTROUND = 1
+    _DWMWA_BORDER_COLOR = 34
+    _DWMWA_COLOR_NONE = 0xFFFFFFFE
+
+    _USER32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    _USER32.GetWindowLongW.restype = ctypes.c_long
+    _USER32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    _USER32.SetWindowLongW.restype = ctypes.c_long
+    _USER32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+    ]
+    _USER32.SetWindowPos.restype = wintypes.BOOL
+
+    _DWMAPI.DwmSetWindowAttribute.argtypes = [
+        wintypes.HWND,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+        ctypes.c_uint,
+    ]
+    _DWMAPI.DwmSetWindowAttribute.restype = ctypes.c_long
+
 
 LAYOUT_SIZES: dict[str, tuple[int, int]] = {
     "compact": (860, 760),
     "expanded": (1040, 980),
 }
+
+
+def _apply_windows_borderless_style(widget: QWidget, *, click_through: bool, no_activate: bool) -> None:
+    if sys.platform != "win32":
+        return
+
+    hwnd = int(widget.winId())
+    style = _USER32.GetWindowLongW(hwnd, _GWL_STYLE)
+    style &= ~(
+        _WS_OVERLAPPEDWINDOW
+        | _WS_CAPTION
+        | _WS_THICKFRAME
+        | _WS_MINIMIZEBOX
+        | _WS_MAXIMIZEBOX
+        | _WS_SYSMENU
+        | _WS_BORDER
+        | _WS_DLGFRAME
+    )
+    _USER32.SetWindowLongW(hwnd, _GWL_STYLE, style)
+
+    ex_style = _USER32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    ex_style |= _WS_EX_LAYERED | _WS_EX_TOOLWINDOW
+    ex_style &= ~_WS_EX_APPWINDOW
+    if click_through:
+        ex_style |= _WS_EX_TRANSPARENT
+    else:
+        ex_style &= ~_WS_EX_TRANSPARENT
+    if no_activate:
+        ex_style |= _WS_EX_NOACTIVATE
+    else:
+        ex_style &= ~_WS_EX_NOACTIVATE
+    _USER32.SetWindowLongW(hwnd, _GWL_EXSTYLE, ex_style)
+
+    _USER32.SetWindowPos(
+        hwnd,
+        0,
+        0,
+        0,
+        0,
+        0,
+        _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED,
+    )
+
+    def _set_dwm_int(attribute: int, value: int) -> None:
+        raw = ctypes.c_int(value)
+        _DWMAPI.DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            ctypes.byref(raw),
+            ctypes.sizeof(raw),
+        )
+
+    # Remove any non-client rendering artifacts (border/shadow/corners).
+    _set_dwm_int(_DWMWA_NCRENDERING_POLICY, _DWMNCRP_DISABLED)
+    _set_dwm_int(_DWMWA_TRANSITIONS_FORCEDISABLED, 1)
+    _set_dwm_int(_DWMWA_WINDOW_CORNER_PREFERENCE, _DWMWCP_DONOTROUND)
+    _set_dwm_int(_DWMWA_BORDER_COLOR, _DWMWA_COLOR_NONE)
 
 
 class QtDesktopBridge(QObject):
@@ -289,6 +408,9 @@ class HudOverlay(QWidget):
         self._drag_origin = None
         self._shell_origin = None
 
+    def apply_native_style(self) -> None:
+        _apply_windows_borderless_style(self, click_through=False, no_activate=False)
+
 
 class QtAvatarShell(QWidget):
     evaluate_js_requested = pyqtSignal(str)
@@ -370,8 +492,10 @@ class QtAvatarShell(QWidget):
     def run(self, on_loaded: Callable[[], None]) -> int:
         self._loaded_callback = on_loaded
         self.show()
+        _apply_windows_borderless_style(self, click_through=True, no_activate=True)
         self._sync_hud_geometry()
         self._hud.show()
+        self._hud.apply_native_style()
         self.raise_()
         self._hud.raise_()
         self._hud_state_timer.start()
