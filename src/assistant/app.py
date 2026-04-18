@@ -543,6 +543,12 @@ class Live2DAssistant:
     def _dispatch_frontend_event(self, event_name: str, *args):
         js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
         self._evaluate_js(f"window.{event_name}?.({js_args})")
+        window = self._window
+        if window and hasattr(window, "dispatch_frontend_event"):
+            try:
+                window.dispatch_frontend_event(event_name, *args)
+            except Exception as exc:
+                logger.debug("Desktop shell event dispatch error (%s): %s", event_name, exc)
         if self._bridge_server:
             self._bridge_server.emit_frontend_event_sync(event_name, *args)
 

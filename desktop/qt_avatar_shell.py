@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QStackedLayout,
@@ -358,6 +359,14 @@ class HudOverlay(QWidget):
                 color: rgba(238, 246, 255, 0.92);
                 font-size: 9px;
             }
+            QPlainTextEdit#hudChatHistory {
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.03);
+                color: rgba(236, 245, 255, 0.93);
+                padding: 5px 7px;
+                font-size: 9px;
+            }
             QLineEdit#hudChatInput {
                 min-height: 28px;
                 border: 1px solid rgba(255, 255, 255, 0.2);
@@ -440,11 +449,14 @@ class HudOverlay(QWidget):
         self._chat_panel_layout.setSpacing(4)
         self._chat_label = QLabel("CHAT • ENTER TO SEND", self._chat_panel)
         self._chat_label.setObjectName("hudChatLabel")
-        self._chat_preview = QLabel("No message yet. Type below to start.", self._chat_panel)
-        self._chat_preview.setObjectName("hudChatBody")
-        self._chat_preview.setWordWrap(True)
-        self._chat_preview.setMinimumHeight(26)
-        self._chat_preview.setMaximumHeight(38)
+        self._chat_history = QPlainTextEdit(self._chat_panel)
+        self._chat_history.setObjectName("hudChatHistory")
+        self._chat_history.setReadOnly(True)
+        self._chat_history.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._chat_history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._chat_history.setMaximumHeight(112)
+        self._chat_history.setPlaceholderText("No message yet. Type below to start.")
+        self._chat_history.document().setMaximumBlockCount(80)
         self._chat_input_row = QHBoxLayout()
         self._chat_input_row.setContentsMargins(0, 0, 0, 0)
         self._chat_input_row.setSpacing(6)
@@ -456,7 +468,7 @@ class HudOverlay(QWidget):
         self._chat_input_row.addWidget(self._chat_input)
         self._chat_input_row.addWidget(self._chat_send_button)
         self._chat_panel_layout.addWidget(self._chat_label)
-        self._chat_panel_layout.addWidget(self._chat_preview)
+        self._chat_panel_layout.addWidget(self._chat_history)
         self._chat_panel_layout.addLayout(self._chat_input_row)
 
         self._panel_host = QWidget(root)
@@ -585,13 +597,19 @@ class HudOverlay(QWidget):
         return next_visible
 
     def set_chat_activity(self, user_text: str, assistant_text: str) -> None:
-        def _short(text: str, limit: int = 60) -> str:
-            collapsed = " ".join((text or "").split())
-            if not collapsed:
-                return "-"
-            return collapsed if len(collapsed) <= limit else f"{collapsed[:limit - 1]}…"
+        self.append_chat_message("YOU", user_text)
+        self.append_chat_message("AI", assistant_text)
+        if self._active_panel == "chat":
+            self._refresh_layout_metrics()
 
-        self._chat_preview.setText(f"You: {_short(user_text)}\nAI: {_short(assistant_text)}")
+    def append_chat_message(self, role: str, text: str) -> None:
+        cleaned = " ".join((text or "").split())
+        if not cleaned:
+            return
+        normalized_role = (role or "AI").strip().upper()[:12]
+        self._chat_history.appendPlainText(f"{normalized_role}: {cleaned}")
+        scroll_bar = self._chat_history.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
         if self._active_panel == "chat":
             self._refresh_layout_metrics()
 
@@ -628,6 +646,7 @@ class HudOverlay(QWidget):
 
 class QtAvatarShell(QWidget):
     evaluate_js_requested = pyqtSignal(str)
+    frontend_event_requested = pyqtSignal(str, str)
     close_requested = pyqtSignal()
     layout_mode_requested = pyqtSignal(str)
 
@@ -651,6 +670,8 @@ class QtAvatarShell(QWidget):
         self._drag_origin: Optional[QPoint] = None
         self._window_origin: Optional[QPoint] = None
         self._layout_mode = "compact"
+        self._logged_user_turn_ids: set[int] = set()
+        self._logged_assistant_turn_ids: set[int] = set()
 
         flags = (
             Qt.WindowType.Tool
@@ -687,6 +708,7 @@ class QtAvatarShell(QWidget):
         self._view.loadFinished.connect(self._on_load_finished)
 
         self.evaluate_js_requested.connect(self._run_javascript)
+        self.frontend_event_requested.connect(self._handle_frontend_event)
         self.close_requested.connect(self._close_internal)
         self.layout_mode_requested.connect(self._apply_layout_mode)
 
@@ -721,6 +743,13 @@ class QtAvatarShell(QWidget):
 
     def evaluate_js(self, code: str) -> None:
         self.evaluate_js_requested.emit(code)
+
+    def dispatch_frontend_event(self, event_name: str, *args) -> None:
+        try:
+            payload = json.dumps(args, ensure_ascii=False)
+        except Exception:
+            payload = "[]"
+        self.frontend_event_requested.emit(str(event_name or ""), payload)
 
     def close(self) -> None:  # type: ignore[override]
         self.close_requested.emit()
@@ -760,6 +789,53 @@ class QtAvatarShell(QWidget):
     @pyqtSlot(str)
     def _run_javascript(self, code: str) -> None:
         self._view.page().runJavaScript(code)
+
+    @pyqtSlot(str, str)
+    def _handle_frontend_event(self, event_name: str, payload: str) -> None:
+        try:
+            args = json.loads(payload) if payload else []
+        except Exception:
+            args = []
+
+        if not isinstance(args, list):
+            args = []
+
+        def _as_turn_id(value) -> Optional[int]:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+            return None
+
+        if event_name == "onTranscription":
+            text = str(args[0]) if args else ""
+            turn_id = _as_turn_id(args[1] if len(args) > 1 else None)
+            if turn_id is not None and turn_id in self._logged_user_turn_ids:
+                return
+            if turn_id is not None:
+                self._logged_user_turn_ids.add(turn_id)
+            self._hud.append_chat_message("YOU", text)
+            self._sync_hud_geometry()
+            return
+
+        if event_name == "onResponseEnd":
+            text = str(args[0]) if args else ""
+            turn_id = _as_turn_id(args[1] if len(args) > 1 else None)
+            if turn_id is not None and turn_id in self._logged_assistant_turn_ids:
+                return
+            if turn_id is not None:
+                self._logged_assistant_turn_ids.add(turn_id)
+            self._hud.append_chat_message("AI", text)
+            self._sync_hud_geometry()
+            return
+
+        if event_name == "onError":
+            message = str(args[0]) if args else ""
+            if message:
+                self._hud.append_chat_message("SYS", f"Error: {message}")
+                self._sync_hud_geometry()
 
     @pyqtSlot()
     def _close_internal(self) -> None:
@@ -871,18 +947,23 @@ class QtAvatarShell(QWidget):
         if not cleaned:
             return
 
+        self._hud.append_chat_message("YOU", cleaned)
         try:
-            self._hud.set_chat_activity(cleaned, "Thinking...")
             response = self._assistant.submit_text(cleaned) or {}
         except Exception as exc:
-            self._hud.set_chat_activity(cleaned, f"Send failed: {exc}")
+            self._hud.append_chat_message("SYS", f"Send failed: {exc}")
+            self._sync_hud_geometry()
             return
 
         status = str(response.get("status") or "")
+        turn_id = response.get("turn_id")
+        if isinstance(turn_id, int):
+            self._logged_user_turn_ids.add(turn_id)
         if status == "ok":
-            self._hud.set_chat_activity(cleaned, "Sent. Voice response is playing.")
+            self._hud.append_chat_message("SYS", "Sent. Voice response is playing.")
         elif status == "warming_up":
-            self._hud.set_chat_activity(cleaned, "Backend warming up...")
+            self._hud.append_chat_message("SYS", "Backend warming up...")
         else:
             message = response.get("message") or "Unable to send message."
-            self._hud.set_chat_activity(cleaned, str(message))
+            self._hud.append_chat_message("SYS", str(message))
+        self._sync_hud_geometry()
