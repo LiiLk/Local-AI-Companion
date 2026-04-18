@@ -14,7 +14,7 @@ Hotkeys:
     F2: Toggle mute/unmute microphone
     F3: Interrupt current response
     F12: Toggle overlay visibility
-    Escape: Quit
+    Ctrl+Shift+Q: Quit
 """
 
 # Disable Hub telemetry globally, but do not force offline mode here.
@@ -964,9 +964,21 @@ class Live2DAssistant:
         if not PYNPUT_AVAILABLE:
             logger.warning("pynput not available, hotkeys disabled")
             return
-        
+
+        pressed_keys = set()
+        quit_combo_latched = False
+
+        def ctrl_pressed() -> bool:
+            return keyboard.Key.ctrl_l in pressed_keys or keyboard.Key.ctrl_r in pressed_keys
+
+        def shift_pressed() -> bool:
+            return keyboard.Key.shift_l in pressed_keys or keyboard.Key.shift_r in pressed_keys
+
         def on_press(key):
+            nonlocal quit_combo_latched
             try:
+                pressed_keys.add(key)
+
                 if key == keyboard.Key.f2:
                     runtime = self.toggle_mute()
                     logger.info("F2 toggle mute -> %s", runtime.get("mic_state"))
@@ -978,18 +990,27 @@ class Live2DAssistant:
                 elif key == keyboard.Key.f12:
                     runtime = self.toggle_debug()
                     logger.info("F12 debug -> visible=%s", runtime.get("debug_visible"))
-                        
-                elif key == keyboard.Key.esc:
-                    # Quit
-                    logger.info("👋 Quit requested")
-                    self.stop()
-                    
+
+                elif ctrl_pressed() and shift_pressed():
+                    key_char = getattr(key, "char", None)
+                    if key_char and str(key_char).lower() == "q" and not quit_combo_latched:
+                        quit_combo_latched = True
+                        logger.info("👋 Quit requested (Ctrl+Shift+Q)")
+                        self.stop()
+
             except Exception as e:
                 logger.error(f"Hotkey error: {e}")
-        
-        self._hotkey_listener = keyboard.Listener(on_press=on_press)
+
+        def on_release(key):
+            nonlocal quit_combo_latched
+            pressed_keys.discard(key)
+            # Re-arm quit combo when modifier keys are no longer fully pressed.
+            if not (ctrl_pressed() and shift_pressed()):
+                quit_combo_latched = False
+
+        self._hotkey_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self._hotkey_listener.start()
-        logger.info("⌨️ Hotkeys enabled: F2=mute, F3=interrupt, F12=toggle, Esc=quit")
+        logger.info("⌨️ Hotkeys enabled: F2=mute, F3=interrupt, F12=toggle, Ctrl+Shift+Q=quit")
     
     # ==================== Window ====================
     
