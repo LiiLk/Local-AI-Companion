@@ -115,6 +115,12 @@
             background: transparent;
         }
 
+        body.qt-external-hud #window-drag-surface,
+        body.qt-external-hud #shell {
+            display: none !important;
+            pointer-events: none !important;
+        }
+
         .panel {
             pointer-events: auto;
             border: none;
@@ -833,7 +839,6 @@
             hudVisible: true,
             hudHideTimer: null,
             hudPointerInside: false,
-            hudRectSyncRaf: null,
         };
 
         function clamp(value, min, max) {
@@ -858,83 +863,6 @@
                 };
             }
             return target || { x: 0, y: 0 };
-        }
-
-        function rectFromElement(element) {
-            if (!element) {
-                return null;
-            }
-            const rect = element.getBoundingClientRect();
-            if (!rect || rect.width <= 0 || rect.height <= 0) {
-                return null;
-            }
-            return {
-                left: rect.left,
-                top: rect.top,
-                right: rect.right,
-                bottom: rect.bottom,
-            };
-        }
-
-        function mergeRect(baseRect, nextRect) {
-            if (!baseRect) {
-                return { ...nextRect };
-            }
-            return {
-                left: Math.min(baseRect.left, nextRect.left),
-                top: Math.min(baseRect.top, nextRect.top),
-                right: Math.max(baseRect.right, nextRect.right),
-                bottom: Math.max(baseRect.bottom, nextRect.bottom),
-            };
-        }
-
-        function computeHudInteractiveScreenRect() {
-            let merged = rectFromElement(ui.companionCluster);
-            if (ui.sidePanelStack.classList.contains('has-visible-panel')) {
-                const sidePanelRect = rectFromElement(ui.sidePanelStack);
-                if (sidePanelRect) {
-                    merged = mergeRect(merged, sidePanelRect);
-                }
-            }
-
-            if (!merged) {
-                return {
-                    x: Math.round(window.screenX || window.screenLeft || 0),
-                    y: Math.round((window.screenY || window.screenTop || 0) + window.innerHeight - 4),
-                    width: 4,
-                    height: 4,
-                };
-            }
-
-            const margin = 12;
-            const left = Math.max(0, merged.left - margin);
-            const top = Math.max(0, merged.top - margin);
-            const right = Math.min(window.innerWidth, merged.right + margin);
-            const bottom = Math.min(window.innerHeight, merged.bottom + margin);
-            const screenX = Number(window.screenX ?? window.screenLeft ?? 0);
-            const screenY = Number(window.screenY ?? window.screenTop ?? 0);
-
-            return {
-                x: Math.round(screenX + left),
-                y: Math.round(screenY + top),
-                width: Math.max(1, Math.round(right - left)),
-                height: Math.max(1, Math.round(bottom - top)),
-            };
-        }
-
-        function syncHudInteractiveRegion() {
-            window.DesktopBridge.setHudInteractiveRect(computeHudInteractiveScreenRect())
-                .catch(() => {});
-        }
-
-        function queueHudInteractiveRegionSync() {
-            if (state.hudRectSyncRaf) {
-                cancelAnimationFrame(state.hudRectSyncRaf);
-            }
-            state.hudRectSyncRaf = requestAnimationFrame(() => {
-                state.hudRectSyncRaf = null;
-                syncHudInteractiveRegion();
-            });
         }
 
         async function ensureBackendKind() {
@@ -1010,7 +938,6 @@
         function applyHudVisibility(visible) {
             state.hudVisible = !!visible;
             document.body.classList.toggle('hud-visible', state.hudVisible);
-            queueHudInteractiveRegionSync();
         }
 
         function scheduleHudFade(delayMs = UI_BEHAVIOR.hudHideDelayMs) {
@@ -1090,7 +1017,6 @@
 
             const hasVisiblePanel = state.chatVisible || state.settingsVisible || ui.errorBanner.style.display === 'block';
             ui.sidePanelStack.classList.toggle('has-visible-panel', hasVisiblePanel);
-            queueHudInteractiveRegionSync();
 
             if (hasVisiblePanel) {
                 revealHud({ reschedule: false });
@@ -1411,7 +1337,6 @@
             ui.dockCaption.textContent = layoutMeta.dockCaption;
             ui.settingsLayout.textContent = layoutMeta.settingsLabel;
             ui.avatarOrb.setAttribute('aria-label', layoutName === 'compact' ? 'Expand companion' : 'Reduce companion');
-            queueHudInteractiveRegionSync();
         }
 
         async function applyAvatarLayout(layoutName = state.layout) {
@@ -1556,12 +1481,16 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             try {
-                installHudController();
+                const backendKind = await ensureBackendKind();
+                if (backendKind === 'qt') {
+                    document.body.classList.add('qt-external-hud');
+                } else {
+                    installHudController();
+                }
                 setStatus('Loading', 'Initializing desktop avatar shell', 'warn');
                 applySidePanels();
                 await setLayout('compact');
                 await refreshRuntime();
-                queueHudInteractiveRegionSync();
             } catch (error) {
                 console.error('Desktop shell init failed', error);
                 setStatus('Error', error.message, 'danger');
@@ -1623,7 +1552,6 @@
         }, { once: true });
 
         window.addEventListener('resize', () => {
-            queueHudInteractiveRegionSync();
             if (state.resizeApplyRaf) {
                 cancelAnimationFrame(state.resizeApplyRaf);
             }
