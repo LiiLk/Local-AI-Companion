@@ -486,13 +486,23 @@ class HudOverlay(QWidget):
 
     def show_quit_hint(self, visible: bool) -> None:
         self._quit_hint_label.setVisible(bool(visible))
-        self.adjustSize()
+        if self.layout() is not None:
+            self.layout().activate()
+        self.updateGeometry()
 
     def toggle_settings_panel(self) -> bool:
         next_visible = not self._settings_panel.isVisible()
         self._settings_panel.setVisible(next_visible)
-        self.adjustSize()
+        if self.layout() is not None:
+            self.layout().activate()
+        self.updateGeometry()
         return next_visible
+
+    def preferred_size(self) -> tuple[int, int]:
+        if self.layout() is not None:
+            self.layout().activate()
+        hint = self.sizeHint()
+        return max(10, hint.width()), max(10, hint.height())
 
 
 class QtAvatarShell(QWidget):
@@ -664,9 +674,8 @@ class QtAvatarShell(QWidget):
             QTimer.singleShot(0, self._loaded_callback)
 
     def _sync_hud_geometry(self) -> None:
-        self._hud.adjustSize()
-        width = max(10, self._hud.width())
-        height = max(10, self._hud.height())
+        width, height = self._hud.preferred_size()
+        self._hud.resize(width, height)
         frame = self.frameGeometry()
         x = frame.x() + frame.width() - width - 22
         y = frame.y() + frame.height() - height - 18
