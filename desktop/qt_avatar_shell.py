@@ -315,6 +315,15 @@ class HudOverlay(QWidget):
                 border-radius: 7px;
                 padding: 2px 7px;
             }
+            QWidget#hudSettingsPanel {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 9px;
+            }
+            QLabel#hudSettingsText {
+                color: rgba(220, 235, 255, 0.86);
+                font-size: 9px;
+            }
             QPushButton {
                 min-width: 44px;
                 height: 33px;
@@ -369,6 +378,19 @@ class HudOverlay(QWidget):
         self._quit_hint_label.setObjectName("quitHintLabel")
         self._quit_hint_label.hide()
 
+        self._settings_panel = QWidget(root)
+        self._settings_panel.setObjectName("hudSettingsPanel")
+        self._settings_panel_layout = QVBoxLayout(self._settings_panel)
+        self._settings_panel_layout.setContentsMargins(8, 5, 8, 5)
+        self._settings_panel_layout.setSpacing(2)
+        self._settings_line_1 = QLabel("Quit: Ctrl+Shift+Q", self._settings_panel)
+        self._settings_line_1.setObjectName("hudSettingsText")
+        self._settings_line_2 = QLabel("F2 mute • F3 stop • F12 debug", self._settings_panel)
+        self._settings_line_2.setObjectName("hudSettingsText")
+        self._settings_panel_layout.addWidget(self._settings_line_1)
+        self._settings_panel_layout.addWidget(self._settings_line_2)
+        self._settings_panel.hide()
+
         self._mute_button = QPushButton("MIC", root)
         self._mute_button.setObjectName("muteButton")
         self._stop_button = QPushButton("STOP", root)
@@ -396,6 +418,7 @@ class HudOverlay(QWidget):
         root_layout.addLayout(status_row)
         root_layout.addWidget(self._meta_label)
         root_layout.addWidget(self._quit_hint_label)
+        root_layout.addWidget(self._settings_panel)
         root_layout.addLayout(buttons_layout)
 
         self._mute_button.clicked.connect(self.toggle_mute_requested)
@@ -459,6 +482,12 @@ class HudOverlay(QWidget):
     def show_quit_hint(self, visible: bool) -> None:
         self._quit_hint_label.setVisible(bool(visible))
         self.adjustSize()
+
+    def toggle_settings_panel(self) -> bool:
+        next_visible = not self._settings_panel.isVisible()
+        self._settings_panel.setVisible(next_visible)
+        self.adjustSize()
+        return next_visible
 
 
 class QtAvatarShell(QWidget):
@@ -693,7 +722,8 @@ class QtAvatarShell(QWidget):
         self.evaluate_js_requested.emit("window.__qtToggleChat?.();")
 
     def _toggle_settings(self) -> None:
-        self.evaluate_js_requested.emit("window.__qtToggleSettings?.();")
+        self._hud.toggle_settings_panel()
+        self._sync_hud_geometry()
 
     def _toggle_layout(self) -> None:
         next_layout = "expanded" if self._layout_mode == "compact" else "compact"
