@@ -625,12 +625,15 @@ class HudOverlay(QWidget):
 
         if normalized == "settings":
             self._panel_stack.setCurrentWidget(self._settings_panel)
+            self._panel_host.setFixedHeight(max(0, self._settings_panel.sizeHint().height()))
             self._panel_host.show()
         elif normalized == "chat":
             self._panel_stack.setCurrentWidget(self._chat_panel)
+            self._panel_host.setFixedHeight(max(0, self._chat_panel.sizeHint().height()))
             self._panel_host.show()
         else:
             self._panel_stack.setCurrentWidget(self._panel_empty)
+            self._panel_host.setFixedHeight(0)
             self._panel_host.hide()
 
         self._refresh_layout_metrics()
