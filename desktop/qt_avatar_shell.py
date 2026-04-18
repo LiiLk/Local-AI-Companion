@@ -10,7 +10,18 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QStackedLayout,
+    QVBoxLayout,
+    QWidget,
+)
 
 if sys.platform == "win32":
     import ctypes
@@ -259,6 +270,7 @@ class HudOverlay(QWidget):
     toggle_mute_requested = pyqtSignal()
     interrupt_requested = pyqtSignal()
     toggle_chat_requested = pyqtSignal()
+    chat_send_requested = pyqtSignal(str)
     toggle_settings_requested = pyqtSignal()
     toggle_layout_requested = pyqtSignal()
 
@@ -325,9 +337,35 @@ class HudOverlay(QWidget):
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 9px;
             }
+            QWidget#hudChatPanel {
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 9px;
+            }
+            QWidget#hudPanelHost {
+                background: transparent;
+                border: 0;
+            }
             QLabel#hudSettingsText {
                 color: rgba(220, 235, 255, 0.86);
                 font-size: 9px;
+            }
+            QLabel#hudChatLabel {
+                color: rgba(220, 235, 255, 0.86);
+                font-size: 9px;
+            }
+            QLabel#hudChatBody {
+                color: rgba(238, 246, 255, 0.92);
+                font-size: 9px;
+            }
+            QLineEdit#hudChatInput {
+                min-height: 28px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.04);
+                color: rgba(238, 246, 255, 0.94);
+                padding: 0 8px;
+                selection-background-color: rgba(123, 210, 255, 0.4);
             }
             QPushButton {
                 min-width: 44px;
@@ -354,9 +392,9 @@ class HudOverlay(QWidget):
 
         root = QWidget(self)
         root.setObjectName("hudRoot")
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(10, 8, 10, 8)
-        root_layout.setSpacing(5)
+        self._root_layout = QVBoxLayout(root)
+        self._root_layout.setContentsMargins(10, 8, 10, 8)
+        self._root_layout.setSpacing(5)
 
         container = QVBoxLayout(self)
         container.setContentsMargins(0, 0, 0, 0)
@@ -394,7 +432,45 @@ class HudOverlay(QWidget):
         self._settings_line_2.setObjectName("hudSettingsText")
         self._settings_panel_layout.addWidget(self._settings_line_1)
         self._settings_panel_layout.addWidget(self._settings_line_2)
-        self._settings_panel.hide()
+
+        self._chat_panel = QWidget(root)
+        self._chat_panel.setObjectName("hudChatPanel")
+        self._chat_panel_layout = QVBoxLayout(self._chat_panel)
+        self._chat_panel_layout.setContentsMargins(8, 6, 8, 6)
+        self._chat_panel_layout.setSpacing(4)
+        self._chat_label = QLabel("CHAT • ENTER TO SEND", self._chat_panel)
+        self._chat_label.setObjectName("hudChatLabel")
+        self._chat_preview = QLabel("No message yet. Type below to start.", self._chat_panel)
+        self._chat_preview.setObjectName("hudChatBody")
+        self._chat_preview.setWordWrap(True)
+        self._chat_preview.setMinimumHeight(26)
+        self._chat_preview.setMaximumHeight(38)
+        self._chat_input_row = QHBoxLayout()
+        self._chat_input_row.setContentsMargins(0, 0, 0, 0)
+        self._chat_input_row.setSpacing(6)
+        self._chat_input = QLineEdit(self._chat_panel)
+        self._chat_input.setObjectName("hudChatInput")
+        self._chat_input.setPlaceholderText("Type to assistant...")
+        self._chat_send_button = QPushButton("SEND", self._chat_panel)
+        self._chat_send_button.setFixedWidth(56)
+        self._chat_input_row.addWidget(self._chat_input)
+        self._chat_input_row.addWidget(self._chat_send_button)
+        self._chat_panel_layout.addWidget(self._chat_label)
+        self._chat_panel_layout.addWidget(self._chat_preview)
+        self._chat_panel_layout.addLayout(self._chat_input_row)
+
+        self._panel_host = QWidget(root)
+        self._panel_host.setObjectName("hudPanelHost")
+        self._panel_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._panel_stack = QStackedLayout(self._panel_host)
+        self._panel_stack.setContentsMargins(0, 0, 0, 0)
+        self._panel_stack.setStackingMode(QStackedLayout.StackingMode.StackOne)
+        self._panel_empty = QWidget(self._panel_host)
+        self._panel_stack.addWidget(self._panel_empty)
+        self._panel_stack.addWidget(self._settings_panel)
+        self._panel_stack.addWidget(self._chat_panel)
+        self._panel_host.hide()
+        self._active_panel = "none"
 
         self._mute_button = QPushButton("MIC", root)
         self._mute_button.setObjectName("muteButton")
@@ -403,14 +479,15 @@ class HudOverlay(QWidget):
         self._settings_button = QPushButton("SET", root)
         self._layout_button = QPushButton("EXPAND", root)
 
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setContentsMargins(0, 0, 0, 0)
-        buttons_layout.setSpacing(6)
-        buttons_layout.addWidget(self._mute_button)
-        buttons_layout.addWidget(self._stop_button)
-        buttons_layout.addWidget(self._chat_button)
-        buttons_layout.addWidget(self._settings_button)
-        buttons_layout.addWidget(self._layout_button)
+        self._buttons_row = QWidget(root)
+        self._buttons_layout = QHBoxLayout(self._buttons_row)
+        self._buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self._buttons_layout.setSpacing(6)
+        self._buttons_layout.addWidget(self._mute_button)
+        self._buttons_layout.addWidget(self._stop_button)
+        self._buttons_layout.addWidget(self._chat_button)
+        self._buttons_layout.addWidget(self._settings_button)
+        self._buttons_layout.addWidget(self._layout_button)
 
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
@@ -419,18 +496,20 @@ class HudOverlay(QWidget):
         status_row.addWidget(self._status_label, 0, Qt.AlignmentFlag.AlignVCenter)
         status_row.addStretch(1)
 
-        root_layout.addWidget(self._drag_handle)
-        root_layout.addLayout(status_row)
-        root_layout.addWidget(self._meta_label)
-        root_layout.addWidget(self._quit_hint_label)
-        root_layout.addWidget(self._settings_panel)
-        root_layout.addLayout(buttons_layout)
+        self._root_layout.addWidget(self._drag_handle)
+        self._root_layout.addLayout(status_row)
+        self._root_layout.addWidget(self._meta_label)
+        self._root_layout.addWidget(self._quit_hint_label)
+        self._root_layout.addWidget(self._panel_host)
+        self._root_layout.addWidget(self._buttons_row)
 
         self._mute_button.clicked.connect(self.toggle_mute_requested)
         self._stop_button.clicked.connect(self.interrupt_requested)
         self._chat_button.clicked.connect(self.toggle_chat_requested)
         self._settings_button.clicked.connect(self.toggle_settings_requested)
         self._layout_button.clicked.connect(self.toggle_layout_requested)
+        self._chat_send_button.clicked.connect(self._emit_chat_send)
+        self._chat_input.returnPressed.connect(self._emit_chat_send)
         self._drag_handle.drag_started.connect(self._on_drag_started)
         self._drag_handle.drag_moved.connect(self._on_drag_moved)
         self._drag_handle.drag_ended.connect(self._on_drag_ended)
@@ -486,23 +565,65 @@ class HudOverlay(QWidget):
 
     def show_quit_hint(self, visible: bool) -> None:
         self._quit_hint_label.setVisible(bool(visible))
-        if self.layout() is not None:
-            self.layout().activate()
-        self.updateGeometry()
+        self._refresh_layout_metrics()
 
     def toggle_settings_panel(self) -> bool:
-        next_visible = not self._settings_panel.isVisible()
-        self._settings_panel.setVisible(next_visible)
-        if self.layout() is not None:
-            self.layout().activate()
-        self.updateGeometry()
+        next_visible = self._active_panel != "settings"
+        self._set_active_panel("settings" if next_visible else "none")
         return next_visible
 
     def preferred_size(self) -> tuple[int, int]:
-        if self.layout() is not None:
-            self.layout().activate()
+        self._refresh_layout_metrics()
         hint = self.sizeHint()
         return max(10, hint.width()), max(10, hint.height())
+
+    def toggle_chat_panel(self) -> bool:
+        next_visible = self._active_panel != "chat"
+        self._set_active_panel("chat" if next_visible else "none")
+        if next_visible:
+            self._chat_input.setFocus()
+        return next_visible
+
+    def set_chat_activity(self, user_text: str, assistant_text: str) -> None:
+        def _short(text: str, limit: int = 60) -> str:
+            collapsed = " ".join((text or "").split())
+            if not collapsed:
+                return "-"
+            return collapsed if len(collapsed) <= limit else f"{collapsed[:limit - 1]}…"
+
+        self._chat_preview.setText(f"You: {_short(user_text)}\nAI: {_short(assistant_text)}")
+        if self._active_panel == "chat":
+            self._refresh_layout_metrics()
+
+    def _set_active_panel(self, panel_name: str) -> None:
+        normalized = panel_name if panel_name in {"none", "settings", "chat"} else "none"
+        self._active_panel = normalized
+
+        if normalized == "settings":
+            self._panel_stack.setCurrentWidget(self._settings_panel)
+            self._panel_host.show()
+        elif normalized == "chat":
+            self._panel_stack.setCurrentWidget(self._chat_panel)
+            self._panel_host.show()
+        else:
+            self._panel_stack.setCurrentWidget(self._panel_empty)
+            self._panel_host.hide()
+
+        self._refresh_layout_metrics()
+
+    def _refresh_layout_metrics(self) -> None:
+        if self._root_layout is not None:
+            self._root_layout.invalidate()
+            self._root_layout.activate()
+        self.adjustSize()
+        self.updateGeometry()
+
+    def _emit_chat_send(self) -> None:
+        text = self._chat_input.text().strip()
+        if not text:
+            return
+        self._chat_input.clear()
+        self.chat_send_requested.emit(text)
 
 
 class QtAvatarShell(QWidget):
@@ -573,6 +694,7 @@ class QtAvatarShell(QWidget):
         self._hud.toggle_mute_requested.connect(self._toggle_mute)
         self._hud.interrupt_requested.connect(self._interrupt_turn)
         self._hud.toggle_chat_requested.connect(self._toggle_chat)
+        self._hud.chat_send_requested.connect(self._send_chat_text)
         self._hud.toggle_settings_requested.connect(self._toggle_settings)
         self._hud.toggle_layout_requested.connect(self._toggle_layout)
         self._hud.set_layout_mode(self._layout_mode)
@@ -733,7 +855,8 @@ class QtAvatarShell(QWidget):
         self._refresh_hud_runtime_state()
 
     def _toggle_chat(self) -> None:
-        self.evaluate_js_requested.emit("window.__qtToggleChat?.();")
+        self._hud.toggle_chat_panel()
+        self._sync_hud_geometry()
 
     def _toggle_settings(self) -> None:
         self._hud.toggle_settings_panel()
@@ -742,3 +865,24 @@ class QtAvatarShell(QWidget):
     def _toggle_layout(self) -> None:
         next_layout = "expanded" if self._layout_mode == "compact" else "compact"
         self.set_layout_mode(next_layout)
+
+    def _send_chat_text(self, text: str) -> None:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+
+        try:
+            self._hud.set_chat_activity(cleaned, "Thinking...")
+            response = self._assistant.submit_text(cleaned) or {}
+        except Exception as exc:
+            self._hud.set_chat_activity(cleaned, f"Send failed: {exc}")
+            return
+
+        status = str(response.get("status") or "")
+        if status == "ok":
+            self._hud.set_chat_activity(cleaned, "Sent. Voice response is playing.")
+        elif status == "warming_up":
+            self._hud.set_chat_activity(cleaned, "Backend warming up...")
+        else:
+            message = response.get("message") or "Unable to send message."
+            self._hud.set_chat_activity(cleaned, str(message))
