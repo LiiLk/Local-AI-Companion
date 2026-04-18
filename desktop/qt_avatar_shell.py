@@ -80,6 +80,8 @@ class TransparentWebView(QWebEngineView):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent; border: 0;")
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
@@ -115,12 +117,17 @@ class QtAvatarShell(QWidget):
         self._window_origin: Optional[QPoint] = None
         self._layout_mode = "compact"
 
-        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+        flags = (
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
         if always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
         self.resize(width, height)
