@@ -12,7 +12,7 @@
             --line-soft: rgba(255, 255, 255, 0.14);
             --panel-bg: transparent;
             --panel-weak: transparent;
-            --panel-border: rgba(255, 255, 255, 0.2);
+            --panel-border: transparent;
             --panel-shadow: none;
             --accent: #7bd2ff;
             --ok: #8dffb2;
@@ -78,11 +78,11 @@
             background: transparent !important;
             pointer-events: none;
             z-index: 0;
-            transition: clip-path 180ms ease, filter 180ms ease;
+            transition: none;
         }
 
         body.layout-compact #live2d-canvas {
-            clip-path: inset(calc(100% - 488px) 12px 72px calc(100% - 368px) round 44px);
+            clip-path: none;
             filter: none;
         }
 
@@ -116,9 +116,11 @@
 
         .panel {
             pointer-events: auto;
-            border: 1px solid var(--panel-border);
-            background: var(--panel-bg);
-            box-shadow: var(--panel-shadow);
+            border: none;
+            background: transparent;
+            -webkit-backdrop-filter: none;
+            backdrop-filter: none;
+            box-shadow: none;
         }
 
         #bottom-stack {
@@ -192,8 +194,8 @@
             gap: 6px;
             padding: 11px 12px;
             border-radius: 16px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.14);
         }
 
         .settings-card label {
@@ -224,8 +226,8 @@
             height: 34px;
             padding: 0 12px;
             border-radius: 999px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            background: transparent;
             color: var(--text-main);
             font: inherit;
             font-size: 11px;
@@ -260,11 +262,11 @@
         }
 
         #user-bubble {
-            background: rgba(255, 255, 255, 0.08);
+            background: transparent;
         }
 
         #assistant-bubble {
-            background: rgba(123, 210, 255, 0.11);
+            background: transparent;
         }
 
         #composer {
@@ -281,9 +283,9 @@
         #text-input {
             width: 100%;
             height: 40px;
-            border: 1px solid rgba(255, 255, 255, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 14px;
-            background: rgba(255, 255, 255, 0.05);
+            background: transparent;
             color: var(--text-main);
             padding: 0 14px;
             outline: none;
@@ -305,7 +307,7 @@
             padding: 0 14px;
             border-radius: 999px;
             border: 1px solid rgba(123, 210, 255, 0.38);
-            background: linear-gradient(135deg, rgba(123, 210, 255, 0.32), rgba(123, 210, 255, 0.18));
+            background: transparent;
             color: var(--text-main);
             font: inherit;
             font-size: 12px;
@@ -344,7 +346,7 @@
             height: 9px;
             border-radius: 50%;
             background: var(--warn);
-            box-shadow: 0 0 18px rgba(255, 211, 107, 0.75);
+            box-shadow: none;
             flex: none;
         }
 
@@ -384,15 +386,7 @@
         }
 
         #avatar-orb::before {
-            content: "";
-            position: absolute;
-            inset: 28px 22px 18px 22px;
-            border-radius: 54px;
-            background:
-                radial-gradient(circle at 50% 14%, rgba(123, 210, 255, 0.24), transparent 38%),
-                radial-gradient(circle at 50% 76%, rgba(255, 181, 218, 0.14), transparent 44%);
-            filter: none;
-            z-index: -1;
+            display: none;
         }
 
         #avatar-orb span {
@@ -405,8 +399,8 @@
             align-items: center;
             justify-content: center;
             border-radius: 50%;
-            background: rgba(5, 9, 20, 0.22);
-            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.28);
             font-size: 10px;
             letter-spacing: 0.08em;
             text-transform: uppercase;
@@ -437,23 +431,22 @@
             min-width: 44px;
             padding: 0 12px;
             border-radius: 14px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.24);
+            background: transparent;
             color: var(--text-main);
             display: inline-flex;
             align-items: center;
             justify-content: center;
             gap: 6px;
             cursor: pointer;
-            transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+            transition: border-color 120ms ease, color 120ms ease;
             font: inherit;
         }
 
         .icon-button:hover,
         #layout-button:hover {
-            transform: translateY(-1px);
-            background: rgba(255, 255, 255, 0.1);
-            border-color: rgba(255, 255, 255, 0.24);
+            border-color: rgba(255, 255, 255, 0.45);
+            color: #ffffff;
         }
 
         .icon-button svg {
@@ -467,13 +460,13 @@
         }
 
         #interrupt-button {
-            background: rgba(255, 122, 122, 0.12);
-            border-color: rgba(255, 122, 122, 0.24);
+            background: transparent;
+            border-color: rgba(255, 122, 122, 0.36);
         }
 
         .icon-button.is-active {
-            border-color: rgba(123, 210, 255, 0.34);
-            background: rgba(123, 210, 255, 0.14);
+            border-color: rgba(123, 210, 255, 0.52);
+            background: transparent;
         }
 
         #dock-copy {
