@@ -197,8 +197,13 @@ class QtAvatarShell(QWidget):
         bottom_right = current_geometry.bottomRight()
         self.setGeometry(bottom_right.x() - width + 1, bottom_right.y() - height + 1, width, height)
         self._layout_mode = normalized
-        mode_handler = "window.setExpandedMode?.();" if normalized == "expanded" else "window.setCompactMode?.();"
-        QTimer.singleShot(0, lambda: self.evaluate_js_requested.emit(mode_handler))
+        mode_handler = (
+            "window.__desktopBridgeSetLayoutMode?.('expanded') || window.setExpandedMode?.();"
+            if normalized == "expanded"
+            else "window.__desktopBridgeSetLayoutMode?.('compact') || window.setCompactMode?.();"
+        )
+        # Wait one frame so QWebEngine has applied the new viewport before matrix recompute.
+        QTimer.singleShot(16, lambda: self.evaluate_js_requested.emit(mode_handler))
 
     @pyqtSlot(bool)
     def _on_load_finished(self, ok: bool) -> None:

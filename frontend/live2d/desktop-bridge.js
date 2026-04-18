@@ -129,6 +129,10 @@
     window[handlerName]?.(...args);
   }
 
+  function normalizeLayoutMode(layout) {
+    return layout === "expanded" ? "expanded" : "compact";
+  }
+
   function applyRuntime(runtime) {
     if (!runtime) {
       return;
@@ -341,14 +345,15 @@
     },
 
     async setLayoutMode(layout) {
+      const normalizedLayout = normalizeLayoutMode(layout);
       const kind = await ensureBridgeReady();
       if (kind === "qt") {
-        return callQt("setLayoutMode", layout);
+        return callQt("setLayoutMode", normalizedLayout);
       }
       if (kind === "pywebview" && typeof window.pywebview.api.set_layout_mode === "function") {
-        return window.pywebview.api.set_layout_mode(layout);
+        return window.pywebview.api.set_layout_mode(normalizedLayout);
       }
-      return { status: "ok", layout };
+      return { status: "ok", layout: normalizedLayout };
     },
 
     async startDrag(screenX, screenY) {

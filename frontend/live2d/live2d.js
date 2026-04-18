@@ -468,7 +468,9 @@ const Live2DManager = (() => {
     // ==================== Animation Updates ====================
 
     function updateProjectionMatrix() {
-        const aspect = _canvas.width / _canvas.height;
+        const width = Math.max(1, _canvas?.width || 1);
+        const height = Math.max(1, _canvas?.height || 1);
+        const aspect = width / height;
 
         _projectionMatrix = new Float32Array([
             _scale / aspect, 0, 0, 0,
@@ -476,6 +478,24 @@ const Live2DManager = (() => {
             0, 0, 1, 0,
             _position.x, _position.y, 0, 1
         ]);
+    }
+
+    function applyModelMatrix(matrix = {}) {
+        const nextScale = Number(matrix.scale);
+        const nextX = Number(matrix.translateX);
+        const nextY = Number(matrix.translateY);
+
+        if (Number.isFinite(nextScale) && nextScale > 0) {
+            _scale = nextScale;
+        }
+        if (Number.isFinite(nextX)) {
+            _position.x = nextX;
+        }
+        if (Number.isFinite(nextY)) {
+            _position.y = nextY;
+        }
+
+        updateProjectionMatrix();
     }
 
     function updateEyeBlink(deltaTime) {
@@ -975,14 +995,23 @@ const Live2DManager = (() => {
         },
 
         setPosition(x, y) {
-            _position.x = x;
-            _position.y = y;
-            updateProjectionMatrix();
+            applyModelMatrix({
+                scale: _scale,
+                translateX: x,
+                translateY: y,
+            });
         },
 
         setScale(scale) {
-            _scale = scale;
-            updateProjectionMatrix();
+            applyModelMatrix({
+                scale,
+                translateX: _position.x,
+                translateY: _position.y,
+            });
+        },
+
+        setModelMatrix(matrix) {
+            applyModelMatrix(matrix);
         },
 
         // Motions (stub)

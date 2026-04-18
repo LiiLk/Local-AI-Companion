@@ -11,10 +11,10 @@
             --text-dim: rgba(238, 246, 255, 0.72);
             --text-soft: rgba(238, 246, 255, 0.48);
             --line-soft: rgba(255, 255, 255, 0.14);
-            --panel-bg: rgba(9, 16, 28, 0.84);
-            --panel-weak: rgba(9, 17, 29, 0.44);
-            --panel-border: rgba(255, 255, 255, 0.14);
-            --panel-shadow: 0 20px 48px rgba(0, 0, 0, 0.22);
+            --panel-bg: transparent;
+            --panel-weak: transparent;
+            --panel-border: rgba(255, 255, 255, 0.2);
+            --panel-shadow: none;
             --accent: #7bd2ff;
             --ok: #8dffb2;
             --warn: #ffd36b;
@@ -82,7 +82,7 @@
 
         body.layout-compact #live2d-canvas {
             clip-path: inset(calc(100% - 488px) 12px 72px calc(100% - 368px) round 44px);
-            filter: drop-shadow(0 28px 42px rgba(0, 0, 0, 0.42));
+            filter: none;
         }
 
         body.layout-expanded #live2d-canvas {
@@ -331,7 +331,7 @@
             gap: 10px;
             padding: 12px 16px;
             border-radius: 22px;
-            background: rgba(8, 16, 29, 0.58);
+            background: transparent;
         }
 
         body.layout-compact #status-chip {
@@ -390,7 +390,7 @@
             background:
                 radial-gradient(circle at 50% 14%, rgba(123, 210, 255, 0.24), transparent 38%),
                 radial-gradient(circle at 50% 76%, rgba(255, 181, 218, 0.14), transparent 44%);
-            filter: blur(20px);
+            filter: none;
             z-index: -1;
         }
 
@@ -423,7 +423,7 @@
             gap: 8px;
             padding: 10px;
             border-radius: 22px;
-            background: rgba(9, 17, 31, 0.72);
+            background: transparent;
         }
 
         body.layout-compact #dock {
@@ -728,16 +728,28 @@
         const AVATAR_LAYOUTS = {
             compact: {
                 reference: { width: 860, height: 760 },
-                scaleRange: { min: 1.22, max: 1.42, base: 1.34 },
-                position: { x: 0.82, y: 0.3 },
+                matrix: {
+                    baseScale: 1.34,
+                    minScale: 1.22,
+                    maxScale: 1.46,
+                    translateX: 0.82,
+                    translateY: 0.32,
+                    viewportYOffset: 0.12,
+                },
                 buttonLabel: 'Expand',
                 dockCaption: 'Portrait companion shell',
                 settingsLabel: 'Compact',
             },
             expanded: {
                 reference: { width: 1040, height: 980 },
-                scaleRange: { min: 0.56, max: 0.72, base: 0.64 },
-                position: { x: 0.5, y: -0.1 },
+                matrix: {
+                    baseScale: 0.64,
+                    minScale: 0.54,
+                    maxScale: 0.74,
+                    translateX: 0.5,
+                    translateY: -0.08,
+                    viewportYOffset: 0.04,
+                },
                 buttonLabel: 'Reduce',
                 dockCaption: 'Expanded full-body shell',
                 settingsLabel: 'Expanded',
@@ -794,28 +806,51 @@
             avatarReady: false,
             avatarInitPromise: null,
             resizeApplyRaf: null,
+            backendKindPromise: null,
         };
 
         function clamp(value, min, max) {
             return Math.min(max, Math.max(min, value));
         }
 
-        function computeLayoutTransform(layoutName) {
+        function normalizeLayout(layoutName) {
+            return layoutName === 'expanded' ? 'expanded' : 'compact';
+        }
+
+        async function ensureBackendKind() {
+            if (state.backend) {
+                return state.backend;
+            }
+            if (!state.backendKindPromise) {
+                state.backendKindPromise = window.DesktopBridge.kind()
+                    .then((kind) => {
+                        state.backend = kind;
+                        return kind;
+                    })
+                    .catch((error) => {
+                        state.backendKindPromise = null;
+                        throw error;
+                    });
+            }
+            return state.backendKindPromise;
+        }
+
+        function computeLayoutMatrix(layoutName) {
             const layout = AVATAR_LAYOUTS[layoutName];
-            const widthRatio = layout.reference.width / Math.max(window.innerWidth, 1);
-            const heightRatio = layout.reference.height / Math.max(window.innerHeight, 1);
-            const dominantRatio = layoutName === 'compact'
-                ? Math.max(widthRatio * 0.42, heightRatio * 0.92)
-                : Math.max(widthRatio * 0.44, heightRatio * 0.68);
+            const widthRatio = window.innerWidth / Math.max(layout.reference.width, 1);
+            const heightRatio = window.innerHeight / Math.max(layout.reference.height, 1);
+            const viewportRatio = clamp(Math.min(widthRatio, heightRatio), 0.84, 1.18);
             const scale = clamp(
-                layout.scaleRange.base * dominantRatio,
-                layout.scaleRange.min,
-                layout.scaleRange.max,
+                layout.matrix.baseScale * viewportRatio,
+                layout.matrix.minScale,
+                layout.matrix.maxScale,
             );
+            const viewportCompensation = (1 - viewportRatio) * layout.matrix.viewportYOffset;
 
             return {
                 scale,
-                position: { ...layout.position },
+                translateX: layout.matrix.translateX,
+                translateY: layout.matrix.translateY + viewportCompensation,
             };
         }
 
@@ -1116,13 +1151,13 @@
                 await loadScript(LIVE2D_CORE_SRC);
                 await loadScript(LIVE2D_MANAGER_SRC);
 
-                const layout = computeLayoutTransform(state.layout);
+                const matrix = computeLayoutMatrix(state.layout);
                 await Live2DManager.init({
                     canvasId: 'live2d-canvas',
                     modelPath: MARCH7TH_MODEL_PATH,
                     modelName: 'march7th.model3.json',
-                    scale: layout.scale,
-                    position: layout.position,
+                    scale: matrix.scale,
+                    position: { x: matrix.translateX, y: matrix.translateY },
                     debug: true,
                 });
 
@@ -1132,38 +1167,53 @@
             return state.avatarInitPromise;
         }
 
-        async function applyAvatarLayout() {
-            const layoutMeta = AVATAR_LAYOUTS[state.layout];
-            const layout = computeLayoutTransform(state.layout);
-            await ensureAvatar();
-            Live2DManager.setScale(layout.scale);
-            Live2DManager.setPosition(layout.position.x, layout.position.y);
+        function applyLayoutClass(layoutName) {
+            document.body.classList.remove('layout-compact', 'layout-expanded');
+            document.body.classList.add(`layout-${layoutName}`);
+        }
+
+        function syncLayoutMetadata(layoutName) {
+            const layoutMeta = AVATAR_LAYOUTS[layoutName];
             ui.layoutButton.textContent = layoutMeta.buttonLabel;
             ui.dockCaption.textContent = layoutMeta.dockCaption;
             ui.settingsLayout.textContent = layoutMeta.settingsLabel;
-            ui.avatarOrb.setAttribute('aria-label', state.layout === 'compact' ? 'Expand companion' : 'Reduce companion');
+            ui.avatarOrb.setAttribute('aria-label', layoutName === 'compact' ? 'Expand companion' : 'Reduce companion');
+        }
+
+        async function applyAvatarLayout(layoutName = state.layout) {
+            const normalized = normalizeLayout(layoutName);
+            state.layout = normalized;
+            applyLayoutClass(normalized);
+            syncLayoutMetadata(normalized);
+
+            const matrix = computeLayoutMatrix(normalized);
+            await ensureAvatar();
+            if (typeof Live2DManager.setModelMatrix === 'function') {
+                Live2DManager.setModelMatrix(matrix);
+            } else {
+                Live2DManager.setScale(matrix.scale);
+                Live2DManager.setPosition(matrix.translateX, matrix.translateY);
+            }
         }
 
         async function setLayout(layout) {
-            state.layout = layout;
-            document.body.classList.remove('layout-compact', 'layout-expanded');
-            document.body.classList.add(`layout-${layout}`);
-            await window.DesktopBridge.setLayoutMode(layout);
-            await applyAvatarLayout();
+            const normalized = normalizeLayout(layout);
+            state.layout = normalized;
+            const backendKind = await ensureBackendKind();
+            await window.DesktopBridge.setLayoutMode(normalized);
+
+            // Qt applies viewport changes first, then calls back into JS to apply matrix.
+            if (backendKind !== 'qt') {
+                await applyAvatarLayout(normalized);
+            }
         }
 
         async function setCompactMode() {
-            state.layout = 'compact';
-            document.body.classList.remove('layout-expanded');
-            document.body.classList.add('layout-compact');
-            await applyAvatarLayout();
+            await applyAvatarLayout('compact');
         }
 
         async function setExpandedMode() {
-            state.layout = 'expanded';
-            document.body.classList.remove('layout-compact');
-            document.body.classList.add('layout-expanded');
-            await applyAvatarLayout();
+            await applyAvatarLayout('expanded');
         }
 
         function toggleLayout() {
@@ -1534,6 +1584,16 @@
             },
             getExpressions: () => Live2DManager.getExpressionNames(),
             getMotions: () => Live2DManager.getMotionGroups(),
+        };
+
+        window.__desktopBridgeSetLayoutMode = (layout) => {
+            const normalized = normalizeLayout(layout);
+            const applyLayout = normalized === 'expanded' ? setExpandedMode : setCompactMode;
+            applyLayout().catch((error) => {
+                console.error(error);
+                setError(error.message);
+            });
+            return true;
         };
 
         window.setCompactMode = () => setCompactMode().catch((error) => {
