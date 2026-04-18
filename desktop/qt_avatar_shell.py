@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QObject, QPoint, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QPoint, QSettings, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
@@ -307,6 +307,14 @@ class HudOverlay(QWidget):
                 color: rgba(198, 215, 236, 0.78);
                 font-size: 9px;
             }
+            QLabel#quitHintLabel {
+                color: rgba(225, 238, 255, 0.86);
+                font-size: 9px;
+                background: rgba(123, 210, 255, 0.12);
+                border: 1px solid rgba(123, 210, 255, 0.28);
+                border-radius: 7px;
+                padding: 2px 7px;
+            }
             QPushButton {
                 min-width: 44px;
                 height: 33px;
@@ -357,6 +365,9 @@ class HudOverlay(QWidget):
         self._status_label.setObjectName("statusLabel")
         self._meta_label = QLabel("Desktop mascot overlay", root)
         self._meta_label.setObjectName("metaLabel")
+        self._quit_hint_label = QLabel("Quit: Ctrl+Shift+Q", root)
+        self._quit_hint_label.setObjectName("quitHintLabel")
+        self._quit_hint_label.hide()
 
         self._mute_button = QPushButton("MIC", root)
         self._mute_button.setObjectName("muteButton")
@@ -384,6 +395,7 @@ class HudOverlay(QWidget):
         root_layout.addWidget(self._drag_handle)
         root_layout.addLayout(status_row)
         root_layout.addWidget(self._meta_label)
+        root_layout.addWidget(self._quit_hint_label)
         root_layout.addLayout(buttons_layout)
 
         self._mute_button.clicked.connect(self.toggle_mute_requested)
@@ -394,6 +406,9 @@ class HudOverlay(QWidget):
         self._drag_handle.drag_started.connect(self._on_drag_started)
         self._drag_handle.drag_moved.connect(self._on_drag_moved)
         self._drag_handle.drag_ended.connect(self._on_drag_ended)
+        self._drag_handle.setToolTip("Drag avatar. Quit: Ctrl+Shift+Q")
+        self._settings_button.setToolTip("Settings")
+        self._layout_button.setToolTip("Switch compact/expanded")
 
         self.adjustSize()
 
@@ -441,6 +456,10 @@ class HudOverlay(QWidget):
     def apply_native_style(self) -> None:
         _apply_windows_borderless_style(self, click_through=False, no_activate=False)
 
+    def show_quit_hint(self, visible: bool) -> None:
+        self._quit_hint_label.setVisible(bool(visible))
+        self.adjustSize()
+
 
 class QtAvatarShell(QWidget):
     evaluate_js_requested = pyqtSignal(str)
@@ -463,6 +482,7 @@ class QtAvatarShell(QWidget):
         self._assistant = assistant
         self._html_path = html_path
         self._loaded_callback: Optional[Callable[[], None]] = None
+        self._ui_settings = QSettings("LocalAICompanion", "DesktopShell")
         self._drag_origin: Optional[QPoint] = None
         self._window_origin: Optional[QPoint] = None
         self._layout_mode = "compact"
@@ -530,6 +550,7 @@ class QtAvatarShell(QWidget):
         self._hud.raise_()
         self._hud_state_timer.start()
         self._refresh_hud_runtime_state()
+        self._maybe_show_quit_hint_once()
         return self._app.exec()
 
     def evaluate_js(self, code: str) -> None:
@@ -616,6 +637,20 @@ class QtAvatarShell(QWidget):
         x = frame.x() + frame.width() - width - 22
         y = frame.y() + frame.height() - height - 18
         self._hud.setGeometry(x, y, width, height)
+
+    def _maybe_show_quit_hint_once(self) -> None:
+        seen = self._ui_settings.value("hints/quit_shortcut_seen", False, type=bool)
+        if seen:
+            return
+        self._hud.show_quit_hint(True)
+        self._sync_hud_geometry()
+        QTimer.singleShot(4200, self._dismiss_quit_hint_once)
+
+    def _dismiss_quit_hint_once(self) -> None:
+        self._hud.show_quit_hint(False)
+        self._sync_hud_geometry()
+        self._ui_settings.setValue("hints/quit_shortcut_seen", True)
+        self._ui_settings.sync()
 
     def _refresh_hud_runtime_state(self) -> None:
         try:
