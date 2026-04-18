@@ -10,7 +10,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 
 LAYOUT_SIZES: dict[str, tuple[int, int]] = {
@@ -98,6 +98,37 @@ class TransparentWebView(QWebEngineView):
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
 
 
+class DragHandle(QWidget):
+    drag_started = pyqtSignal(QPoint)
+    drag_moved = pyqtSignal(QPoint)
+    drag_ended = pyqtSignal()
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setFixedHeight(20)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.drag_started.emit(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.drag_moved.emit(event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.drag_ended.emit()
+        super().mouseReleaseEvent(event)
+
+
 class HudOverlay(QWidget):
     toggle_mute_requested = pyqtSignal()
     interrupt_requested = pyqtSignal()
@@ -131,6 +162,21 @@ class HudOverlay(QWidget):
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 16px;
             }
+            QWidget#dragHandle {
+                background: rgba(255, 255, 255, 0.09);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 8px;
+            }
+            QLabel#statusLabel {
+                color: rgba(235, 245, 255, 0.94);
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+            }
+            QLabel#metaLabel {
+                color: rgba(235, 245, 255, 0.68);
+                font-size: 10px;
+            }
             QPushButton {
                 min-width: 44px;
                 height: 34px;
@@ -155,13 +201,28 @@ class HudOverlay(QWidget):
 
         root = QWidget(self)
         root.setObjectName("hudRoot")
-        root_layout = QHBoxLayout(root)
+        root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(10, 8, 10, 8)
-        root_layout.setSpacing(6)
+        root_layout.setSpacing(5)
 
         container = QVBoxLayout(self)
         container.setContentsMargins(0, 0, 0, 0)
         container.addWidget(root)
+
+        self._drag_handle = DragHandle(root)
+        self._drag_handle.setObjectName("dragHandle")
+        drag_layout = QHBoxLayout(self._drag_handle)
+        drag_layout.setContentsMargins(8, 0, 8, 0)
+        drag_layout.setSpacing(0)
+        drag_hint = QLabel("DRAG", self._drag_handle)
+        drag_hint.setStyleSheet("color: rgba(245, 250, 255, 0.82); font-size: 10px; font-weight: 700;")
+        drag_layout.addWidget(drag_hint)
+        drag_layout.addStretch(1)
+
+        self._status_label = QLabel("LISTENING", root)
+        self._status_label.setObjectName("statusLabel")
+        self._meta_label = QLabel("Desktop mascot overlay", root)
+        self._meta_label.setObjectName("metaLabel")
 
         self._mute_button = QPushButton("MIC", root)
         self._mute_button.setObjectName("muteButton")
@@ -170,17 +231,28 @@ class HudOverlay(QWidget):
         self._settings_button = QPushButton("SET", root)
         self._layout_button = QPushButton("EXPAND", root)
 
-        root_layout.addWidget(self._mute_button)
-        root_layout.addWidget(self._stop_button)
-        root_layout.addWidget(self._chat_button)
-        root_layout.addWidget(self._settings_button)
-        root_layout.addWidget(self._layout_button)
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(6)
+        buttons_layout.addWidget(self._mute_button)
+        buttons_layout.addWidget(self._stop_button)
+        buttons_layout.addWidget(self._chat_button)
+        buttons_layout.addWidget(self._settings_button)
+        buttons_layout.addWidget(self._layout_button)
+
+        root_layout.addWidget(self._drag_handle)
+        root_layout.addWidget(self._status_label)
+        root_layout.addWidget(self._meta_label)
+        root_layout.addLayout(buttons_layout)
 
         self._mute_button.clicked.connect(self.toggle_mute_requested)
         self._stop_button.clicked.connect(self.interrupt_requested)
         self._chat_button.clicked.connect(self.toggle_chat_requested)
         self._settings_button.clicked.connect(self.toggle_settings_requested)
         self._layout_button.clicked.connect(self.toggle_layout_requested)
+        self._drag_handle.drag_started.connect(self._on_drag_started)
+        self._drag_handle.drag_moved.connect(self._on_drag_moved)
+        self._drag_handle.drag_ended.connect(self._on_drag_ended)
 
         self.adjustSize()
 
@@ -192,28 +264,23 @@ class HudOverlay(QWidget):
         self._mute_button.style().unpolish(self._mute_button)
         self._mute_button.style().polish(self._mute_button)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton:
-            target = self.childAt(event.position().toPoint())
-            if not isinstance(target, QPushButton):
-                self._drag_origin = event.globalPosition().toPoint()
-                self._shell_origin = self._shell.frameGeometry().topLeft()
-                event.accept()
-                return
-        super().mousePressEvent(event)
+    def set_status(self, text: str, meta: str = "") -> None:
+        self._status_label.setText((text or "LISTENING").upper())
+        self._meta_label.setText(meta or "Desktop mascot overlay")
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+    def _on_drag_started(self, screen_pos: QPoint) -> None:
+        self._drag_origin = screen_pos
+        self._shell_origin = self._shell.frameGeometry().topLeft()
+
+    def _on_drag_moved(self, screen_pos: QPoint) -> None:
         if self._drag_origin is None or self._shell_origin is None:
-            super().mouseMoveEvent(event)
             return
-        delta = event.globalPosition().toPoint() - self._drag_origin
+        delta = screen_pos - self._drag_origin
         self._shell.move(self._shell_origin + delta)
-        event.accept()
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+    def _on_drag_ended(self) -> None:
         self._drag_origin = None
         self._shell_origin = None
-        super().mouseReleaseEvent(event)
 
 
 class QtAvatarShell(QWidget):
@@ -392,8 +459,22 @@ class QtAvatarShell(QWidget):
             runtime = self._assistant.get_runtime_state() or {}
         except Exception:
             return
+        backend_state = runtime.get("backend_state") or "warming_up"
         muted = runtime.get("mic_state") == "muted"
         self._hud.set_mute_active(bool(muted))
+        status = "listening"
+        if backend_state == "error":
+            status = "error"
+        elif backend_state == "warming_up":
+            status = "warming up"
+        elif muted:
+            status = "muted"
+        elif runtime.get("response_active") or runtime.get("playback_active"):
+            status = "speaking"
+        elif backend_state == "degraded":
+            status = "degraded"
+        model_name = runtime.get("active_llm_model") or runtime.get("character_name") or "desktop mascot"
+        self._hud.set_status(status, str(model_name))
 
     def _toggle_mute(self) -> None:
         try:
@@ -401,18 +482,20 @@ class QtAvatarShell(QWidget):
         except Exception:
             return
         self._hud.set_mute_active(runtime.get("mic_state") == "muted")
+        self._refresh_hud_runtime_state()
 
     def _interrupt_turn(self) -> None:
         try:
             self._assistant.request_interrupt("qt_hud")
         except Exception:
             return
+        self._refresh_hud_runtime_state()
 
     def _toggle_chat(self) -> None:
-        self.evaluate_js_requested.emit("document.getElementById('chat-toggle-button')?.click();")
+        self.evaluate_js_requested.emit("window.__qtToggleChat?.();")
 
     def _toggle_settings(self) -> None:
-        self.evaluate_js_requested.emit("document.getElementById('settings-button')?.click();")
+        self.evaluate_js_requested.emit("window.__qtToggleSettings?.();")
 
     def _toggle_layout(self) -> None:
         next_layout = "expanded" if self._layout_mode == "compact" else "compact"

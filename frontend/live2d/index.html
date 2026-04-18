@@ -44,6 +44,19 @@
             background: transparent;
         }
 
+        body,
+        #live2d-container,
+        canvas,
+        .panel {
+            background: transparent !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            box-shadow: none !important;
+            clip-path: none !important;
+            filter: none !important;
+        }
+
         button,
         input,
         textarea,
@@ -69,8 +82,16 @@
             --avatar-orb-bottom: 146px;
         }
 
-        #live2d-canvas {
+        #live2d-container {
             position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            background: transparent !important;
+        }
+
+        #live2d-canvas {
+            position: absolute;
             inset: 0;
             width: 100%;
             height: 100%;
@@ -116,7 +137,7 @@
         }
 
         body.qt-external-hud #window-drag-surface,
-        body.qt-external-hud #shell {
+        body.qt-external-hud #companion-cluster {
             display: none !important;
             pointer-events: none !important;
         }
@@ -583,7 +604,9 @@
     </style>
 </head>
 <body class="layout-compact hud-visible">
-    <canvas id="live2d-canvas" style="background: transparent;"></canvas>
+    <div id="live2d-container">
+        <canvas id="live2d-canvas" style="background: transparent;"></canvas>
+    </div>
     <div id="window-drag-surface"></div>
 
     <div id="shell">
@@ -1758,6 +1781,16 @@
                 console.error(error);
                 setError(error.message);
             });
+            return true;
+        };
+
+        window.__qtToggleChat = () => {
+            toggleChat();
+            return true;
+        };
+
+        window.__qtToggleSettings = () => {
+            toggleSettings();
             return true;
         };
 
