@@ -965,50 +965,49 @@ class Live2DAssistant:
             logger.warning("pynput not available, hotkeys disabled")
             return
 
-        pressed_keys = set()
-        quit_combo_latched = False
+        quit_requested = False
 
-        def ctrl_pressed() -> bool:
-            return keyboard.Key.ctrl_l in pressed_keys or keyboard.Key.ctrl_r in pressed_keys
-
-        def shift_pressed() -> bool:
-            return keyboard.Key.shift_l in pressed_keys or keyboard.Key.shift_r in pressed_keys
-
-        def on_press(key):
-            nonlocal quit_combo_latched
+        def on_toggle_mute():
             try:
-                pressed_keys.add(key)
-
-                if key == keyboard.Key.f2:
-                    runtime = self.toggle_mute()
-                    logger.info("F2 toggle mute -> %s", runtime.get("mic_state"))
-                    
-                elif key == keyboard.Key.f3:
-                    runtime = self.request_interrupt("hotkey")
-                    logger.info("F3 interrupt -> turn=%s", runtime.get("turn_id"))
-                    
-                elif key == keyboard.Key.f12:
-                    runtime = self.toggle_debug()
-                    logger.info("F12 debug -> visible=%s", runtime.get("debug_visible"))
-
-                elif ctrl_pressed() and shift_pressed():
-                    key_char = getattr(key, "char", None)
-                    if key_char and str(key_char).lower() == "q" and not quit_combo_latched:
-                        quit_combo_latched = True
-                        logger.info("👋 Quit requested (Ctrl+Shift+Q)")
-                        self.stop()
-
+                runtime = self.toggle_mute()
+                logger.info("F2 toggle mute -> %s", runtime.get("mic_state"))
             except Exception as e:
                 logger.error(f"Hotkey error: {e}")
 
-        def on_release(key):
-            nonlocal quit_combo_latched
-            pressed_keys.discard(key)
-            # Re-arm quit combo when modifier keys are no longer fully pressed.
-            if not (ctrl_pressed() and shift_pressed()):
-                quit_combo_latched = False
+        def on_interrupt():
+            try:
+                runtime = self.request_interrupt("hotkey")
+                logger.info("F3 interrupt -> turn=%s", runtime.get("turn_id"))
+            except Exception as e:
+                logger.error(f"Hotkey error: {e}")
 
-        self._hotkey_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        def on_toggle_debug():
+            try:
+                runtime = self.toggle_debug()
+                logger.info("F12 debug -> visible=%s", runtime.get("debug_visible"))
+            except Exception as e:
+                logger.error(f"Hotkey error: {e}")
+
+        def on_quit():
+            nonlocal quit_requested
+            try:
+                if quit_requested:
+                    return
+                quit_requested = True
+                logger.info("👋 Quit requested (Ctrl+Shift+Q)")
+                # Run stop out of the pynput callback thread.
+                threading.Thread(target=self.stop, daemon=True, name="HotkeyQuit").start()
+            except Exception as e:
+                logger.error(f"Hotkey error: {e}")
+
+        self._hotkey_listener = keyboard.GlobalHotKeys(
+            {
+                "<f2>": on_toggle_mute,
+                "<f3>": on_interrupt,
+                "<f12>": on_toggle_debug,
+                "<ctrl>+<shift>+q": on_quit,
+            }
+        )
         self._hotkey_listener.start()
         logger.info("⌨️ Hotkeys enabled: F2=mute, F3=interrupt, F12=toggle, Ctrl+Shift+Q=quit")
     
