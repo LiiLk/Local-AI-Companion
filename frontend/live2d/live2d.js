@@ -42,6 +42,7 @@ const Live2DManager = (() => {
     let _projectionMatrix = null;
     let _scale = 1.0;
     let _position = { x: 0, y: 0 };
+    let _modelBounds = null;
 
     // Lip sync
     let _lipSyncValue = 0;
@@ -465,10 +466,59 @@ const Live2DManager = (() => {
         return index !== undefined ? _model.parameters.values[index] : 0;
     }
 
+    function computeModelBounds() {
+        if (!_model?.drawables?.vertexPositions) {
+            return null;
+        }
+
+        const vertexPositions = _model.drawables.vertexPositions;
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (const positions of vertexPositions) {
+            if (!positions || positions.length < 2) {
+                continue;
+            }
+            for (let i = 0; i < positions.length - 1; i += 2) {
+                const x = positions[i];
+                const y = positions[i + 1];
+                if (!Number.isFinite(x) || !Number.isFinite(y)) {
+                    continue;
+                }
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+
+        if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+            return null;
+        }
+
+        const width = Math.max(0.0001, maxX - minX);
+        const height = Math.max(0.0001, maxY - minY);
+        _modelBounds = {
+            minX,
+            maxX,
+            minY,
+            maxY,
+            width,
+            height,
+            centerX: (minX + maxX) * 0.5,
+            centerY: (minY + maxY) * 0.5,
+        };
+        return _modelBounds;
+    }
+
     // ==================== Animation Updates ====================
 
     function updateProjectionMatrix() {
-        const aspect = _canvas.width / _canvas.height;
+        const width = Math.max(1, _canvas?.width || 1);
+        const height = Math.max(1, _canvas?.height || 1);
+        const aspect = width / height;
 
         _projectionMatrix = new Float32Array([
             _scale / aspect, 0, 0, 0,
@@ -476,6 +526,24 @@ const Live2DManager = (() => {
             0, 0, 1, 0,
             _position.x, _position.y, 0, 1
         ]);
+    }
+
+    function applyModelMatrix(matrix = {}) {
+        const nextScale = Number(matrix.scale);
+        const nextX = Number(matrix.translateX);
+        const nextY = Number(matrix.translateY);
+
+        if (Number.isFinite(nextScale) && nextScale > 0) {
+            _scale = nextScale;
+        }
+        if (Number.isFinite(nextX)) {
+            _position.x = nextX;
+        }
+        if (Number.isFinite(nextY)) {
+            _position.y = nextY;
+        }
+
+        updateProjectionMatrix();
     }
 
     function updateEyeBlink(deltaTime) {
@@ -840,6 +908,8 @@ const Live2DManager = (() => {
                     if (modelNameEl) modelNameEl.textContent = config.modelName;
                 }
 
+                _model.update();
+                computeModelBounds();
                 updateProjectionMatrix();
                 setupMouseTracking();
                 await setupAudioAnalysis();
@@ -975,14 +1045,23 @@ const Live2DManager = (() => {
         },
 
         setPosition(x, y) {
-            _position.x = x;
-            _position.y = y;
-            updateProjectionMatrix();
+            applyModelMatrix({
+                scale: _scale,
+                translateX: x,
+                translateY: y,
+            });
         },
 
         setScale(scale) {
-            _scale = scale;
-            updateProjectionMatrix();
+            applyModelMatrix({
+                scale,
+                translateX: _position.x,
+                translateY: _position.y,
+            });
+        },
+
+        setModelMatrix(matrix) {
+            applyModelMatrix(matrix);
         },
 
         // Motions (stub)
@@ -1006,6 +1085,13 @@ const Live2DManager = (() => {
 
         getFPS() {
             return _fps;
+        },
+
+        getModelBounds() {
+            if (!_modelBounds) {
+                computeModelBounds();
+            }
+            return _modelBounds ? { ..._modelBounds } : null;
         }
     };
 })();
