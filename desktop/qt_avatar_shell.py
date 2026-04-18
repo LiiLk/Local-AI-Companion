@@ -88,8 +88,10 @@ class TransparentWebView(QWebEngineView):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAutoFillBackground(False)
-        self.setStyleSheet("background: transparent; border: 0;")
+        self.setStyleSheet("background: transparent; border: 0; outline: 0;")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.page().setBackgroundColor(QColor(0, 0, 0, 0))
         settings = self.settings()
@@ -158,43 +160,48 @@ class HudOverlay(QWidget):
         self.setStyleSheet(
             """
             QWidget#hudRoot {
-                background: rgba(0, 0, 0, 0.42);
-                border: 1px solid rgba(255, 255, 255, 0.16);
-                border-radius: 16px;
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(16, 19, 29, 236),
+                    stop:1 rgba(10, 12, 20, 224)
+                );
+                border: 1px solid rgba(255, 255, 255, 0.09);
+                border-radius: 14px;
             }
             QWidget#dragHandle {
-                background: rgba(255, 255, 255, 0.09);
-                border: 1px solid rgba(255, 255, 255, 0.16);
-                border-radius: 8px;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 7px;
             }
             QLabel#statusLabel {
-                color: rgba(235, 245, 255, 0.94);
-                font-size: 11px;
+                color: rgba(233, 243, 255, 0.96);
+                font-size: 10px;
                 font-weight: 700;
-                letter-spacing: 0.08em;
+                letter-spacing: 0.1em;
             }
             QLabel#metaLabel {
-                color: rgba(235, 245, 255, 0.68);
-                font-size: 10px;
+                color: rgba(198, 215, 236, 0.78);
+                font-size: 9px;
             }
             QPushButton {
                 min-width: 44px;
-                height: 34px;
-                border: 1px solid rgba(255, 255, 255, 0.26);
-                border-radius: 10px;
-                background: rgba(255, 255, 255, 0.02);
-                color: #f4f8ff;
-                font-size: 11px;
+                height: 33px;
+                border: 1px solid rgba(255, 255, 255, 0.18);
+                border-radius: 9px;
+                background: rgba(255, 255, 255, 0.03);
+                color: #e7f2ff;
+                font-size: 10px;
                 font-weight: 700;
                 padding: 0 9px;
             }
             QPushButton:hover {
-                border-color: rgba(255, 255, 255, 0.42);
-                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(145, 196, 255, 0.54);
+                background: rgba(124, 176, 255, 0.16);
             }
             QPushButton#muteButton[active="true"] {
-                border-color: rgba(255, 122, 122, 0.72);
-                color: #ffd1d1;
+                border-color: rgba(255, 128, 128, 0.7);
+                background: rgba(255, 122, 122, 0.18);
+                color: #ffd6d6;
             }
             """
         )
@@ -214,8 +221,8 @@ class HudOverlay(QWidget):
         drag_layout = QHBoxLayout(self._drag_handle)
         drag_layout.setContentsMargins(8, 0, 8, 0)
         drag_layout.setSpacing(0)
-        drag_hint = QLabel("DRAG", self._drag_handle)
-        drag_hint.setStyleSheet("color: rgba(245, 250, 255, 0.82); font-size: 10px; font-weight: 700;")
+        drag_hint = QLabel("  • • •  DRAG  • • •", self._drag_handle)
+        drag_hint.setStyleSheet("color: rgba(240, 248, 255, 0.72); font-size: 9px; font-weight: 700;")
         drag_layout.addWidget(drag_hint)
         drag_layout.addStretch(1)
 
@@ -309,7 +316,7 @@ class QtAvatarShell(QWidget):
         self._layout_mode = "compact"
 
         flags = (
-            Qt.WindowType.Window
+            Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.NoDropShadowWindowHint
             | Qt.WindowType.WindowTransparentForInput
@@ -321,8 +328,10 @@ class QtAvatarShell(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent;")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.resize(width, height)
         if x is not None and y is not None:
             self.move(x, y)
