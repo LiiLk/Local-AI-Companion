@@ -356,6 +356,26 @@
       return { status: "ok", layout: normalizedLayout };
     },
 
+    async setHudInteractiveRect(rect) {
+      const kind = await ensureBridgeReady();
+      const normalized = {
+        x: Math.round(Number(rect?.x) || 0),
+        y: Math.round(Number(rect?.y) || 0),
+        width: Math.max(0, Math.round(Number(rect?.width) || 0)),
+        height: Math.max(0, Math.round(Number(rect?.height) || 0)),
+      };
+      if (kind === "qt") {
+        return callQt(
+          "setHudInteractiveRect",
+          normalized.x,
+          normalized.y,
+          normalized.width,
+          normalized.height,
+        );
+      }
+      return { status: "ignored", rect: normalized };
+    },
+
     async startDrag(screenX, screenY) {
       const kind = await ensureBridgeReady();
       if (kind === "qt") {
