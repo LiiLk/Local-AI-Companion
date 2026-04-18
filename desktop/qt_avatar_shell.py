@@ -79,6 +79,8 @@ class TransparentWebView(QWebEngineView):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
         self.setStyleSheet("background: transparent; border: 0;")
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self.page().setBackgroundColor(QColor(0, 0, 0, 0))

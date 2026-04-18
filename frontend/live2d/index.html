@@ -1208,11 +1208,11 @@
             }
         }
 
-        async function setCompactMode() {
+        async function applyCompactMode() {
             await applyAvatarLayout('compact');
         }
 
-        async function setExpandedMode() {
+        async function applyExpandedMode() {
             await applyAvatarLayout('expanded');
         }
 
@@ -1588,7 +1588,7 @@
 
         window.__desktopBridgeSetLayoutMode = (layout) => {
             const normalized = normalizeLayout(layout);
-            const applyLayout = normalized === 'expanded' ? setExpandedMode : setCompactMode;
+            const applyLayout = normalized === 'expanded' ? applyExpandedMode : applyCompactMode;
             applyLayout().catch((error) => {
                 console.error(error);
                 setError(error.message);
@@ -1596,12 +1596,12 @@
             return true;
         };
 
-        window.setCompactMode = () => setCompactMode().catch((error) => {
+        window.setCompactMode = () => applyCompactMode().catch((error) => {
             console.error(error);
             setError(error.message);
         });
 
-        window.setExpandedMode = () => setExpandedMode().catch((error) => {
+        window.setExpandedMode = () => applyExpandedMode().catch((error) => {
             console.error(error);
             setError(error.message);
         });
