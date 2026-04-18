@@ -10,7 +10,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 if sys.platform == "win32":
     import ctypes
@@ -298,6 +298,11 @@ class HudOverlay(QWidget):
                 font-weight: 700;
                 letter-spacing: 0.1em;
             }
+            QFrame#statusDot {
+                background: rgba(141, 255, 178, 0.95);
+                border: 1px solid rgba(226, 244, 255, 0.28);
+                border-radius: 4px;
+            }
             QLabel#metaLabel {
                 color: rgba(198, 215, 236, 0.78);
                 font-size: 9px;
@@ -345,6 +350,9 @@ class HudOverlay(QWidget):
         drag_layout.addWidget(drag_hint)
         drag_layout.addStretch(1)
 
+        self._status_dot = QFrame(root)
+        self._status_dot.setObjectName("statusDot")
+        self._status_dot.setFixedSize(8, 8)
         self._status_label = QLabel("LISTENING", root)
         self._status_label.setObjectName("statusLabel")
         self._meta_label = QLabel("Desktop mascot overlay", root)
@@ -366,8 +374,15 @@ class HudOverlay(QWidget):
         buttons_layout.addWidget(self._settings_button)
         buttons_layout.addWidget(self._layout_button)
 
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(6)
+        status_row.addWidget(self._status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        status_row.addWidget(self._status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        status_row.addStretch(1)
+
         root_layout.addWidget(self._drag_handle)
-        root_layout.addWidget(self._status_label)
+        root_layout.addLayout(status_row)
         root_layout.addWidget(self._meta_label)
         root_layout.addLayout(buttons_layout)
 
@@ -391,7 +406,22 @@ class HudOverlay(QWidget):
         self._mute_button.style().polish(self._mute_button)
 
     def set_status(self, text: str, meta: str = "") -> None:
-        self._status_label.setText((text or "LISTENING").upper())
+        normalized = str(text or "listening").strip().lower()
+        self._status_label.setText(normalized.upper())
+        color_map = {
+            "listening": "rgba(141, 255, 178, 0.95)",
+            "speaking": "rgba(123, 210, 255, 0.96)",
+            "warming up": "rgba(255, 211, 107, 0.96)",
+            "muted": "rgba(255, 156, 108, 0.96)",
+            "degraded": "rgba(255, 196, 111, 0.96)",
+            "error": "rgba(255, 122, 122, 0.98)",
+        }
+        dot_color = color_map.get(normalized, "rgba(141, 255, 178, 0.95)")
+        self._status_dot.setStyleSheet(
+            "background: {color}; border: 1px solid rgba(226, 244, 255, 0.28); border-radius: 4px;".format(
+                color=dot_color
+            )
+        )
         self._meta_label.setText(meta or "Desktop mascot overlay")
 
     def _on_drag_started(self, screen_pos: QPoint) -> None:
