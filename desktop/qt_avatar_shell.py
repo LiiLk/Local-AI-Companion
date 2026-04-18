@@ -352,29 +352,34 @@ class HudOverlay(QWidget):
                 font-size: 9px;
             }
             QLabel#hudChatLabel {
-                color: rgba(220, 235, 255, 0.86);
-                font-size: 9px;
+                color: rgba(233, 244, 255, 0.94);
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 0.03em;
             }
             QLabel#hudChatBody {
                 color: rgba(238, 246, 255, 0.92);
-                font-size: 9px;
+                font-size: 10px;
             }
             QPlainTextEdit#hudChatHistory {
-                border: 1px solid rgba(255, 255, 255, 0.16);
+                border: 1px solid rgba(255, 255, 255, 0.22);
                 border-radius: 8px;
-                background: rgba(255, 255, 255, 0.03);
-                color: rgba(236, 245, 255, 0.93);
-                padding: 5px 7px;
-                font-size: 9px;
+                background: rgba(6, 10, 18, 0.62);
+                color: rgba(243, 249, 255, 0.98);
+                padding: 6px 8px;
+                font-size: 10px;
+                font-family: "Segoe UI", "Noto Sans", sans-serif;
             }
             QLineEdit#hudChatInput {
                 min-height: 28px;
                 border: 1px solid rgba(255, 255, 255, 0.2);
                 border-radius: 8px;
-                background: rgba(255, 255, 255, 0.04);
-                color: rgba(238, 246, 255, 0.94);
-                padding: 0 8px;
+                background: rgba(6, 10, 18, 0.54);
+                color: rgba(243, 249, 255, 0.98);
+                padding: 0 9px;
                 selection-background-color: rgba(123, 210, 255, 0.4);
+                font-size: 10px;
+                font-family: "Segoe UI", "Noto Sans", sans-serif;
             }
             QPushButton {
                 min-width: 44px;
@@ -454,9 +459,10 @@ class HudOverlay(QWidget):
         self._chat_history.setReadOnly(True)
         self._chat_history.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._chat_history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._chat_history.setMaximumHeight(112)
+        self._chat_history.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._chat_history.setMaximumHeight(132)
         self._chat_history.setPlaceholderText("No message yet. Type below to start.")
-        self._chat_history.document().setMaximumBlockCount(80)
+        self._chat_history.document().setMaximumBlockCount(240)
         self._chat_input_row = QHBoxLayout()
         self._chat_input_row.setContentsMargins(0, 0, 0, 0)
         self._chat_input_row.setSpacing(6)
@@ -607,7 +613,7 @@ class HudOverlay(QWidget):
         if not cleaned:
             return
         normalized_role = (role or "AI").strip().upper()[:12]
-        self._chat_history.appendPlainText(f"{normalized_role}: {cleaned}")
+        self._chat_history.appendPlainText(f"{normalized_role}\n{cleaned}\n")
         scroll_bar = self._chat_history.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
         if self._active_panel == "chat":
