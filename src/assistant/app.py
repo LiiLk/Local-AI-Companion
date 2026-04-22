@@ -52,6 +52,11 @@ from src.assistant.pipeline_runtime import (
 )
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
+from src.utils.logging_setup import (
+    configure_root_logging,
+    get_conversation_logger,
+    log_conversation_event,
+)
 
 # Conditional imports
 try:
@@ -79,10 +84,8 @@ except ImportError:
     print("⚠️ websockets not installed. Bridge server disabled. Run: pip install websockets")
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+RUNTIME_LOG_PATH = configure_root_logging(PROJECT_ROOT)
+CONVERSATION_LOGGER, CONVERSATION_LOG_PATH = get_conversation_logger(PROJECT_ROOT)
 logger = logging.getLogger(__name__)
 CURRENT_DESKTOP_TURN_ID: ContextVar[Optional[int]] = ContextVar("desktop_turn_id", default=None)
 _HEALTH_UNSET = object()
@@ -322,11 +325,17 @@ class Live2DAssistant:
         self._playback_release_handle: Optional[asyncio.Handle] = None
         self._audio_processing_owned = False
         self._drop_current_speech = False
+        self._speech_active = False
+        self._pending_speech_audio = bytearray()
+        self._pending_speech_commit_handle: Optional[asyncio.Handle] = None
+        self._pending_speech_lock = threading.Lock()
+        self._speech_commit_delay_ms = int(self.config.get("audio", {}).get("speech_commit_delay_ms", 700))
         self._debug_visible = False
         self._backend_state = "warming_up"
         self._degraded_reason: Optional[str] = None
         self._runtime_error: Optional[str] = None
         self._js_api = DesktopBridgeApi(self)
+        self._conversation_logger = CONVERSATION_LOGGER
         
         # Components (initialized in start())
         self.audio_service: Optional[AudioService] = None
@@ -339,6 +348,8 @@ class Live2DAssistant:
         self._lip_sync_task: Optional[asyncio.Task] = None
         
         logger.info("Live2DAssistant created")
+        logger.info("Runtime logs: %s", RUNTIME_LOG_PATH)
+        logger.info("Conversation logs: %s", CONVERSATION_LOG_PATH)
     
     def _create_components(self):
         """Create ASR, LLM, TTS, and pipeline components."""
@@ -582,6 +593,83 @@ class Live2DAssistant:
         if handle is not None:
             handle.cancel()
             self._playback_release_handle = None
+
+    def _cancel_pending_speech_commit(self) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            handle = self._pending_speech_commit_handle
+            if handle is not None:
+                handle.cancel()
+                self._pending_speech_commit_handle = None
+            return
+
+        def _cancel() -> None:
+            handle = self._pending_speech_commit_handle
+            if handle is not None:
+                handle.cancel()
+                self._pending_speech_commit_handle = None
+
+        loop.call_soon_threadsafe(_cancel)
+
+    def _arm_pending_speech_commit(self) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        def _arm() -> None:
+            handle = self._pending_speech_commit_handle
+            if handle is not None:
+                handle.cancel()
+            delay = max(self._speech_commit_delay_ms, 0) / 1000.0
+            self._pending_speech_commit_handle = loop.call_later(delay, self._commit_pending_speech)
+
+        loop.call_soon_threadsafe(_arm)
+
+    def _queue_pending_speech_segment(self, audio_bytes: bytes) -> None:
+        total_audio_bytes = 0
+        should_arm_commit = False
+        with self._pending_speech_lock:
+            self._pending_speech_audio.extend(audio_bytes)
+            total_audio_bytes = len(self._pending_speech_audio)
+            should_arm_commit = not self._speech_active
+
+        total_audio_ms = int(total_audio_bytes / 32) if total_audio_bytes else 0
+        logger.info(
+            "Buffered %s bytes of speech (~%s ms) awaiting end-of-turn commit",
+            total_audio_bytes,
+            total_audio_ms,
+        )
+
+        if should_arm_commit:
+            self._arm_pending_speech_commit()
+
+    def _commit_pending_speech(self) -> None:
+        self._pending_speech_commit_handle = None
+
+        with self._pending_speech_lock:
+            if self._speech_active:
+                self._arm_pending_speech_commit()
+                return
+            if not self._pending_speech_audio:
+                return
+            audio_bytes = bytes(self._pending_speech_audio)
+            self._pending_speech_audio.clear()
+
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(
+            "Committing %s bytes of buffered speech (~%s ms) to ASR after %s ms grace window",
+            len(audio_bytes),
+            audio_ms,
+            self._speech_commit_delay_ms,
+        )
+
+        active_pipeline = self._get_active_pipeline()
+        if active_pipeline is None:
+            logger.error("No pipeline available!")
+            return
+
+        turn_id = self._next_turn_id()
+        self._start_turn(turn_id, lambda: active_pipeline.process_speech(audio_bytes), source="speech")
 
     def _finalize_playback_window(self) -> None:
         self._playback_release_handle = None
@@ -884,6 +972,9 @@ class Live2DAssistant:
                 logger.info("Ignoring speech start while assistant is busy (barge-in disabled)")
                 return
         self._drop_current_speech = False
+        with self._pending_speech_lock:
+            self._speech_active = True
+        self._cancel_pending_speech_commit()
         self._dispatch_frontend_event("onSpeechStart", interrupted_turn_id)
 
     def _on_speech_end(self):
@@ -892,6 +983,18 @@ class Live2DAssistant:
             self._drop_current_speech = False
             logger.info("Ignored speech segment ended while assistant was busy")
             return
+        should_arm_commit = False
+        pending_audio_bytes = 0
+        with self._pending_speech_lock:
+            self._speech_active = False
+            should_arm_commit = bool(self._pending_speech_audio)
+            pending_audio_bytes = len(self._pending_speech_audio)
+        if should_arm_commit:
+            logger.info(
+                "Speech ended; arming end-of-turn commit window for %s buffered bytes",
+                pending_audio_bytes,
+            )
+            self._arm_pending_speech_commit()
         self._dispatch_frontend_event("onSpeechEnd", self._active_turn_id)
 
     def _on_speech_detected(self, audio_bytes: bytes):
@@ -905,16 +1008,7 @@ class Live2DAssistant:
         if not self._loop:
             logger.error("Event loop not available!")
             return
-        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
-        logger.info(f"Processing {len(audio_bytes)} bytes of speech (~{audio_ms} ms)...")
-
-        active_pipeline = self._get_active_pipeline()
-        if active_pipeline is None:
-            logger.error("No pipeline available!")
-            return
-
-        turn_id = self._next_turn_id()
-        self._start_turn(turn_id, lambda: active_pipeline.process_speech(audio_bytes), source="speech")
+        self._queue_pending_speech_segment(audio_bytes)
     
     def _on_mic_state_change(self, state: MicState):
         """Called when mic state changes."""
@@ -922,6 +1016,12 @@ class Live2DAssistant:
     
     async def _on_transcription(self, text: str):
         """Called when ASR produces transcription."""
+        log_conversation_event(
+            self._conversation_logger,
+            "user_transcription",
+            turn_id=self._resolve_turn_id(),
+            text=text,
+        )
         self._dispatch_frontend_event("onTranscription", text, self._resolve_turn_id())
     
     async def _on_response_start(self):
@@ -936,6 +1036,13 @@ class Live2DAssistant:
     async def _on_response_end(self, full_text: str):
         """Called when LLM finishes generating."""
         logger.info("LLM response complete (%s chars): %r", len(full_text or ""), (full_text or "")[:160])
+        log_conversation_event(
+            self._conversation_logger,
+            "assistant_response",
+            turn_id=self._resolve_turn_id(),
+            text=full_text,
+            char_count=len(full_text or ""),
+        )
         self._sync_audio_capture_mode()
         self._schedule_playback_release()
         self._dispatch_frontend_event("onResponseEnd", full_text, self._resolve_turn_id())
@@ -980,6 +1087,12 @@ class Live2DAssistant:
     async def _on_error(self, error_msg: str):
         """Called when the active pipeline surfaces an error."""
         logger.error("Pipeline surfaced error: %s", error_msg or "Unknown pipeline error")
+        log_conversation_event(
+            self._conversation_logger,
+            "pipeline_error",
+            turn_id=self._resolve_turn_id(),
+            error=error_msg or "Unknown pipeline error",
+        )
         self._dispatch_frontend_event("onError", error_msg, self._resolve_turn_id())
     
     def _evaluate_js(self, code: str):

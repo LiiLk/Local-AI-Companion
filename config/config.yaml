@@ -16,6 +16,10 @@ audio:
   start_muted: false
   bridge_start_muted: true
   allow_barge_in: false
+  # Extra grace period after a VAD segment ends before we commit the user turn.
+  # This lets short pauses stay in the same utterance instead of triggering an
+  # immediate response.
+  speech_commit_delay_ms: 700
   vad_prob_threshold: 0.58
   vad_db_threshold: -47
   vad_required_hits: 4
