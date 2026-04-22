@@ -29,10 +29,9 @@ warnings.filterwarnings('ignore', message='.*GTK.*')
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+from src.utils.logging_setup import configure_root_logging
+
+configure_root_logging(PROJECT_ROOT)
 logger = logging.getLogger(__name__)
 
 # Reduce noise from websockets library

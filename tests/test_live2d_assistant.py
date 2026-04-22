@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -38,6 +39,31 @@ class FakeThreadsafeFuture:
         self.callbacks.append(callback)
 
 
+class FakeHandle:
+    def __init__(self, callback=None):
+        self.callback = callback
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class FakeLoop:
+    def __init__(self):
+        self.scheduled = []
+
+    def call_later(self, delay, callback):
+        handle = FakeHandle(callback)
+        self.scheduled.append((delay, handle))
+        return handle
+
+    def call_soon_threadsafe(self, callback, *args):
+        callback(*args)
+
+    def is_closed(self):
+        return False
+
+
 class FakeBridgeServer:
     def __init__(self):
         self.events = []
@@ -67,6 +93,11 @@ def _make_assistant() -> Live2DAssistant:
     assistant._playback_release_handle = None
     assistant._audio_processing_owned = False
     assistant._drop_current_speech = False
+    assistant._speech_active = False
+    assistant._pending_speech_audio = bytearray()
+    assistant._pending_speech_commit_handle = None
+    assistant._pending_speech_lock = threading.Lock()
+    assistant._speech_commit_delay_ms = 700
     assistant._debug_visible = False
     assistant._turn_counter = 0
     assistant._backend_state = "ready"
@@ -77,11 +108,12 @@ def _make_assistant() -> Live2DAssistant:
     assistant.pipeline = SimpleNamespace(
         llm=SimpleNamespace(model="qwen3.5:4b", degraded_reason=None),
         tts=SimpleNamespace(active_provider_name="qwen3", degraded_reason=None),
+        process_speech=None,
         _current_language_code="en",
     )
     assistant._omni_pipeline = None
     assistant._gemma_pipeline = None
-    assistant._loop = None
+    assistant._loop = FakeLoop()
     return assistant
 
 
@@ -139,12 +171,83 @@ def test_on_speech_detected_discards_buffer_marked_for_drop():
     assistant = _make_assistant()
     events = []
     assistant._drop_current_speech = True
-    assistant._loop = object()
     assistant._start_turn = lambda *_args, **_kwargs: events.append("start_turn")
 
     assistant._on_speech_detected(b"\x00\x00" * 1024)
 
     assert events == []
+
+
+def test_on_speech_detected_buffers_until_commit_window_expires():
+    assistant = _make_assistant()
+    captured = {}
+
+    async def process_speech(audio_bytes: bytes):
+        captured["audio"] = audio_bytes
+        return "ok"
+
+    assistant.pipeline.process_speech = process_speech
+    assistant._start_turn = lambda turn_id, runner, source: captured.update(
+        turn_id=turn_id,
+        source=source,
+        runner=runner,
+    )
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    assert "runner" not in captured
+    assert len(assistant._loop.scheduled) == 1
+
+    _delay, handle = assistant._loop.scheduled[-1]
+    handle.callback()
+    asyncio.run(captured["runner"]())
+
+    assert captured["source"] == "speech"
+    assert captured["audio"] == b"A" * 3200
+    assert assistant._pending_speech_audio == bytearray()
+
+
+def test_resumed_speech_cancels_pending_commit_and_merges_segments():
+    assistant = _make_assistant()
+    captured = {}
+
+    async def process_speech(audio_bytes: bytes):
+        captured["audio"] = audio_bytes
+        return "ok"
+
+    assistant.pipeline.process_speech = process_speech
+    assistant._start_turn = lambda turn_id, runner, source: captured.update(
+        turn_id=turn_id,
+        source=source,
+        runner=runner,
+    )
+
+    first_segment = b"A" * 3200
+    second_segment = b"B" * 1600
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(first_segment)
+    assistant._on_speech_end()
+
+    _delay, first_handle = assistant._loop.scheduled[-1]
+    assert first_handle.cancelled is False
+
+    assistant._on_speech_start()
+    assert first_handle.cancelled is True
+
+    assistant._on_speech_detected(second_segment)
+    assistant._on_speech_end()
+
+    _delay, second_handle = assistant._loop.scheduled[-1]
+    assert second_handle is not first_handle
+
+    second_handle.callback()
+    asyncio.run(captured["runner"]())
+
+    assert captured["source"] == "speech"
+    assert captured["audio"] == first_segment + second_segment
 
 
 def test_on_audio_ready_includes_trace_and_tts_metrics():

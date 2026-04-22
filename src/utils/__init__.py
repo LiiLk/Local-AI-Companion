@@ -44,3 +44,14 @@ __all__ = [
     "get_character_info",
     "load_yaml_config",
 ]
+from .logging_setup import (
+    configure_root_logging,
+    get_conversation_logger,
+    log_conversation_event,
+)
+
+__all__ = [
+    "configure_root_logging",
+    "get_conversation_logger",
+    "log_conversation_event",
+]
