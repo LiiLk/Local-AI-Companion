@@ -51,6 +51,28 @@ def test_whisper_provider_keeps_normal_low_confidence_short_text():
     assert result.text == "Salut comment ca va"
 
 
+def test_whisper_provider_keeps_segment_under_configured_no_speech_threshold():
+    provider = WhisperProvider(model_size="small")
+
+    class FakeModel:
+        def transcribe(self, *_args, **_kwargs):
+            segment = SimpleNamespace(
+                start=0.0,
+                end=1.2,
+                text="I'm still here",
+                avg_logprob=-0.20,
+                no_speech_prob=0.55,
+            )
+            info = SimpleNamespace(language="en", language_probability=0.82, duration=1.2)
+            return iter([segment]), info
+
+    provider._model = FakeModel()
+
+    result = provider.transcribe(np.zeros(16000, dtype=np.float32), language=None)
+
+    assert result.text == "I'm still here"
+
+
 def test_whisper_provider_rejects_repeated_clause_loop():
     provider = WhisperProvider(model_size="small")
 

@@ -56,6 +56,8 @@ class AudioServiceConfig:
     vad_db_threshold: float = -50
     vad_required_hits: int = 3
     vad_required_misses: int = 30
+    vad_min_speech_ms: int = 450
+    vad_min_voiced_ms: int = 180
 
     # Behavior
     auto_start: bool = True
@@ -93,6 +95,8 @@ class AudioService:
             db_threshold=self.config.vad_db_threshold,
             required_hits=self.config.vad_required_hits,
             required_misses=self.config.vad_required_misses,
+            min_speech_ms=self.config.vad_min_speech_ms,
+            min_voiced_ms=self.config.vad_min_voiced_ms,
         )
         self._vad = SileroVAD(config=vad_config)
 
