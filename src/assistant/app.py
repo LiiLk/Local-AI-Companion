@@ -14,7 +14,7 @@ Hotkeys:
     F2: Toggle mute/unmute microphone
     F3: Interrupt current response
     F12: Toggle overlay visibility
-    Escape: Quit
+    Ctrl+Shift+Q: Quit
 """
 
 # Disable Hub telemetry globally, but do not force offline mode here.
@@ -31,6 +31,7 @@ from contextvars import ContextVar
 import contextlib
 import json
 import logging
+import re
 import signal
 import time
 import sys
@@ -125,7 +126,7 @@ def load_config(config_path: Path) -> dict:
 
 
 class DesktopBridgeApi:
-    """Minimal pywebview bridge for the desktop Live2D shell."""
+    """Bridge exposed to desktop webviews."""
 
     def __init__(self, assistant: "Live2DAssistant"):
         self._assistant = assistant
@@ -145,9 +146,12 @@ class DesktopBridgeApi:
     def toggle_debug(self) -> dict:
         return self._assistant.toggle_debug()
 
+    def set_layout_mode(self, layout: str) -> dict:
+        return self._assistant.set_layout_mode(layout)
+
 
 class DesktopBridgeServer:
-    """Tiny desktop-only websocket bridge for the Tauri shell."""
+    """Tiny desktop-only websocket bridge for external desktop shells."""
 
     def __init__(self, assistant: "Live2DAssistant", host: str = "127.0.0.1", port: int = 8765):
         self._assistant = assistant
@@ -302,7 +306,7 @@ class Live2DAssistant:
 
         # State
         self._running = False
-        self._window: Optional[webview.Window] = None
+        self._window = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._hotkey_listener = None
@@ -539,6 +543,12 @@ class Live2DAssistant:
     def _dispatch_frontend_event(self, event_name: str, *args):
         js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
         self._evaluate_js(f"window.{event_name}?.({js_args})")
+        window = self._window
+        if window and hasattr(window, "dispatch_frontend_event"):
+            try:
+                window.dispatch_frontend_event(event_name, *args)
+            except Exception as exc:
+                logger.debug("Desktop shell event dispatch error (%s): %s", event_name, exc)
         if self._bridge_server:
             self._bridge_server.emit_frontend_event_sync(event_name, *args)
 
@@ -688,6 +698,10 @@ class Live2DAssistant:
                 backend_state = "error"
             elif backend_state != "warming_up" and degraded_reason:
                 backend_state = "degraded"
+        character_name = self.config.get('character', {}).get('name', 'AI')
+        character_slug = re.sub(r'[^a-z0-9]+', '', str(character_name).lower())
+        if 'march7' in character_slug:
+            character_slug = 'march7th'
         return {
             "mode": self.config.get('mode', 'pipeline'),
             "backend_state": backend_state,
@@ -696,7 +710,8 @@ class Live2DAssistant:
             "response_active": bool(active_future and not active_future.done()),
             "playback_active": self._has_active_playback(),
             "debug_visible": self._debug_visible,
-            "character_name": self.config.get('character', {}).get('name', 'AI'),
+            "character_name": character_name,
+            "character_id": character_slug or "default",
             "active_language": getattr(self._get_active_pipeline(), "_current_language_code", None),
             "active_llm_model": self._active_llm_model_name(),
             "active_tts_provider": self._active_tts_provider_name(),
@@ -881,6 +896,7 @@ class Live2DAssistant:
     async def _on_expression_change(self, expression: str):
         """Called when emotion is detected."""
         self._evaluate_js(f"window.Live2DAPI?.setExpression?.({json.dumps(expression, ensure_ascii=False)})")
+        self._dispatch_frontend_event("onExpressionChange", expression, self._resolve_turn_id())
 
     async def _on_error(self, error_msg: str):
         """Called when the active pipeline surfaces an error."""
@@ -954,32 +970,52 @@ class Live2DAssistant:
         if not PYNPUT_AVAILABLE:
             logger.warning("pynput not available, hotkeys disabled")
             return
-        
-        def on_press(key):
+
+        quit_requested = False
+
+        def on_toggle_mute():
             try:
-                if key == keyboard.Key.f2:
-                    runtime = self.toggle_mute()
-                    logger.info("F2 toggle mute -> %s", runtime.get("mic_state"))
-                    
-                elif key == keyboard.Key.f3:
-                    runtime = self.request_interrupt("hotkey")
-                    logger.info("F3 interrupt -> turn=%s", runtime.get("turn_id"))
-                    
-                elif key == keyboard.Key.f12:
-                    runtime = self.toggle_debug()
-                    logger.info("F12 debug -> visible=%s", runtime.get("debug_visible"))
-                        
-                elif key == keyboard.Key.esc:
-                    # Quit
-                    logger.info("👋 Quit requested")
-                    self.stop()
-                    
+                runtime = self.toggle_mute()
+                logger.info("F2 toggle mute -> %s", runtime.get("mic_state"))
             except Exception as e:
                 logger.error(f"Hotkey error: {e}")
-        
-        self._hotkey_listener = keyboard.Listener(on_press=on_press)
+
+        def on_interrupt():
+            try:
+                runtime = self.request_interrupt("hotkey")
+                logger.info("F3 interrupt -> turn=%s", runtime.get("turn_id"))
+            except Exception as e:
+                logger.error(f"Hotkey error: {e}")
+
+        def on_toggle_debug():
+            try:
+                runtime = self.toggle_debug()
+                logger.info("F12 debug -> visible=%s", runtime.get("debug_visible"))
+            except Exception as e:
+                logger.error(f"Hotkey error: {e}")
+
+        def on_quit():
+            nonlocal quit_requested
+            try:
+                if quit_requested:
+                    return
+                quit_requested = True
+                logger.info("👋 Quit requested (Ctrl+Shift+Q)")
+                # Run stop out of the pynput callback thread.
+                threading.Thread(target=self.stop, daemon=True, name="HotkeyQuit").start()
+            except Exception as e:
+                logger.error(f"Hotkey error: {e}")
+
+        self._hotkey_listener = keyboard.GlobalHotKeys(
+            {
+                "<f2>": on_toggle_mute,
+                "<f3>": on_interrupt,
+                "<f12>": on_toggle_debug,
+                "<ctrl>+<shift>+q": on_quit,
+            }
+        )
         self._hotkey_listener.start()
-        logger.info("⌨️ Hotkeys enabled: F2=mute, F3=interrupt, F12=toggle, Esc=quit")
+        logger.info("⌨️ Hotkeys enabled: F2=mute, F3=interrupt, F12=toggle, Ctrl+Shift+Q=quit")
     
     # ==================== Window ====================
     
@@ -998,19 +1034,46 @@ class Live2DAssistant:
         window = webview.create_window(
             title="AI Assistant",
             url=f"file://{html_path}",
-            width=window_config.get('width', 400),
-            height=window_config.get('height', 600),
+            width=max(int(window_config.get('width', 900)), 800),
+            height=max(int(window_config.get('height', 760)), 700),
             x=window_config.get('x', -1) if window_config.get('x', -1) >= 0 else None,
             y=window_config.get('y', -1) if window_config.get('y', -1) >= 0 else None,
             frameless=window_config.get('frameless', True),
-            easy_drag=True,
+            easy_drag=False,
             on_top=window_config.get('on_top', True),
             transparent=window_config.get('transparent', True),
-            background_color="#10141d",
+            background_color="#111111",
             js_api=self._js_api,
         )
         
         return window
+
+    def _create_qt_window(self):
+        """Create the PyQt6 overlay window."""
+        try:
+            from desktop.qt_avatar_shell import QtAvatarShell
+        except ImportError as exc:
+            logger.error("PyQt6 desktop shell is unavailable: %s", exc)
+            return None
+
+        live2d_config = self.config.get('live2d', {})
+        window_config = live2d_config.get('window', {})
+        html_path = PROJECT_ROOT / "frontend" / "live2d" / "index.html"
+
+        width = max(int(window_config.get('width', 860)), 800)
+        height = max(int(window_config.get('height', 760)), 700)
+        x = window_config.get('x', -1)
+        y = window_config.get('y', -1)
+
+        return QtAvatarShell(
+            self,
+            html_path,
+            width=width,
+            height=height,
+            x=x if isinstance(x, int) and x >= 0 else None,
+            y=y if isinstance(y, int) and y >= 0 else None,
+            always_on_top=window_config.get('on_top', True),
+        )
     
     def _on_window_loaded(self):
         """Called when the webview window is loaded."""
@@ -1019,7 +1082,7 @@ class Live2DAssistant:
     
     # ==================== Main ====================
     
-    def start(self, bridge_only: bool = False, bridge_port: int = 8765):
+    def start(self, bridge_only: bool = False, bridge_port: int = 8765, shell: str = "qt"):
         """Start the assistant application."""
         logger.info("🚀 Starting Live2D Assistant...")
         self._bridge_only = bridge_only
@@ -1028,8 +1091,9 @@ class Live2DAssistant:
         # Create components
         self._create_components()
         
-        # Setup hotkeys
-        self._setup_hotkeys()
+        # Setup hotkeys only for the legacy pywebview shell.
+        if not bridge_only:
+            self._setup_hotkeys()
         
         # Create event loop and run it in a background thread
         self._loop = asyncio.new_event_loop()
@@ -1061,15 +1125,17 @@ class Live2DAssistant:
                     time.sleep(0.2)
             except KeyboardInterrupt:
                 pass
+        elif shell == "qt":
+            self._window = self._create_qt_window()
+            if self._window is None:
+                raise RuntimeError("PyQt6 shell is unavailable. Install PyQt6 and PyQt6-WebEngine.")
+            self._window.run(self._on_window_loaded)
         elif WEBVIEW_AVAILABLE:
             self._window = self._create_window()
 
             def on_loaded():
                 self._on_window_loaded()
 
-            # Start webview (blocking)
-            # Use 'edgechromium' (WebView2) for transparency support on Windows
-            # Requires pywebview>=6.0.0 for transparency with mouse events
             webview.start(
                 on_loaded,
                 debug=logging.getLogger().isEnabledFor(logging.DEBUG),
@@ -1093,6 +1159,11 @@ class Live2DAssistant:
             return
         
         self._running = False
+
+        if self._window is not None:
+            with contextlib.suppress(Exception):
+                self._window.close()
+            self._window = None
         
         if self.audio_service:
             self.audio_service.stop()
@@ -1139,6 +1210,12 @@ class Live2DAssistant:
         
         logger.info("👋 Goodbye!")
 
+    def set_layout_mode(self, layout: str) -> dict:
+        if self._window and hasattr(self._window, "set_layout_mode"):
+            with contextlib.suppress(Exception):
+                self._window.set_layout_mode(layout)
+        return {"status": "ok", "layout": layout, **self.get_runtime_state()}
+
 
 def main():
     """Main entry point."""
@@ -1157,13 +1234,19 @@ def main():
     parser.add_argument(
         '--bridge-server',
         action='store_true',
-        help='Run the desktop backend without pywebview and expose a local websocket bridge for Tauri'
+        help='Run the desktop backend without a window and expose a local websocket bridge'
     )
     parser.add_argument(
         '--bridge-port',
         type=int,
         default=8765,
         help='Port for the local desktop bridge websocket server'
+    )
+    parser.add_argument(
+        '--desktop-shell',
+        choices=['qt', 'pywebview'],
+        default='qt',
+        help='Desktop shell to launch when not in bridge-server mode'
     )
     
     args = parser.parse_args()
@@ -1173,14 +1256,14 @@ def main():
     
     # Handle Ctrl+C gracefully
     app = Live2DAssistant(config_path=args.config)
-    
+
     def signal_handler(sig, frame):
         app.stop()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
-    
-    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port)
+
+    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port, shell=args.desktop_shell)
 
 
 if __name__ == "__main__":

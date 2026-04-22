@@ -1,6 +1,8 @@
 (function bootstrapDesktopBridge() {
   const url = new URL(window.location.href);
   const queryBackendPort = Number(url.searchParams.get("backendPort")) || 8765;
+  let qtBridge = null;
+  let qtBridgePromise = null;
   let tauriSocket = null;
   let tauriConnectPromise = null;
   let requestCounter = 0;
@@ -16,8 +18,36 @@
     backend: "assistant-bridge",
   };
 
+  function loadQtWebChannelScript() {
+    return new Promise((resolve, reject) => {
+      if (typeof window.QWebChannel !== "undefined") {
+        resolve();
+        return;
+      }
+
+      const existing = document.querySelector('script[data-qt-webchannel="true"]');
+      if (existing) {
+        existing.addEventListener("load", () => resolve(), { once: true });
+        existing.addEventListener("error", () => reject(new Error("Failed to load qwebchannel.js")), { once: true });
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = "qrc:///qtwebchannel/qwebchannel.js";
+      script.async = false;
+      script.dataset.qtWebchannel = "true";
+      script.addEventListener("load", () => resolve(), { once: true });
+      script.addEventListener("error", () => reject(new Error("Failed to load qwebchannel.js")), { once: true });
+      document.head.appendChild(script);
+    });
+  }
+
   function hasPywebview() {
     return !!window.pywebview?.api;
+  }
+
+  function hasQt() {
+    return !!window.qt?.webChannelTransport;
   }
 
   function hasTauri() {
@@ -25,6 +55,11 @@
   }
 
   async function ensureBridgeReady() {
+    if (hasQt()) {
+      await ensureQtBridge();
+      return "qt";
+    }
+
     if (hasPywebview()) {
       return "pywebview";
     }
@@ -36,6 +71,10 @@
 
     for (let attempt = 0; attempt < 100; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 100));
+      if (hasQt()) {
+        await ensureQtBridge();
+        return "qt";
+      }
       if (hasPywebview()) {
         return "pywebview";
       }
@@ -48,12 +87,50 @@
     throw new Error("No desktop bridge available");
   }
 
+  async function ensureQtBridge() {
+    if (qtBridge) {
+      return qtBridge;
+    }
+
+    if (qtBridgePromise) {
+      return qtBridgePromise;
+    }
+
+    qtBridgePromise = (async () => {
+      await loadQtWebChannelScript();
+
+      return new Promise((resolve, reject) => {
+        if (typeof window.QWebChannel === "undefined") {
+          reject(new Error("QWebChannel is not available"));
+          return;
+        }
+
+        new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
+          const bridge = channel.objects?.desktopBridge;
+          if (!bridge) {
+            reject(new Error("Qt desktop bridge object is missing"));
+            return;
+          }
+
+          qtBridge = bridge;
+          resolve(bridge);
+        });
+      });
+    })();
+
+    return qtBridgePromise;
+  }
+
   function websocketUrl() {
     return `ws://127.0.0.1:${queryBackendPort}`;
   }
 
   function dispatchFrontendEvent(handlerName, ...args) {
     window[handlerName]?.(...args);
+  }
+
+  function normalizeLayoutMode(layout) {
+    return layout === "expanded" ? "expanded" : "compact";
   }
 
   function applyRuntime(runtime) {
@@ -187,6 +264,26 @@
     });
   }
 
+  async function callQt(method, ...args) {
+    const bridge = await ensureQtBridge();
+    return new Promise((resolve, reject) => {
+      const callback = (payload) => {
+        try {
+          const parsed = payload ? JSON.parse(payload) : null;
+          if (parsed?.status === "error") {
+            reject(new Error(parsed.message || `${method} failed`));
+            return;
+          }
+          resolve(parsed);
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      bridge[method](...args, callback);
+    });
+  }
+
   window.DesktopBridge = {
     async kind() {
       return ensureBridgeReady();
@@ -194,6 +291,9 @@
 
     async sendText(text) {
       const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("sendText", text);
+      }
       if (kind === "tauri") {
         return sendCommand("send_text", { text });
       }
@@ -202,6 +302,9 @@
 
     async interrupt() {
       const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("interrupt");
+      }
       if (kind === "tauri") {
         return sendCommand("interrupt");
       }
@@ -210,6 +313,9 @@
 
     async toggleMute() {
       const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("toggleMute");
+      }
       if (kind === "tauri") {
         return sendCommand("toggle_mute");
       }
@@ -218,6 +324,9 @@
 
     async getRuntimeState() {
       const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("getRuntimeState");
+      }
       if (kind === "tauri") {
         return sendCommand("get_runtime_state");
       }
@@ -226,10 +335,69 @@
 
     async toggleDebug() {
       const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("toggleDebug");
+      }
       if (kind === "tauri") {
         return sendCommand("toggle_debug");
       }
       return window.pywebview.api.toggle_debug();
+    },
+
+    async setLayoutMode(layout) {
+      const normalizedLayout = normalizeLayoutMode(layout);
+      const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("setLayoutMode", normalizedLayout);
+      }
+      if (kind === "pywebview" && typeof window.pywebview.api.set_layout_mode === "function") {
+        return window.pywebview.api.set_layout_mode(normalizedLayout);
+      }
+      return { status: "ok", layout: normalizedLayout };
+    },
+
+    async setHudInteractiveRect(rect) {
+      const kind = await ensureBridgeReady();
+      const normalized = {
+        x: Math.round(Number(rect?.x) || 0),
+        y: Math.round(Number(rect?.y) || 0),
+        width: Math.max(0, Math.round(Number(rect?.width) || 0)),
+        height: Math.max(0, Math.round(Number(rect?.height) || 0)),
+      };
+      if (kind === "qt") {
+        return callQt(
+          "setHudInteractiveRect",
+          normalized.x,
+          normalized.y,
+          normalized.width,
+          normalized.height,
+        );
+      }
+      return { status: "ignored", rect: normalized };
+    },
+
+    async startDrag(screenX, screenY) {
+      const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("startDrag", Number(screenX) || 0, Number(screenY) || 0);
+      }
+      return { status: "ignored" };
+    },
+
+    async dragMove(screenX, screenY) {
+      const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("dragMove", Number(screenX) || 0, Number(screenY) || 0);
+      }
+      return { status: "ignored" };
+    },
+
+    async endDrag() {
+      const kind = await ensureBridgeReady();
+      if (kind === "qt") {
+        return callQt("endDrag");
+      }
+      return { status: "ignored" };
     },
   };
 })();
