@@ -11,8 +11,17 @@ pipeline:
 audio:
   # Desktop backend behavior:
   # - bridge-only defaults to muted unless explicitly overridden here.
+  # - allow_barge_in=false prevents the assistant's own playback from
+  #   re-triggering VAD/ASR through speaker leakage.
   start_muted: false
   bridge_start_muted: true
+  allow_barge_in: false
+  vad_prob_threshold: 0.58
+  vad_db_threshold: -47
+  vad_required_hits: 4
+  vad_required_misses: 20
+  vad_min_speech_ms: 450
+  vad_min_voiced_ms: 180
 
 llm:
   # Stable choices for the normal pipeline:

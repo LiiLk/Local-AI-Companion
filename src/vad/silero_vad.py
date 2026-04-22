@@ -35,6 +35,8 @@ class VADConfig:
     required_hits: int = 3           # Consecutive frames to confirm speech start (~100ms)
     required_misses: int = 30        # Consecutive frames to confirm speech end (~1.0s)
     smoothing_window: int = 5        # Smoothing window for probability
+    min_speech_ms: int = 450         # Minimum captured segment length to emit audio
+    min_voiced_ms: int = 180         # Minimum voiced duration inside the segment
     force_end_silence_ms: int = 180  # Extra tail silence when the client manually stops recording
 
 
@@ -56,7 +58,8 @@ class SileroVAD:
         self.state = State.IDLE
         self.hit_count = 0
         self.miss_count = 0
-        
+        self.voiced_chunk_count = 0
+
         # Buffers
         self.audio_buffer = bytearray()
         self.pre_buffer = deque(maxlen=20)  # Keep last ~640ms before speech
@@ -73,6 +76,7 @@ class SileroVAD:
         self.state = State.IDLE
         self.hit_count = 0
         self.miss_count = 0
+        self.voiced_chunk_count = 0
         self.audio_buffer.clear()
         self.pre_buffer.clear()
         self.prob_window.clear()
@@ -92,6 +96,16 @@ class SileroVAD:
         self.prob_window.append(prob)
         self.db_window.append(db)
         return np.mean(self.prob_window), np.mean(self.db_window)
+
+    def _buffer_duration_ms(self) -> float:
+        if not self.audio_buffer:
+            return 0.0
+        samples = len(self.audio_buffer) / 2.0
+        return samples * 1000.0 / float(self.config.sample_rate)
+
+    def _voiced_duration_ms(self) -> float:
+        chunk_ms = self.chunk_size * 1000.0 / float(self.config.sample_rate)
+        return self.voiced_chunk_count * chunk_ms
     
     def process_chunk(self, audio_float: np.ndarray) -> Generator[bytes, None, None]:
         """
@@ -132,8 +146,10 @@ class SileroVAD:
                 self.hit_count += 1
                 if self.hit_count >= self.config.required_hits:
                     # Speech started!
+                    initial_voiced_chunks = self.hit_count
                     self.state = State.ACTIVE
                     self.hit_count = 0
+                    self.voiced_chunk_count = initial_voiced_chunks
                     
                     # Include pre-buffer audio
                     for pre_chunk in self.pre_buffer:
@@ -149,6 +165,7 @@ class SileroVAD:
             self.audio_buffer.extend(chunk_bytes)
             
             if is_speech:
+                self.voiced_chunk_count += 1
                 self.miss_count = 0
             else:
                 self.miss_count += 1
@@ -157,11 +174,22 @@ class SileroVAD:
                     self.state = State.IDLE
                     self.miss_count = 0
                     
-                    # Yield the complete audio segment
-                    if len(self.audio_buffer) > 1024:  # At least some audio
+                    # Yield only if we captured enough actual speech.
+                    if (
+                        len(self.audio_buffer) > 1024
+                        and self._buffer_duration_ms() >= self.config.min_speech_ms
+                        and self._voiced_duration_ms() >= self.config.min_voiced_ms
+                    ):
                         yield bytes(self.audio_buffer)
+                    else:
+                        logger.debug(
+                            "Dropping short/weak VAD segment (buffer_ms=%.1f, voiced_ms=%.1f)",
+                            self._buffer_duration_ms(),
+                            self._voiced_duration_ms(),
+                        )
                     
                     self.audio_buffer.clear()
+                    self.voiced_chunk_count = 0
                     yield b"<|END|>"
     
     def process_audio(self, audio_data: list[float] | np.ndarray) -> Generator[bytes, None, None]:

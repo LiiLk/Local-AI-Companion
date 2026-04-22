@@ -319,6 +319,9 @@ class Live2DAssistant:
         self._active_turn_id: Optional[int] = None
         self._latest_audio_turn_id: Optional[int] = None
         self._playback_deadline: float = 0.0
+        self._playback_release_handle: Optional[asyncio.Handle] = None
+        self._audio_processing_owned = False
+        self._drop_current_speech = False
         self._debug_visible = False
         self._backend_state = "warming_up"
         self._degraded_reason: Optional[str] = None
@@ -501,15 +504,18 @@ class Live2DAssistant:
         llm_provider = self.config.get('llm', {}).get('provider', 'ollama')
         gemma_vad_config = self.config.get('gemma', {}) if mode == 'gemma-omni' or (mode == 'pipeline' and llm_provider == 'gemma') else {}
         pipeline_config = self.config.get('pipeline', {})
+        audio_runtime_config = self.config.get('audio', {})
         default_misses = pipeline_config.get('vad_required_misses', 30)
         start_muted = self._resolve_audio_start_muted()
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=start_muted,
-            vad_prob_threshold=gemma_vad_config.get('vad_prob_threshold', 0.5),
-            vad_db_threshold=gemma_vad_config.get('vad_db_threshold', -50),
-            vad_required_hits=gemma_vad_config.get('vad_required_hits', 3),
-            vad_required_misses=gemma_vad_config.get('vad_required_misses', default_misses),
+            vad_prob_threshold=audio_runtime_config.get('vad_prob_threshold', gemma_vad_config.get('vad_prob_threshold', 0.5)),
+            vad_db_threshold=audio_runtime_config.get('vad_db_threshold', gemma_vad_config.get('vad_db_threshold', -50)),
+            vad_required_hits=audio_runtime_config.get('vad_required_hits', gemma_vad_config.get('vad_required_hits', 3)),
+            vad_required_misses=audio_runtime_config.get('vad_required_misses', gemma_vad_config.get('vad_required_misses', default_misses)),
+            vad_min_speech_ms=audio_runtime_config.get('vad_min_speech_ms', 450),
+            vad_min_voiced_ms=audio_runtime_config.get('vad_min_voiced_ms', 180),
         )
         self.audio_service = AudioService(audio_config)
         self.audio_service.on_speech_start = self._on_speech_start
@@ -554,6 +560,51 @@ class Live2DAssistant:
 
     def _has_active_playback(self) -> bool:
         return self._latest_audio_turn_id is not None and self._playback_deadline > time.monotonic()
+
+    def _allow_barge_in(self) -> bool:
+        return bool(self.config.get("audio", {}).get("allow_barge_in", False))
+
+    def _sync_audio_capture_mode(self) -> None:
+        audio_service = self.audio_service
+        if audio_service is None or not hasattr(audio_service, "set_processing"):
+            return
+
+        should_block_mic = not self._allow_barge_in() and self._assistant_busy()
+        if should_block_mic and not self._audio_processing_owned:
+            audio_service.set_processing(True)
+            self._audio_processing_owned = True
+        elif not should_block_mic and self._audio_processing_owned:
+            audio_service.set_processing(False)
+            self._audio_processing_owned = False
+
+    def _cancel_playback_release(self) -> None:
+        handle = self._playback_release_handle
+        if handle is not None:
+            handle.cancel()
+            self._playback_release_handle = None
+
+    def _finalize_playback_window(self) -> None:
+        self._playback_release_handle = None
+        if self._playback_deadline <= time.monotonic():
+            self._playback_deadline = 0.0
+            self._latest_audio_turn_id = None
+        self._sync_audio_capture_mode()
+
+    def _schedule_playback_release(self) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        def _arm_release() -> None:
+            self._cancel_playback_release()
+            if not self._has_active_playback():
+                self._finalize_playback_window()
+                return
+
+            delay = max(self._playback_deadline - time.monotonic(), 0.0) + 0.05
+            self._playback_release_handle = loop.call_later(delay, self._finalize_playback_window)
+
+        loop.call_soon_threadsafe(_arm_release)
 
     def _assistant_busy(self) -> bool:
         return bool(
@@ -654,6 +705,8 @@ class Live2DAssistant:
 
         self._playback_deadline = 0.0
         self._latest_audio_turn_id = None
+        self._cancel_playback_release()
+        self._sync_audio_capture_mode()
 
         if turn_id is not None:
             self._dispatch_frontend_event("onPlaybackStop", turn_id)
@@ -740,6 +793,7 @@ class Live2DAssistant:
 
         self._playback_deadline = 0.0
         self._latest_audio_turn_id = None
+        self._cancel_playback_release()
         self._active_turn_id = turn_id
 
         async def run_turn_with_context():
@@ -757,6 +811,7 @@ class Live2DAssistant:
         started_at = time.perf_counter()
         future = asyncio.run_coroutine_threadsafe(run_turn_with_context(), self._loop)
         self._active_response_future = future
+        self._sync_audio_capture_mode()
 
         def on_done(f):
             elapsed = time.perf_counter() - started_at
@@ -785,6 +840,8 @@ class Live2DAssistant:
             finally:
                 if self._active_response_future is f:
                     self._active_response_future = None
+                self._sync_audio_capture_mode()
+                self._schedule_playback_release()
 
         future.add_done_callback(on_done)
 
@@ -816,17 +873,35 @@ class Live2DAssistant:
 
     def _on_speech_start(self):
         """Called when VAD confirms speech start."""
-        interrupted_turn_id = self._active_turn_id if self._assistant_busy() else None
-        if interrupted_turn_id is not None:
-            self._interrupt_current_turn("barge-in")
+        interrupted_turn_id = None
+        if self._assistant_busy():
+            if self._allow_barge_in():
+                interrupted_turn_id = self._active_turn_id if self._active_turn_id is not None else self._latest_audio_turn_id
+                if interrupted_turn_id is not None:
+                    self._interrupt_current_turn("barge-in")
+            else:
+                self._drop_current_speech = True
+                logger.info("Ignoring speech start while assistant is busy (barge-in disabled)")
+                return
+        self._drop_current_speech = False
         self._dispatch_frontend_event("onSpeechStart", interrupted_turn_id)
 
     def _on_speech_end(self):
         """Called when VAD confirms speech end."""
+        if self._drop_current_speech:
+            self._drop_current_speech = False
+            logger.info("Ignored speech segment ended while assistant was busy")
+            return
         self._dispatch_frontend_event("onSpeechEnd", self._active_turn_id)
 
     def _on_speech_detected(self, audio_bytes: bytes):
         """Called when VAD detects complete speech."""
+        if self._drop_current_speech:
+            logger.info(
+                "Discarding %s bytes of speech captured while assistant was busy",
+                len(audio_bytes),
+            )
+            return
         if not self._loop:
             logger.error("Event loop not available!")
             return
@@ -851,6 +926,7 @@ class Live2DAssistant:
     
     async def _on_response_start(self):
         """Called when LLM starts generating."""
+        self._sync_audio_capture_mode()
         self._dispatch_frontend_event("onResponseStart", self._resolve_turn_id())
     
     async def _on_response_chunk(self, chunk: str):
@@ -860,6 +936,8 @@ class Live2DAssistant:
     async def _on_response_end(self, full_text: str):
         """Called when LLM finishes generating."""
         logger.info("LLM response complete (%s chars): %r", len(full_text or ""), (full_text or "")[:160])
+        self._sync_audio_capture_mode()
+        self._schedule_playback_release()
         self._dispatch_frontend_event("onResponseEnd", full_text, self._resolve_turn_id())
     
     async def _on_audio_ready(self, payload: AudioPayload):
@@ -873,10 +951,11 @@ class Live2DAssistant:
         turn_id = self._resolve_turn_id()
         if turn_id is not None:
             self._latest_audio_turn_id = turn_id
-        self._playback_deadline = max(
-            self._playback_deadline,
-            time.monotonic() + max(payload.duration_ms, 0) / 1000.0,
-        )
+        duration_sec = max(payload.duration_ms, 0) / 1000.0
+        playback_base = max(self._playback_deadline, time.monotonic())
+        self._playback_deadline = playback_base + duration_sec
+        self._sync_audio_capture_mode()
+        self._schedule_playback_release()
 
         data = {
             'audio': audio_base64,

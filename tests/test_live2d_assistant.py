@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.assistant.app import CURRENT_DESKTOP_TURN_ID, Live2DAssistant, resolve_turn_timeout_sec
 from src.assistant.conversation_pipeline import AudioPayload
@@ -45,6 +46,16 @@ class FakeBridgeServer:
         self.events.append((event_name, args))
 
 
+class FakeAudioService:
+    def __init__(self):
+        self.state = SimpleNamespace(value="listening")
+        self.processing_calls = []
+
+    def set_processing(self, processing: bool):
+        self.processing_calls.append(processing)
+        self.state.value = "processing" if processing else "listening"
+
+
 def _make_assistant() -> Live2DAssistant:
     assistant = Live2DAssistant.__new__(Live2DAssistant)
     assistant._window = FakeWindow()
@@ -53,13 +64,16 @@ def _make_assistant() -> Live2DAssistant:
     assistant._active_turn_id = None
     assistant._latest_audio_turn_id = None
     assistant._playback_deadline = 0.0
+    assistant._playback_release_handle = None
+    assistant._audio_processing_owned = False
+    assistant._drop_current_speech = False
     assistant._debug_visible = False
     assistant._turn_counter = 0
     assistant._backend_state = "ready"
     assistant._degraded_reason = None
     assistant._runtime_error = None
-    assistant.audio_service = SimpleNamespace(state=SimpleNamespace(value="listening"))
-    assistant.config = {"mode": "pipeline", "character": {"name": "March 7th"}}
+    assistant.audio_service = FakeAudioService()
+    assistant.config = {"mode": "pipeline", "character": {"name": "March 7th"}, "audio": {}}
     assistant.pipeline = SimpleNamespace(
         llm=SimpleNamespace(model="qwen3.5:4b", degraded_reason=None),
         tts=SimpleNamespace(active_provider_name="qwen3", degraded_reason=None),
@@ -67,6 +81,7 @@ def _make_assistant() -> Live2DAssistant:
     )
     assistant._omni_pipeline = None
     assistant._gemma_pipeline = None
+    assistant._loop = None
     return assistant
 
 
@@ -94,6 +109,7 @@ def test_on_speech_start_interrupts_when_busy():
     assistant = _make_assistant()
     events = []
 
+    assistant.config["audio"]["allow_barge_in"] = True
     assistant._assistant_busy = lambda: True
     assistant._active_turn_id = 5
     assistant._interrupt_current_turn = lambda reason="interrupt": events.append(("interrupt", reason)) or {}
@@ -103,6 +119,32 @@ def test_on_speech_start_interrupts_when_busy():
 
     assert ("interrupt", "barge-in") in events
     assert ("onSpeechStart", (5,)) in events
+
+
+def test_on_speech_start_ignores_when_busy_and_barge_in_disabled():
+    assistant = _make_assistant()
+    events = []
+
+    assistant._assistant_busy = lambda: True
+    assistant._interrupt_current_turn = lambda reason="interrupt": events.append(("interrupt", reason)) or {}
+    assistant._dispatch_frontend_event = lambda event_name, *args: events.append((event_name, args))
+
+    assistant._on_speech_start()
+
+    assert assistant._drop_current_speech is True
+    assert events == []
+
+
+def test_on_speech_detected_discards_buffer_marked_for_drop():
+    assistant = _make_assistant()
+    events = []
+    assistant._drop_current_speech = True
+    assistant._loop = object()
+    assistant._start_turn = lambda *_args, **_kwargs: events.append("start_turn")
+
+    assistant._on_speech_detected(b"\x00\x00" * 1024)
+
+    assert events == []
 
 
 def test_on_audio_ready_includes_trace_and_tts_metrics():
@@ -128,11 +170,54 @@ def test_on_audio_ready_includes_trace_and_tts_metrics():
 
     assert assistant._latest_audio_turn_id == 7
     assert assistant._playback_deadline > 0.0
+    assert assistant.audio_service.processing_calls == [True]
     assert any('"turn_id": 7' in call for call in assistant._window.calls)
     assert any('"backend_audio_ready_epoch_ms"' in call for call in assistant._window.calls)
     assert any('"speech_end_epoch_ms": 111' in call for call in assistant._window.calls)
     assert any('"tts_metrics": {"synth_ms": 42.0}' in call for call in assistant._window.calls)
     assert any("window.onAudioReady?.(" in call for call in assistant._window.calls)
+
+
+def test_on_audio_ready_extends_deadline_for_queued_audio():
+    assistant = _make_assistant()
+    assistant._latest_audio_turn_id = 7
+    assistant._playback_deadline = 100.0
+
+    payload = AudioPayload(
+        audio_bytes=b"",
+        audio_base64="ZmFrZQ==",
+        wav_bytes=None,
+        volumes=[],
+        duration_ms=3000,
+        sample_rate=24000,
+        text="queued chunk",
+    )
+
+    token = CURRENT_DESKTOP_TURN_ID.set(7)
+    try:
+        with patch("src.assistant.app.time.monotonic", return_value=96.0):
+            asyncio.run(assistant._on_audio_ready(payload))
+    finally:
+        CURRENT_DESKTOP_TURN_ID.reset(token)
+
+    assert assistant._playback_deadline == 103.0
+
+
+def test_sync_audio_capture_mode_blocks_and_releases_mic():
+    assistant = _make_assistant()
+    assistant._active_response_future = FakeFuture(done=False)
+
+    assistant._sync_audio_capture_mode()
+    assert assistant.audio_service.processing_calls == [True]
+    assert assistant.audio_service.state.value == "processing"
+
+    assistant._active_response_future = None
+    assistant._playback_deadline = 0.0
+    assistant._latest_audio_turn_id = None
+
+    assistant._sync_audio_capture_mode()
+    assert assistant.audio_service.processing_calls == [True, False]
+    assert assistant.audio_service.state.value == "listening"
 
 
 def test_dispatch_frontend_event_also_reaches_bridge_server():

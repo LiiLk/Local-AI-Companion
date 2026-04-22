@@ -90,6 +90,8 @@ class WhisperProvider(BaseASR):
     # Beam search provides better accuracy at slight speed cost.
     # Default stays conservative for conversational latency.
     DEFAULT_BEAM_SIZE = 1
+    DEFAULT_NO_SPEECH_THRESHOLD = 0.6
+    DEFAULT_LOG_PROB_THRESHOLD = -1.0
     MIN_AUTO_LANGUAGE_CONFIDENCE = 0.35
     REPETITIVE_HALLUCINATION_LANGUAGE_CONFIDENCE = 0.55
     
@@ -341,8 +343,8 @@ class WhisperProvider(BaseASR):
             # Anti-hallucination settings:
             condition_on_previous_text=False,
             initial_prompt=effective_prompt,
-            no_speech_threshold=0.6,
-            log_prob_threshold=-1.0,
+            no_speech_threshold=self.DEFAULT_NO_SPEECH_THRESHOLD,
+            log_prob_threshold=self.DEFAULT_LOG_PROB_THRESHOLD,
             compression_ratio_threshold=2.4,
             temperature=0.0,
         )
@@ -367,7 +369,10 @@ class WhisperProvider(BaseASR):
             )
             
             # Filter out low-confidence segments
-            if avg_logprob < -1.0 or no_speech_prob > 0.5:
+            if (
+                avg_logprob < self.DEFAULT_LOG_PROB_THRESHOLD
+                or no_speech_prob > self.DEFAULT_NO_SPEECH_THRESHOLD
+            ):
                 logger.warning("Segment filtered (low confidence)")
                 continue
                 
