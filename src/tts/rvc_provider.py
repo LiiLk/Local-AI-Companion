@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -179,6 +180,7 @@ class RVCConverter:
         worker_script: str | Path | None = None,
         f0_up_key: float = 0.0,
         output_freq: int | None = None,
+        request_timeout_sec: float = 15.0,
     ):
         self.model_path = Path(model_path).resolve()
         requested_index_path = Path(index_path).resolve() if index_path else None
@@ -205,6 +207,7 @@ class RVCConverter:
         )
         self.f0_up_key = f0_up_key
         self.output_freq = output_freq
+        self.request_timeout_sec = float(request_timeout_sec)
         self.voice_model = self.model_path.stem
         self.models_root = PROJECT_ROOT / "models"
         self.voice_model_dir = self.models_root / self.voice_model
@@ -618,6 +621,59 @@ class RVCConverter:
             return "No worker stderr captured."
         return "\n".join(list(self._worker_stderr)[-10:])
 
+    def _reset_worker_state(self) -> None:
+        self._worker_process = None
+        self._converter = None
+
+    def _terminate_worker_process(self) -> None:
+        process = self._worker_process
+        if process is None:
+            self._reset_worker_state()
+            return
+
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        except Exception:
+            pass
+        finally:
+            self._reset_worker_state()
+
+    def _read_worker_response_line(self, timeout_sec: float) -> str:
+        if self._worker_process is None or self._worker_process.stdout is None:
+            raise RuntimeError("RVC worker stdout is not available")
+
+        result_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=1)
+
+        def _reader() -> None:
+            try:
+                line = self._worker_process.stdout.readline()
+            except Exception as exc:
+                result_queue.put(("error", str(exc)))
+            else:
+                result_queue.put(("ok", line))
+
+        threading.Thread(target=_reader, daemon=True, name="RVCWorkerRead").start()
+
+        try:
+            status, payload = result_queue.get(timeout=max(timeout_sec, 0.1))
+        except queue.Empty as exc:
+            self._terminate_worker_process()
+            raise TimeoutError(
+                f"RVC worker response timed out after {timeout_sec:.1f}s.\n"
+                f"{self._worker_error_summary()}"
+            ) from exc
+
+        if status == "error":
+            raise RuntimeError(f"RVC worker stdout read failed: {payload}")
+
+        return payload
+
     def _start_worker(self) -> None:
         self._ensure_model_files()
         if not self.python_path.exists():
@@ -756,11 +812,10 @@ class RVCConverter:
 
         with self._worker_lock:
             assert self._worker_process.stdin is not None
-            assert self._worker_process.stdout is not None
             self._worker_process.stdin.write(json.dumps(payload) + "\n")
             self._worker_process.stdin.flush()
 
-            response_line = self._worker_process.stdout.readline().strip()
+            response_line = self._read_worker_response_line(self.request_timeout_sec).strip()
             if not response_line:
                 raise RuntimeError(
                     f"RVC worker returned no response.\n{self._worker_error_summary()}"
@@ -931,12 +986,7 @@ class RVCConverter:
         except Exception:
             pass
         finally:
-            try:
-                self._worker_process.terminate()
-            except Exception:
-                pass
-            self._worker_process = None
-            self._converter = None
+            self._terminate_worker_process()
 
     def __del__(self):
         try:

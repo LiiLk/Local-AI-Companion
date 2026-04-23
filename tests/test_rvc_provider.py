@@ -1,10 +1,12 @@
 """Tests for the local RVC wrapper."""
 
 import json
+import time
 import sys
 import types
 from pathlib import Path
 
+import pytest
 import soundfile as sf
 
 from src.tts import rvc_provider
@@ -84,6 +86,15 @@ class _FakeStdin:
             self.process.stdout.queue.append(json.dumps({"status": "bye"}) + "\n")
 
 
+class _BlockingStdin(_FakeStdin):
+    def flush(self):
+        if self.last_payload is None:
+            return
+        command = self.last_payload.get("command")
+        if command == "shutdown":
+            self.process.stdout.queue.append(json.dumps({"status": "bye"}) + "\n")
+
+
 class FakePopen:
     def __init__(self, *args, **kwargs):
         self.args = args
@@ -96,8 +107,30 @@ class FakePopen:
     def poll(self):
         return None if not self._terminated else 0
 
+    def wait(self, timeout=None):
+        self._terminated = True
+        return 0
+
+    def kill(self):
+        self._terminated = True
+
     def terminate(self):
         self._terminated = True
+
+
+class _BlockingStdout(_FakeStdout):
+    def readline(self):
+        if self.queue:
+            return self.queue.pop(0)
+        time.sleep(0.2)
+        return ""
+
+
+class FakeBlockingPopen(FakePopen):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stdout = _BlockingStdout()
+        self.stdin = _BlockingStdin(self)
 
 
 def test_convert_file_with_modern_rvc_backend(tmp_path, monkeypatch):
@@ -195,3 +228,35 @@ def test_convert_file_with_worker_backend(tmp_path, monkeypatch):
     assert result == output_path
     assert output_path.read_bytes() == b"worker-output"
     converter.close()
+
+
+def test_worker_backend_times_out_and_resets_worker(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    index_path = tmp_path / "March-7th.index"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+    index_path.write_bytes(b"fake index")
+    input_path.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", FakeBlockingPopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        index_path=index_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+        request_timeout_sec=0.01,
+    )
+
+    with pytest.raises(TimeoutError):
+        converter.convert_file(input_path, output_path)
+
+    assert converter._worker_process is None

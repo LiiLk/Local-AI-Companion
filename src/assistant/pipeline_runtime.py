@@ -471,6 +471,7 @@ def create_pipeline_rvc(config: dict) -> tuple[Any | None, str | None]:
             worker_script=rvc_config.get("worker_script"),
             f0_up_key=rvc_config.get("f0_up_key", 0.0),
             output_freq=rvc_config.get("output_freq"),
+            request_timeout_sec=rvc_config.get("request_timeout_sec", 15.0),
         )
         return rvc, str(rvc_config.get("model_path"))
     except Exception as exc:
@@ -556,12 +557,22 @@ def preload_pipeline_rvc(
     if rvc is None:
         return None
 
-    preload = getattr(rvc, "preload", None)
-    if callable(preload):
-        preload()
-    if warmup and hasattr(rvc, "warmup"):
-        rvc.warmup()
-    return rvc
+    try:
+        preload = getattr(rvc, "preload", None)
+        if callable(preload):
+            preload()
+        if warmup and hasattr(rvc, "warmup"):
+            rvc.warmup()
+        return rvc
+    except Exception as exc:
+        logger.warning("RVC preload/warmup failed, disabling RVC: %s", exc)
+        close = getattr(rvc, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return None
 
 
 def preload_pipeline_runtime_services(

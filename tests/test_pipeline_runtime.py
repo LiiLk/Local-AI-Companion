@@ -3,6 +3,7 @@ from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
     preload_pipeline_asr,
+    preload_pipeline_rvc,
     preload_pipeline_tts,
     resolve_initial_tts_language,
 )
@@ -101,6 +102,27 @@ def test_preload_pipeline_tts_can_replace_failed_provider():
 
     assert preload_pipeline_tts(primary, warmup=True, on_load_error=on_load_error) is fallback
     assert fallback.calls == ["preload", "warmup"]
+
+
+def test_preload_pipeline_rvc_fails_open_when_warmup_errors():
+    class FakeRVC:
+        def __init__(self):
+            self.calls = []
+
+        def preload(self):
+            self.calls.append("preload")
+
+        def warmup(self):
+            self.calls.append("warmup")
+            raise TimeoutError("worker hung")
+
+        def close(self):
+            self.calls.append("close")
+
+    rvc = FakeRVC()
+
+    assert preload_pipeline_rvc(rvc, warmup=True) is None
+    assert rvc.calls == ["preload", "warmup", "close"]
 
 
 @pytest.mark.asyncio
