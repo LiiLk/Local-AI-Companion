@@ -45,7 +45,13 @@ voice:
   # Edge TTS voice
   edge_voice: "en-US-JennyNeural"
   # Kokoro voice
-  kokoro_voice: "ff_siwis"
+  kokoro_voice: "af_heart"
+  # March 7th's main RVC model is English, so keep an English Kokoro base.
+  # We keep the FAISS index disabled for now because this model/index/backend
+  # combination can hang during conversion on the current Windows worker path.
+  rvc:
+    index_rate: 0.0
+    protect: 0.2
   # Omni mode voice cloning (MiniCPM-o)
   # Path to a 6-30 second WAV file for voice cloning (relative to project root)
   # Set to null to use the model's default voice
