@@ -8,6 +8,14 @@ pipeline:
   vad_required_misses: 20
   reply_language: "en"
 
+memory:
+  enabled: true
+  history_path: "data/memory/conversation.jsonl"
+  summary_path: "data/memory/summary.txt"
+  max_recent_turns: 8
+  max_message_chars: 2000
+  max_summary_chars: 2000
+
 audio:
   # Desktop backend behavior:
   # - bridge-only defaults to muted unless explicitly overridden here.

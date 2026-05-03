@@ -8,6 +8,10 @@ import inspect
 import logging
 from typing import Any
 
+from src.assistant.conversation_memory import (
+    ConversationMemoryStore,
+    create_conversation_memory,
+)
 from src.assistant.conversation_pipeline import ConversationConfig
 from src.utils.rvc_config import build_rvc_runtime_config
 
@@ -20,6 +24,7 @@ class PipelineRuntimeComponents:
     tts: Any
     asr: Any
     rvc: Any | None
+    memory: ConversationMemoryStore | None
     conversation_config: ConversationConfig
     llm_summary: str
     tts_summary: str
@@ -49,6 +54,7 @@ class PipelineRuntime:
         self.tts: Any | None = None
         self.asr: Any | None = None
         self.rvc: Any | None = None
+        self.memory: ConversationMemoryStore | None = None
         self.llm_summary: str | None = None
         self.tts_summary: str | None = None
         self.asr_summary: str | None = None
@@ -84,12 +90,18 @@ class PipelineRuntime:
             self.rvc, self.rvc_summary = create_pipeline_rvc(self.config)
         return self.rvc
 
+    def ensure_memory(self) -> ConversationMemoryStore | None:
+        if self.memory is None:
+            self.memory = create_conversation_memory(self.config)
+        return self.memory
+
     def build_components(self) -> PipelineRuntimeComponents:
         return PipelineRuntimeComponents(
             llm=self.ensure_llm(),
             tts=self.ensure_tts(),
             asr=self.ensure_asr(),
             rvc=self.ensure_rvc(),
+            memory=self.ensure_memory(),
             conversation_config=self.build_conversation_config(),
             llm_summary=self.llm_summary or "unknown",
             tts_summary=self.tts_summary or "unknown",

@@ -1,3 +1,7 @@
+from pathlib import Path
+import shutil
+from uuid import uuid4
+
 from src.assistant.pipeline_runtime import (
     build_pipeline_conversation_config,
     close_pipeline_runtime_services,
@@ -8,6 +12,12 @@ from src.assistant.pipeline_runtime import (
     resolve_initial_tts_language,
 )
 import pytest
+
+
+def _test_dir(name: str) -> Path:
+    path = Path.cwd() / ".codex_test_artifacts" / f"{name}-{uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=False)
+    return path
 
 
 def test_resolve_initial_tts_language_prefers_reply_language():
@@ -186,6 +196,28 @@ def test_pipeline_runtime_uses_reply_language_for_initial_tts(monkeypatch):
 
     assert runtime.ensure_tts() is marker
     assert runtime.tts_summary == "Kokoro"
+
+
+def test_pipeline_runtime_creates_memory_from_config():
+    test_dir = _test_dir("runtime-memory")
+    try:
+        config = {
+            "memory": {
+                "enabled": True,
+                "history_path": str(test_dir / "conversation.jsonl"),
+                "summary_path": str(test_dir / "summary.txt"),
+                "max_recent_turns": 2,
+            }
+        }
+        runtime = create_pipeline_runtime(config)
+
+        memory = runtime.ensure_memory()
+
+        assert memory is not None
+        assert memory.config.history_path == test_dir / "conversation.jsonl"
+        assert memory.config.max_recent_turns == 2
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
 
 
 def test_pipeline_runtime_reports_ready_when_all_services_exist():

@@ -1,8 +1,12 @@
 import asyncio
 import io
+import shutil
 import time
 import wave
+from pathlib import Path
+from uuid import uuid4
 
+from src.assistant.conversation_memory import ConversationMemoryConfig, ConversationMemoryStore
 from src.assistant.conversation_pipeline import ConversationConfig, ConversationPipeline
 from src.tts.base import TTSResult
 
@@ -66,6 +70,12 @@ class KokoroProvider:
 
     def set_language(self, language):
         self.languages.append(language)
+
+
+def _test_dir(name: str) -> Path:
+    path = Path.cwd() / ".codex_test_artifacts" / f"{name}-{uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=False)
+    return path
 
 
 def test_qwen3_uses_single_shot_tts_even_when_streaming_enabled():
@@ -203,6 +213,53 @@ def test_process_text_streams_tts_in_desktop_pipeline_mode():
     assert tts.calls == ["Hello.", "How are you?"]
     assert [payload.text for payload in payloads] == ["Hello.", "How are you?"]
     assert pipeline.messages[-2].content == "Hello there"
+
+
+def test_process_text_loads_persistent_memory_and_rebounds_after_turn():
+    class CapturingLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.calls.append(messages)
+            yield "Current reply."
+
+    test_dir = _test_dir("pipeline-memory")
+    try:
+        memory_store = ConversationMemoryStore(
+            ConversationMemoryConfig(
+                history_path=test_dir / "conversation.jsonl",
+                summary_path=test_dir / "summary.txt",
+                max_recent_turns=1,
+            )
+        )
+        memory_store.append_exchange("old one", "old reply one")
+        memory_store.append_exchange("old two", "old reply two")
+
+        llm = CapturingLLM()
+        pipeline = ConversationPipeline(
+            llm=llm,
+            tts=KokoroProvider(),
+            asr=FakeASR(),
+            config=ConversationConfig(stream_tts=False, asr_language="en"),
+            memory_store=memory_store,
+        )
+
+        result = asyncio.run(pipeline.process_text("current question"))
+
+        assert result == "Current reply."
+        prompt_contents = [message.content for message in llm.calls[0]]
+        assert "old one" not in prompt_contents
+        assert "old reply one" not in prompt_contents
+        assert "old two" in prompt_contents
+        assert "old reply two" in prompt_contents
+        assert "current question" in prompt_contents[-1]
+        assert [message.content for message in pipeline.messages[-2:]] == [
+            "current question",
+            "Current reply.",
+        ]
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
 
 
 def test_pipeline_keeps_detected_cjk_language_without_french_fallback():

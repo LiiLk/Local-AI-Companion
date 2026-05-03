@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.server.websocket import ConversationState
+from src.llm.base import Message
 
 
 @pytest.mark.asyncio
@@ -37,6 +38,38 @@ async def test_conversation_state_initialize_selects_openrouter(monkeypatch):
 
     assert state.llm is marker
     assert state.pipeline_runtime is runtime
+
+
+@pytest.mark.asyncio
+async def test_conversation_state_initialize_loads_pipeline_memory(monkeypatch):
+    state = ConversationState()
+    state.config = {
+        "mode": "pipeline",
+        "character": {"system_prompt": "You are helpful."},
+        "llm": {"provider": "ollama"},
+    }
+    state.mode = "pipeline"
+
+    memory = SimpleNamespace(
+        load_context_messages=lambda: [Message(role="user", content="remembered")]
+    )
+    runtime = SimpleNamespace(
+        ensure_llm=lambda: SimpleNamespace(name="ollama"),
+        ensure_memory=lambda: memory,
+    )
+
+    monkeypatch.setattr(
+        "src.server.websocket.create_pipeline_runtime",
+        lambda config, *, initial_tts_language=None: runtime,
+    )
+
+    await state.initialize()
+
+    assert state.memory_store is memory
+    assert [message.content for message in state.messages] == [
+        "You are helpful.",
+        "remembered",
+    ]
 
 
 def test_conversation_state_preload_tts_falls_back_to_kokoro(monkeypatch):
