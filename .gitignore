@@ -75,6 +75,7 @@ secrets.yaml
 
 # Internal documentation (not for public repo)
 CLAUDE.md
+AGENTS.md
 
 .github/
 tmpclaude*
