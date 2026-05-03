@@ -31,6 +31,10 @@ from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
 )
+from src.assistant.conversation_memory import (
+    ConversationMemoryStore,
+    initial_messages,
+)
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
@@ -76,6 +80,7 @@ class ConversationState:
     gemma_model: Optional[Any] = None
     gemma_pipeline: Optional[Any] = None
     rvc: Optional[Any] = None
+    memory_store: Optional[ConversationMemoryStore] = None
     pipeline_runtime: Optional[Any] = None
     response_task: Optional[asyncio.Task] = None
     response_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -97,12 +102,15 @@ class ConversationState:
         else:
             runtime = self._get_pipeline_runtime()
             self.llm = runtime.ensure_llm()
+            ensure_memory = getattr(runtime, "ensure_memory", None)
+            if callable(ensure_memory):
+                self.memory_store = ensure_memory()
 
         # Initialize conversation with system prompt
         if not self.messages:
             character = self.config.get("character", {})
             system_prompt = character.get("system_prompt", "You are a helpful assistant.")
-            self.messages.append(Message(role="system", content=system_prompt))
+            self.messages = initial_messages(system_prompt, self.memory_store)
 
     def _get_pipeline_runtime(self):
         if self.pipeline_runtime is None:
@@ -1172,6 +1180,7 @@ class WebSocketManager:
             raise
 
         state.messages.append(Message(role="assistant", content=full_response))
+        self._persist_pipeline_exchange(state, content, full_response)
 
         await self.send_json(client_id, {
             "type": "text_end",
@@ -1418,9 +1427,11 @@ class WebSocketManager:
         if not state:
             return
 
+        if state.memory_store:
+            state.memory_store.clear()
         character = state.config.get("character", {})
         system_prompt = character.get("system_prompt", "You are a helpful assistant.")
-        state.messages = [Message(role="system", content=system_prompt)]
+        state.messages = initial_messages(system_prompt, state.memory_store)
 
         active_task = state.response_task
         if active_task and not active_task.done():
@@ -1442,6 +1453,20 @@ class WebSocketManager:
             "type": "cleared",
             "message": "Conversation history cleared"
         })
+
+    @staticmethod
+    def _persist_pipeline_exchange(
+        state: ConversationState,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        if not state.memory_store:
+            return
+        if not state.memory_store.append_exchange(user_text, assistant_text):
+            return
+        character = state.config.get("character", {})
+        system_prompt = character.get("system_prompt", "You are a helpful assistant.")
+        state.messages = initial_messages(system_prompt, state.memory_store)
 
     async def _preload_models_progressive(self, client_id: str):
         """Preload models progressively on connection."""

@@ -498,6 +498,7 @@ class Live2DAssistant:
                 asr=runtime.asr,
                 config=runtime.conversation_config,
                 rvc=runtime.rvc,
+                memory_store=runtime.memory,
             )
 
             # Set pipeline callbacks

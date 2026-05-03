@@ -27,6 +27,10 @@ from typing import AsyncGenerator, Callable, Optional, Any
 
 import numpy as np
 
+from src.assistant.conversation_memory import (
+    ConversationMemoryStore,
+    initial_messages,
+)
 from src.llm.base import BaseLLM, Message
 from src.tts.base import BaseTTS, prefers_full_response_tts
 from src.tts.tts_task_manager import TTSTaskManager
@@ -219,20 +223,23 @@ class ConversationPipeline:
         asr: BaseASR,
         config: Optional[ConversationConfig] = None,
         rvc: Optional[Any] = None,
+        memory_store: Optional[ConversationMemoryStore] = None,
     ):
         self.llm = llm
         self.tts = tts
         self.asr = asr
         self.config = config or ConversationConfig()
         self.rvc = rvc
+        self.memory_store = memory_store
         
         # Emotion detection
         self.emotion_detector = EmotionDetector()
         
         # Conversation history
-        self.messages: list[Message] = [
-            Message(role="system", content=self.config.system_prompt)
-        ]
+        self.messages: list[Message] = initial_messages(
+            self.config.system_prompt,
+            self.memory_store,
+        )
         
         # Callbacks
         self.on_transcription: Optional[Callable[[str], None]] = None
@@ -577,6 +584,7 @@ class ConversationPipeline:
             
             # 4. Add to history
             self.messages.append(Message(role="assistant", content=full_response))
+            self._persist_exchange(transcription, full_response)
             
             if self.on_response_end:
                 await self._call_async(self.on_response_end, full_response)
@@ -654,6 +662,7 @@ class ConversationPipeline:
             self._ensure_run_active(run_id)
 
             self.messages.append(Message(role="assistant", content=full_response))
+            self._persist_exchange(user_text, full_response)
 
             if self.on_response_end:
                 await self._call_async(self.on_response_end, full_response)
@@ -1033,9 +1042,17 @@ class ConversationPipeline:
     
     def clear_history(self):
         """Clear conversation history (keep system prompt)."""
+        if self.memory_store:
+            self.memory_store.clear()
         self.messages = [self.messages[0]]  # Keep system prompt
         logger.info("Conversation history cleared")
     
     def add_message(self, role: str, content: str):
         """Manually add a message to history."""
         self.messages.append(Message(role=role, content=content))
+
+    def _persist_exchange(self, user_text: str, assistant_text: str) -> None:
+        if not self.memory_store:
+            return
+        if self.memory_store.append_exchange(user_text, assistant_text):
+            self.messages = initial_messages(self.config.system_prompt, self.memory_store)

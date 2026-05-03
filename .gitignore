@@ -36,6 +36,9 @@ env/
 *.swo
 *~
 .pytest_cache/
+.codex_pytest*/
+.codex_tmp_pytest/
+.codex_test_artifacts/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -52,6 +55,7 @@ Thumbs.db
 *.ogg
 models/
 logs/
+data/memory/
 *.log
 
 # Live2D SDK (proprietary license - do not distribute)
