@@ -85,6 +85,7 @@ Inspired by [Open-LLM-VTuber](https://github.com/Open-LLM-VTuber/Open-LLM-VTuber
 - Browser/WebSocket server for frontend integration
 - Character presets in YAML
 - Local config overrides via `config/config.local.yaml`
+- Local persistent conversation memory with bounded recent context and curated summary updates
 - Runtime lifecycle management for preload, warmup, cleanup, and degraded state handling
 - Test suite covering pipeline, TTS routing, RVC, websocket flows, config loading, and language strategy
 
@@ -312,6 +313,13 @@ mode: "pipeline"
 
 pipeline:
   reply_language: "en"
+
+memory:
+  enabled: true
+  max_recent_turns: 8
+  max_message_chars: 2000
+  max_summary_chars: 2000
+  curate_enabled: true
 
 llm:
   provider: "ollama"   # or "openrouter", "gemma"

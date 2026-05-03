@@ -825,6 +825,7 @@ class WebSocketManager:
             "full_text": full_response
         })
         await self.send_json(client_id, {"type": "audio_end"})
+        await self._curate_pipeline_memory(state, content, full_response)
 
     async def _handle_audio_omni(self, client_id: str, audio_bytes: bytes):
         """Handle audio input in omni mode (no separate ASR step)."""
@@ -1187,6 +1188,7 @@ class WebSocketManager:
             "full_text": full_response
         })
         await self.send_json(client_id, {"type": "audio_end"})
+        await self._curate_pipeline_memory(state, content, full_response)
 
     async def handle_text_message(
         self,
@@ -1467,6 +1469,19 @@ class WebSocketManager:
         character = state.config.get("character", {})
         system_prompt = character.get("system_prompt", "You are a helpful assistant.")
         state.messages = initial_messages(system_prompt, state.memory_store)
+
+    async def _curate_pipeline_memory(
+        self,
+        state: ConversationState,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        if not state.memory_store:
+            return
+        if await state.memory_store.curate_exchange(state.get_llm(), user_text, assistant_text):
+            character = state.config.get("character", {})
+            system_prompt = character.get("system_prompt", "You are a helpful assistant.")
+            state.messages = initial_messages(system_prompt, state.memory_store)
 
     async def _preload_models_progressive(self, client_id: str):
         """Preload models progressively on connection."""

@@ -588,6 +588,8 @@ class ConversationPipeline:
             
             if self.on_response_end:
                 await self._call_async(self.on_response_end, full_response)
+
+            await self._curate_memory(transcription, full_response)
             
             return full_response
             
@@ -666,6 +668,8 @@ class ConversationPipeline:
 
             if self.on_response_end:
                 await self._call_async(self.on_response_end, full_response)
+
+            await self._curate_memory(user_text, full_response)
 
             return full_response
         except asyncio.CancelledError:
@@ -1055,4 +1059,10 @@ class ConversationPipeline:
         if not self.memory_store:
             return
         if self.memory_store.append_exchange(user_text, assistant_text):
+            self.messages = initial_messages(self.config.system_prompt, self.memory_store)
+
+    async def _curate_memory(self, user_text: str, assistant_text: str) -> None:
+        if not self.memory_store:
+            return
+        if await self.memory_store.curate_exchange(self.llm, user_text, assistant_text):
             self.messages = initial_messages(self.config.system_prompt, self.memory_store)
