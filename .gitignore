@@ -77,7 +77,11 @@ secrets.yaml
 CLAUDE.md
 AGENTS.md
 
-.github/
+# Keep GitHub automation in the repo while ignoring local/private GitHub notes.
+.github/*
+!.github/workflows/
+!.github/workflows/**
+.github/instructions/
 tmpclaude*
 
 # Claude Code local settings

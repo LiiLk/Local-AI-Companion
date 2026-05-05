@@ -1,0 +1,33 @@
+[config]
+model = "openrouter/deepseek/deepseek-v4-pro"
+fallback_models = ["openrouter/deepseek/deepseek-chat-v3.1"]
+custom_model_max_tokens = 120000
+max_model_tokens = 120000
+ai_timeout = 300
+large_patch_policy = "clip"
+response_language = "en-US"
+
+[pr_reviewer]
+require_tests_review = true
+require_security_review = true
+require_ticket_analysis_review = true
+require_can_be_split_review = true
+num_max_findings = 5
+extra_instructions = """
+Review this repository as a Windows-first, offline-first realtime voice companion.
+Prioritize the stable production path: pipeline mode, Faster-Whisper ASR, Ollama text LLM by default, Kokoro TTS, optional RVC, shared PipelineRuntime lifecycle, desktop and websocket parity.
+Flag regressions that duplicate provider construction, make cloud providers implicit defaults, add concurrent heavy CUDA workloads, weaken graceful degradation, ignore config/config.local.yaml loading, or mix unrelated branch scope.
+Focus on correctness, runtime reliability, Windows compatibility, GPU/resource cleanup, security, tests, and maintainability. Avoid style-only comments unless they hide a concrete risk.
+"""
+
+[pr_description]
+generate_ai_title = false
+publish_labels = false
+enable_pr_diagram = false
+extra_instructions = "Keep descriptions concise and focused on user-visible behavior, runtime risk, validation performed, and known unvalidated flows."
+
+[pr_code_suggestions]
+num_code_suggestions_per_chunk = 3
+max_number_of_calls = 3
+suggestions_score_threshold = 7
+focus_only_on_problems = true
