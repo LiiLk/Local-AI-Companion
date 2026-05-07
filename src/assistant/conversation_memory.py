@@ -366,22 +366,41 @@ async def _collect_llm_text(llm: Any, messages: list[Message], max_chars: int) -
         chunks: list[str] = []
         total = 0
         async for chunk in chat_stream(messages):
-            chunk = str(chunk or "")
-            if not chunk:
+            chunk_text = _coerce_llm_text_chunk(chunk)
+            if not chunk_text:
                 continue
             remaining = max_chars - total
             if remaining <= 0:
                 break
-            chunks.append(chunk[:remaining])
-            total += min(len(chunk), remaining)
+            chunks.append(chunk_text[:remaining])
+            total += min(len(chunk_text), remaining)
         return "".join(chunks)
 
     chat = getattr(llm, "chat", None)
     if callable(chat):
         response = await chat(messages)
-        return str(getattr(response, "content", response) or "")[:max_chars]
+        return _coerce_llm_text_chunk(response)[:max_chars]
 
     return ""
+
+
+def _coerce_llm_text_chunk(chunk: Any) -> str:
+    if chunk is None:
+        return ""
+    content = getattr(chunk, "content", None)
+    if content is not None:
+        return str(content or "")
+    if isinstance(chunk, dict):
+        content = chunk.get("content")
+        if content is not None:
+            return str(content or "")
+        message = chunk.get("message")
+        if isinstance(message, dict):
+            return str(message.get("content") or "")
+        delta = chunk.get("delta")
+        if isinstance(delta, dict):
+            return str(delta.get("content") or "")
+    return str(chunk or "")
 
 
 def _resolve_memory_path(value: str | Path, project_root: Path) -> Path:

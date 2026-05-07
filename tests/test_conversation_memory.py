@@ -9,6 +9,7 @@ from src.assistant.conversation_memory import (
     build_conversation_memory_config,
     initial_messages,
 )
+from src.llm.base import Message
 
 
 def _test_dir(name: str) -> Path:
@@ -143,6 +144,35 @@ def test_memory_store_curates_exchange_into_summary():
         assert updated is True
         assert store.load_summary() == "- User prefers concise technical explanations."
         assert "Current memory summary:" in llm.calls[0][1].content
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_memory_store_curates_summary_from_streamed_message_chunks():
+    class MessageChunkLLM:
+        async def chat_stream(self, messages):
+            yield Message(role="assistant", content='{"summary":"- User prefers local models')
+            yield Message(role="assistant", content=' for private projects."}')
+
+    test_dir = _test_dir("curate-message-chunks")
+    try:
+        store = ConversationMemoryStore(
+            ConversationMemoryConfig(
+                history_path=test_dir / "conversation.jsonl",
+                summary_path=test_dir / "summary.txt",
+            )
+        )
+
+        updated = asyncio.run(
+            store.curate_exchange(
+                MessageChunkLLM(),
+                "I prefer local models for private projects.",
+                "I will remember that preference.",
+            )
+        )
+
+        assert updated is True
+        assert store.load_summary() == "- User prefers local models for private projects."
     finally:
         shutil.rmtree(test_dir, ignore_errors=True)
 
