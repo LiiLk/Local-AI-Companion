@@ -4,6 +4,7 @@ import pytest
 
 from src.server.websocket import ConversationState
 from src.llm.base import Message
+from src.assistant.conversation_memory import ConversationMemoryConfig, ConversationMemoryStore
 
 
 @pytest.mark.asyncio
@@ -111,3 +112,38 @@ def test_conversation_state_preload_tts_falls_back_to_kokoro(monkeypatch):
     assert tts.voice == "march-fast"
     assert state.tts is tts
     assert runtime.tts is tts
+
+
+@pytest.mark.asyncio
+async def test_websocket_pipeline_curation_refreshes_bounded_memory(tmp_path):
+    from src.server.websocket import WebSocketManager
+
+    class FakeCuratorLLM:
+        async def chat_stream(self, messages):
+            yield '{"summary":"- User prefers green accent colors."}'
+
+    manager = WebSocketManager()
+    memory_store = ConversationMemoryStore(
+        ConversationMemoryConfig(
+            history_path=tmp_path / "conversation.jsonl",
+            summary_path=tmp_path / "summary.txt",
+        )
+    )
+    llm = FakeCuratorLLM()
+    state = SimpleNamespace(
+        memory_store=memory_store,
+        config={"character": {"system_prompt": "You are helpful."}},
+        messages=[],
+        get_llm=lambda: llm,
+    )
+
+    await manager._curate_pipeline_memory(
+        state,
+        "I prefer green accent colors.",
+        "Noted.",
+    )
+
+    assert memory_store.load_summary() == "- User prefers green accent colors."
+    assert [message.role for message in state.messages] == ["system", "system"]
+    assert state.messages[0].content == "You are helpful."
+    assert "User prefers green accent colors" in state.messages[1].content

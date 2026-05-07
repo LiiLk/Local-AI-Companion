@@ -262,6 +262,50 @@ def test_process_text_loads_persistent_memory_and_rebounds_after_turn():
         shutil.rmtree(test_dir, ignore_errors=True)
 
 
+def test_process_text_updates_curated_memory_summary_after_response():
+    class ScriptedLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                yield "Sure, I will keep it brief."
+            else:
+                yield '{"summary":"- User prefers brief implementation notes."}'
+
+    test_dir = _test_dir("pipeline-curation")
+    try:
+        memory_store = ConversationMemoryStore(
+            ConversationMemoryConfig(
+                history_path=test_dir / "conversation.jsonl",
+                summary_path=test_dir / "summary.txt",
+                max_recent_turns=1,
+            )
+        )
+        llm = ScriptedLLM()
+        pipeline = ConversationPipeline(
+            llm=llm,
+            tts=KokoroProvider(),
+            asr=FakeASR(),
+            config=ConversationConfig(stream_tts=False, asr_language="en"),
+            memory_store=memory_store,
+        )
+
+        result = asyncio.run(pipeline.process_text("I prefer brief implementation notes."))
+
+        assert result == "Sure, I will keep it brief."
+        assert len(llm.calls) == 2
+        assert memory_store.load_summary() == "- User prefers brief implementation notes."
+        assert any(
+            "Relevant memory summary" in message.content
+            for message in pipeline.messages
+            if message.role == "system"
+        )
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
 def test_pipeline_keeps_detected_cjk_language_without_french_fallback():
     class GuardedASR:
         def __init__(self):

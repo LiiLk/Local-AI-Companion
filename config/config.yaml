@@ -15,6 +15,10 @@ memory:
   max_recent_turns: 8
   max_message_chars: 2000
   max_summary_chars: 2000
+  curate_enabled: true
+  curator_timeout_sec: 20
+  curator_max_input_chars: 1200
+  curator_max_output_chars: 3000
 
 audio:
   # Desktop backend behavior:
