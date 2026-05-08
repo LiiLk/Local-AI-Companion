@@ -99,7 +99,7 @@ def check_backend_running(host: str = "localhost", port: int = 8000) -> bool:
         return False
 
 
-def start_backend(host: str = "0.0.0.0", port: int = 8000):
+def start_backend(host: str = "127.0.0.1", port: int = 8000):
     """Start the backend server in a subprocess."""
     logger.info(f"Starting backend server on {host}:{port}...")
     
@@ -118,8 +118,9 @@ def start_backend(host: str = "0.0.0.0", port: int = 8000):
     )
     
     # Wait for server to be ready
+    health_host = "localhost" if host == "0.0.0.0" else host
     for _ in range(30):
-        if check_backend_running("localhost", port):
+        if check_backend_running(health_host, port):
             logger.info("✅ Backend server is ready")
             return process
         time.sleep(0.5)
@@ -141,7 +142,7 @@ def main():
     parser.add_argument(
         "--host",
         default="localhost",
-        help="Backend host (default: localhost)"
+        help="Backend host (default: localhost; use 0.0.0.0 only for LAN access)"
     )
     parser.add_argument(
         "--port", "-p",
@@ -193,7 +194,7 @@ def main():
     # Start backend if requested
     backend_process = None
     if args.with_backend:
-        backend_process = start_backend("0.0.0.0", args.port)
+        backend_process = start_backend(args.host, args.port)
         if not backend_process:
             sys.exit(1)
     else:

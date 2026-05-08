@@ -4,6 +4,17 @@
 
 mode: "pipeline"  # "pipeline", "omni", "gemma-omni"
 
+server:
+  # Local-first default. Use config.local.yaml or --host 0.0.0.0 only when
+  # intentionally exposing the companion on your LAN.
+  host: "127.0.0.1"
+  port: 8000
+  cors:
+    # null derives http://127.0.0.1:<port> and http://localhost:<port>.
+    # Set an explicit list in config.local.yaml for custom frontend origins.
+    allow_origins: null
+    allow_credentials: false
+
 pipeline:
   vad_required_misses: 20
   reply_language: "en"

@@ -8,6 +8,7 @@ Usage:
 import uvicorn
 from pathlib import Path
 from ..utils.config_loader import load_yaml_config
+from .settings import resolve_server_host, resolve_server_port
 
 
 def load_config() -> dict:
@@ -19,12 +20,11 @@ def load_config() -> dict:
 def main():
     """Start the server."""
     config = load_config()
-    server_config = config.get("server", {})
     
     uvicorn.run(
         "src.server.app:app",
-        host=server_config.get("host", "0.0.0.0"),
-        port=server_config.get("port", 8000),
+        host=resolve_server_host(config),
+        port=resolve_server_port(config),
         reload=True,
     )
 

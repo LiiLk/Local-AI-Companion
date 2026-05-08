@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router
+from .settings import resolve_cors_settings, resolve_server_host, resolve_server_port
 from .websocket import websocket_router
 from ..utils.character_loader import resolve_character_config, get_available_characters
 from ..utils.config_loader import load_yaml_config
@@ -131,13 +132,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     
-    # CORS middleware - allow all origins for development
+    cors_settings = resolve_cors_settings(config)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=cors_settings["allow_origins"],
+        allow_credentials=cors_settings["allow_credentials"],
+        allow_methods=cors_settings["allow_methods"],
+        allow_headers=cors_settings["allow_headers"],
     )
     
     # Include routers
@@ -178,10 +179,9 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     config = load_config()
-    server_config = config.get("server", {})
     uvicorn.run(
         "src.server.app:app",
-        host=server_config.get("host", "0.0.0.0"),
-        port=server_config.get("port", 8000),
+        host=resolve_server_host(config),
+        port=resolve_server_port(config),
         reload=True,
     )
