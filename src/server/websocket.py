@@ -344,6 +344,7 @@ class WebSocketManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.states: Dict[str, ConversationState] = {}
         self._preloading: Dict[str, bool] = {}
+        self._preload_tasks: Dict[str, asyncio.Task] = {}
 
     async def connect(self, websocket: WebSocket, client_id: str):
         """Accept a new WebSocket connection."""
@@ -361,13 +362,16 @@ class WebSocketManager:
             "mode": state.mode
         })
 
-        # Start preloading models in background
-        asyncio.create_task(self._preload_models_progressive(client_id))
+        # Start preloading models in background and keep the task cancellable.
+        self._preload_tasks[client_id] = asyncio.create_task(
+            self._preload_models_progressive(client_id)
+        )
 
     async def disconnect(self, client_id: str):
         """Handle client disconnection."""
         if client_id in self.active_connections:
             await self._stop_client_audio(client_id)
+        await self._cancel_preload_task(client_id)
         if client_id in self.states:
             await self.states[client_id].cleanup()
             del self.states[client_id]
@@ -404,6 +408,19 @@ class WebSocketManager:
     async def _stop_client_audio(self, client_id: str) -> None:
         """Tell the client to stop queued and currently playing audio."""
         await self.send_json(client_id, {"type": "stop_audio"})
+
+    async def _cancel_preload_task(self, client_id: str) -> None:
+        """Cancel the background connection preload task for a client."""
+        task = self._preload_tasks.pop(client_id, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                print(f"Preload task cleanup error for {client_id}: {exc}")
+        self._preloading.pop(client_id, None)
 
     async def _run_turn(
         self,
@@ -1730,7 +1747,9 @@ class WebSocketManager:
                     "message": f"Failed to preload models: {str(e)}"
                 })
         finally:
-            self._preloading[client_id] = False
+            self._preloading.pop(client_id, None)
+            if self._preload_tasks.get(client_id) is asyncio.current_task():
+                self._preload_tasks.pop(client_id, None)
 
     async def preload_models(self, client_id: str):
         """Preload all models when user clicks mic."""
@@ -1830,7 +1849,7 @@ class WebSocketManager:
                 "message": f"Failed to load models: {str(e)}"
             })
         finally:
-            self._preloading[client_id] = False
+            self._preloading.pop(client_id, None)
 
 
 # Global manager instance

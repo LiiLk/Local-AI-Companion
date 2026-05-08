@@ -135,3 +135,43 @@ async def test_disconnect_stops_audio_and_cleans_up_active_generation():
     assert events == ["stop_audio", "cleanup"]
     assert client_id not in manager.active_connections
     assert client_id not in manager.states
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_background_preload_before_cleanup():
+    manager = WebSocketManager()
+    client_id = "client-preload-disconnect"
+    events: list[str] = []
+    preload_started = asyncio.Event()
+
+    class FakeConnection:
+        async def send_json(self, data):
+            events.append(data["type"])
+
+    class FakeState:
+        async def cleanup(self):
+            events.append("cleanup")
+
+    async def slow_preload():
+        preload_started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            events.append("preload_cancelled")
+            raise
+
+    preload_task = asyncio.create_task(slow_preload())
+    await preload_started.wait()
+
+    manager.active_connections[client_id] = FakeConnection()
+    manager.states[client_id] = FakeState()
+    manager._preload_tasks[client_id] = preload_task
+    manager._preloading[client_id] = True
+
+    await manager.disconnect(client_id)
+
+    assert events == ["stop_audio", "preload_cancelled", "cleanup"]
+    assert client_id not in manager.active_connections
+    assert client_id not in manager.states
+    assert client_id not in manager._preload_tasks
+    assert client_id not in manager._preloading
