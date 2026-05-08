@@ -89,6 +89,10 @@ CONVERSATION_LOGGER, CONVERSATION_LOG_PATH = get_conversation_logger(PROJECT_ROO
 logger = logging.getLogger(__name__)
 CURRENT_DESKTOP_TURN_ID: ContextVar[Optional[int]] = ContextVar("desktop_turn_id", default=None)
 _HEALTH_UNSET = object()
+_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC = 5.0
+_PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC = 10.0
+_BRIDGE_SHUTDOWN_TIMEOUT_SEC = 5.0
+_PRELOAD_LOCK_WAIT_TIMEOUT_SEC = 2.0
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -314,6 +318,8 @@ class Live2DAssistant:
         self._loop_thread: Optional[threading.Thread] = None
         self._hotkey_listener = None
         self._preload_thread: Optional[threading.Thread] = None
+        self._shutdown_requested = threading.Event()
+        self._preload_runtime_lock = threading.Lock()
         self._bridge_server: Optional[DesktopBridgeServer] = None
         self._bridge_only = False
         self._active_response_future = None
@@ -810,6 +816,77 @@ class Live2DAssistant:
     def request_interrupt(self, reason: str = "ui") -> dict:
         return self._interrupt_current_turn(reason)
 
+    async def _cancel_active_turn_for_shutdown(
+        self,
+        reason: str = "shutdown",
+        timeout_sec: float = _ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC,
+    ) -> None:
+        """Cancel and briefly drain the active desktop turn before runtime cleanup."""
+        future = self._active_response_future
+        turn_id = self._active_turn_id if self._active_turn_id is not None else self._latest_audio_turn_id
+        active_pipeline = self._get_active_pipeline()
+        cancel_active_run = getattr(active_pipeline, "cancel_active_run", None)
+
+        self._cancel_playback_release()
+        self._cancel_pending_speech_commit()
+        with self._pending_speech_lock:
+            self._pending_speech_audio.clear()
+        self._playback_deadline = 0.0
+        self._latest_audio_turn_id = None
+
+        if turn_id is not None:
+            self._dispatch_frontend_event("onPlaybackStop", turn_id)
+
+        if future and not future.done():
+            if callable(cancel_active_run):
+                cancel_active_run(reason)
+            future.cancel()
+            logger.info("Shutdown requested: cancelling active turn %s", turn_id)
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout_sec)
+            except (asyncio.CancelledError, FutureCancelledError):
+                pass
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Active turn %s did not finish cancellation within %.1fs",
+                    turn_id,
+                    timeout_sec,
+                )
+            except Exception as exc:
+                logger.debug("Active turn shutdown cleanup error: %s", exc, exc_info=True)
+
+        if self._active_response_future is future:
+            self._active_response_future = None
+        self._active_turn_id = None
+        self._sync_audio_capture_mode()
+
+    async def _cancel_pending_loop_tasks_for_shutdown(self, timeout_sec: float = 2.0) -> None:
+        """Best-effort drain for loop tasks left after services have been stopped."""
+        current_task = asyncio.current_task()
+        pending = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not current_task and not task.done()
+        ]
+        if not pending:
+            return
+
+        logger.info("Shutdown cancelling %s pending event-loop task(s)", len(pending))
+        for task in pending:
+            task.cancel()
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "%s pending event-loop task(s) still running after %.1fs",
+                sum(1 for task in pending if not task.done()),
+                timeout_sec,
+            )
+
     def toggle_mute(self) -> dict:
         if not self.audio_service:
             return {"status": "error", "message": "Audio service unavailable"}
@@ -1106,27 +1183,80 @@ class Live2DAssistant:
     
     def _preload_models_and_start_audio(self):
         """Load heavy models in the background, then start audio capture."""
+        def shutdown_requested() -> bool:
+            return self._shutdown_requested.is_set() or not self._running
+
+        def preload_step(label: str, load_fn) -> bool:
+            if shutdown_requested():
+                logger.info("Skipping %s preload because shutdown was requested", label)
+                return False
+            with self._preload_runtime_lock:
+                if shutdown_requested():
+                    logger.info("Skipping %s preload because shutdown was requested", label)
+                    return False
+                load_fn()
+            return not shutdown_requested()
+
+        def close_partial_pipeline_runtime() -> None:
+            runtime = self._pipeline_runtime
+            if runtime is None:
+                return
+            with self._preload_runtime_lock:
+                try:
+                    if self._loop and self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            runtime.close(),
+                            self._loop,
+                        ).result(timeout=_PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC)
+                    else:
+                        asyncio.run(runtime.close())
+                except Exception as exc:
+                    logger.debug("Preload abort cleanup error: %s", exc, exc_info=True)
+
         try:
             self._set_backend_health(state="warming_up", runtime_error=None)
             if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
                 logger.info("⏳ Pre-loading omni model in background...")
-                self._omni_pipeline.preload()
+                if not preload_step("omni", self._omni_pipeline.preload):
+                    return
                 logger.info("✅ Omni model ready")
 
             if hasattr(self, '_gemma_pipeline') and self._gemma_pipeline:
                 logger.info("⏳ Pre-loading Gemma + Chatterbox in background...")
-                self._gemma_pipeline.preload()
+                if not preload_step("Gemma + Chatterbox", self._gemma_pipeline.preload):
+                    return
                 logger.info("✅ Gemma + Chatterbox ready")
 
             if self.pipeline:
                 logger.info("⏳ Pre-loading pipeline models in background...")
                 if self._pipeline_runtime is not None:
-                    tts, rvc = self._pipeline_runtime.preload_all()
-                    self.pipeline.llm = self._pipeline_runtime.llm
-                    self.pipeline.asr = self._pipeline_runtime.asr
-                    self.pipeline.tts = tts
-                    self.pipeline.rvc = rvc
+                    runtime = self._pipeline_runtime
+
+                    if not preload_step("LLM", runtime.preload_llm):
+                        close_partial_pipeline_runtime()
+                        return
+                    self.pipeline.llm = runtime.llm
+
+                    if not preload_step("ASR", runtime.preload_asr):
+                        close_partial_pipeline_runtime()
+                        return
+                    self.pipeline.asr = runtime.asr
+
+                    if not preload_step("TTS", runtime.preload_tts):
+                        close_partial_pipeline_runtime()
+                        return
+                    self.pipeline.tts = runtime.tts
+
+                    if not preload_step("RVC", runtime.preload_rvc):
+                        close_partial_pipeline_runtime()
+                        return
+                    self.pipeline.rvc = runtime.rvc
                 logger.info("✅ Pipeline models ready")
+
+            if not self._running:
+                logger.info("Model preload finished after shutdown began; skipping audio start")
+                close_partial_pipeline_runtime()
+                return
 
             degraded_reason = self._collect_degraded_reason()
             self._set_backend_health(
@@ -1279,6 +1409,7 @@ class Live2DAssistant:
         """Start the assistant application."""
         logger.info("🚀 Starting Live2D Assistant...")
         self._bridge_only = bridge_only
+        self._shutdown_requested.clear()
         self._running = True
         
         # Create components
@@ -1351,6 +1482,7 @@ class Live2DAssistant:
         if not self._running and not self._loop:
             return
         
+        self._shutdown_requested.set()
         self._running = False
 
         if self._window is not None:
@@ -1363,6 +1495,15 @@ class Live2DAssistant:
         
         if self._hotkey_listener:
             self._hotkey_listener.stop()
+
+        if self._loop and self._loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._cancel_active_turn_for_shutdown("shutdown"),
+                    self._loop,
+                ).result(timeout=_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC + 1.0)
+            except Exception as exc:
+                logger.debug("Active turn shutdown error: %s", exc, exc_info=True)
         
         # Shutdown omni pipeline if used
         if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
@@ -1375,23 +1516,45 @@ class Live2DAssistant:
             ).result(timeout=10)
 
         if self.pipeline:
-            try:
-                if self._pipeline_runtime is not None and self._loop and self._loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._pipeline_runtime.close(),
-                        self._loop,
-                    ).result(timeout=10)
-                elif self._pipeline_runtime is not None:
-                    asyncio.run(self._pipeline_runtime.close())
-            except Exception as exc:
-                logger.debug("Pipeline cleanup error: %s", exc, exc_info=True)
+            acquired_runtime_lock = self._preload_runtime_lock.acquire(
+                timeout=_PRELOAD_LOCK_WAIT_TIMEOUT_SEC
+            )
+            if not acquired_runtime_lock:
+                logger.warning(
+                    "Pipeline preload is still active; runtime cleanup will be handled when preload notices shutdown"
+                )
+            else:
+                try:
+                    if self._pipeline_runtime is not None and self._loop and self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self._pipeline_runtime.close(),
+                            self._loop,
+                        ).result(timeout=_PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC)
+                    elif self._pipeline_runtime is not None:
+                        asyncio.run(self._pipeline_runtime.close())
+                except Exception as exc:
+                    logger.debug("Pipeline cleanup error: %s", exc, exc_info=True)
+                finally:
+                    self._preload_runtime_lock.release()
         
         if self._bridge_server and self._loop:
             try:
-                asyncio.run_coroutine_threadsafe(self._bridge_server.stop(), self._loop).result(timeout=5)
+                asyncio.run_coroutine_threadsafe(
+                    self._bridge_server.stop(),
+                    self._loop,
+                ).result(timeout=_BRIDGE_SHUTDOWN_TIMEOUT_SEC)
             except Exception as exc:
                 logger.debug("Bridge shutdown error: %s", exc)
             self._bridge_server = None
+
+        if self._loop and self._loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._cancel_pending_loop_tasks_for_shutdown(),
+                    self._loop,
+                ).result(timeout=3)
+            except Exception as exc:
+                logger.debug("Pending task shutdown cleanup error: %s", exc, exc_info=True)
 
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)

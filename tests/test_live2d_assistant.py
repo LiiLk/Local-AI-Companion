@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import Future
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -114,6 +115,8 @@ def _make_assistant() -> Live2DAssistant:
     assistant._omni_pipeline = None
     assistant._gemma_pipeline = None
     assistant._loop = FakeLoop()
+    assistant._shutdown_requested = threading.Event()
+    assistant._preload_runtime_lock = threading.Lock()
     return assistant
 
 
@@ -135,6 +138,30 @@ def test_interrupt_current_turn_cancels_future_and_stops_playback():
     assert assistant._playback_deadline == 0.0
     assert runtime["interrupted"] is True
     assert any("window.onPlaybackStop?.(3)" in call for call in assistant._window.calls)
+
+
+def test_shutdown_cancels_active_turn_and_clears_pending_audio():
+    assistant = _make_assistant()
+    future = Future()
+    cancel_reasons = []
+    assistant.pipeline = SimpleNamespace(cancel_active_run=lambda reason: cancel_reasons.append(reason))
+    assistant._active_response_future = future
+    assistant._active_turn_id = 9
+    assistant._latest_audio_turn_id = 9
+    assistant._playback_deadline = 999999999.0
+    assistant._pending_speech_audio.extend(b"pending")
+    assistant._pending_speech_commit_handle = FakeHandle()
+
+    asyncio.run(assistant._cancel_active_turn_for_shutdown("test-shutdown", timeout_sec=0.1))
+
+    assert future.cancelled() is True
+    assert cancel_reasons == ["test-shutdown"]
+    assert assistant._active_response_future is None
+    assert assistant._active_turn_id is None
+    assert assistant._latest_audio_turn_id is None
+    assert assistant._playback_deadline == 0.0
+    assert assistant._pending_speech_audio == bytearray()
+    assert any("window.onPlaybackStop?.(9)" in call for call in assistant._window.calls)
 
 
 def test_on_speech_start_interrupts_when_busy():

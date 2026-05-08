@@ -305,12 +305,15 @@ class ConversationState:
 
     async def cleanup(self):
         """Cleanup resources."""
+        self.cancel_active_generation("cleanup")
         if self.response_task and not self.response_task.done():
             self.response_task.cancel()
             try:
                 await self.response_task
             except asyncio.CancelledError:
                 pass
+            finally:
+                self.response_task = None
         if self.pipeline_runtime is not None:
             await self.pipeline_runtime.close()
         else:
@@ -320,6 +323,16 @@ class ConversationState:
                 asr=self.asr,
                 rvc=self.rvc,
             )
+
+    def cancel_active_generation(self, reason: str = "interrupt") -> None:
+        """Best-effort cancellation for active generation and queued TTS work."""
+        for provider in (self.tts, getattr(self.gemma_pipeline, "tts", None)):
+            cancel_fn = getattr(provider, "cancel_inflight", None)
+            if callable(cancel_fn):
+                try:
+                    cancel_fn()
+                except Exception as exc:
+                    print(f"TTS cancel_inflight failed during {reason}: {exc}")
 
 
 class WebSocketManager:
@@ -353,6 +366,8 @@ class WebSocketManager:
 
     async def disconnect(self, client_id: str):
         """Handle client disconnection."""
+        if client_id in self.active_connections:
+            await self._stop_client_audio(client_id)
         if client_id in self.states:
             await self.states[client_id].cleanup()
             del self.states[client_id]
@@ -379,6 +394,12 @@ class WebSocketManager:
     def _get_state(self, client_id: str) -> Optional[ConversationState]:
         """Safely get client state, returns None if client disconnected."""
         return self.states.get(client_id)
+
+    @staticmethod
+    def _cancel_state_generation(state: Any, reason: str) -> None:
+        cancel_fn = getattr(state, "cancel_active_generation", None)
+        if callable(cancel_fn):
+            cancel_fn(reason)
 
     async def _stop_client_audio(self, client_id: str) -> None:
         """Tell the client to stop queued and currently playing audio."""
@@ -423,6 +444,7 @@ class WebSocketManager:
         async with state.response_lock:
             existing_task = state.response_task
             if existing_task and not existing_task.done():
+                self._cancel_state_generation(state, "superseded turn")
                 existing_task.cancel()
                 await self._stop_client_audio(client_id)
                 try:
@@ -444,6 +466,7 @@ class WebSocketManager:
 
         active_task = state.response_task
         if active_task and not active_task.done():
+            self._cancel_state_generation(state, "interrupt")
             active_task.cancel()
             try:
                 await active_task
@@ -1437,6 +1460,7 @@ class WebSocketManager:
 
         active_task = state.response_task
         if active_task and not active_task.done():
+            self._cancel_state_generation(state, "clear")
             active_task.cancel()
             try:
                 await active_task

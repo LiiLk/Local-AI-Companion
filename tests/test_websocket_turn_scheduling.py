@@ -10,7 +10,12 @@ from src.server.websocket import WebSocketManager
 async def test_new_turn_cancels_previous_turn_for_same_client():
     manager = WebSocketManager()
     client_id = "client-test"
-    state = SimpleNamespace(response_task=None, response_lock=asyncio.Lock())
+    cancel_reasons: list[str] = []
+    state = SimpleNamespace(
+        response_task=None,
+        response_lock=asyncio.Lock(),
+        cancel_active_generation=lambda reason: cancel_reasons.append(reason),
+    )
     manager.states[client_id] = state
 
     events: list[str] = []
@@ -52,6 +57,7 @@ async def test_new_turn_cancels_previous_turn_for_same_client():
         "long_cancelled",
         "short_start",
     ]
+    assert cancel_reasons == ["superseded turn"]
     assert state.response_task is None
 
 
@@ -68,7 +74,13 @@ async def test_interrupt_cancels_active_turn_and_resets_vad():
             self.reset_calls += 1
 
     vad = FakeVAD()
-    state = SimpleNamespace(response_task=None, response_lock=asyncio.Lock(), vad=vad)
+    cancel_reasons: list[str] = []
+    state = SimpleNamespace(
+        response_task=None,
+        response_lock=asyncio.Lock(),
+        vad=vad,
+        cancel_active_generation=lambda reason: cancel_reasons.append(reason),
+    )
     manager.states[client_id] = state
 
     events: list[str] = []
@@ -96,5 +108,30 @@ async def test_interrupt_cancels_active_turn_and_resets_vad():
     await manager.handle_interrupt(client_id)
 
     assert events == ["long_start", "long_cancelled", "stop_audio"]
+    assert cancel_reasons == ["interrupt"]
     assert state.response_task is None
     assert vad.reset_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_disconnect_stops_audio_and_cleans_up_active_generation():
+    manager = WebSocketManager()
+    client_id = "client-disconnect"
+    events: list[str] = []
+
+    class FakeConnection:
+        async def send_json(self, data):
+            events.append(data["type"])
+
+    class FakeState:
+        async def cleanup(self):
+            events.append("cleanup")
+
+    manager.active_connections[client_id] = FakeConnection()
+    manager.states[client_id] = FakeState()
+
+    await manager.disconnect(client_id)
+
+    assert events == ["stop_audio", "cleanup"]
+    assert client_id not in manager.active_connections
+    assert client_id not in manager.states
