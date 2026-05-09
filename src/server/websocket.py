@@ -1816,49 +1816,28 @@ class WebSocketManager:
             loop = asyncio.get_event_loop()
 
             if state.mode == "omni":
-                async def load_omni():
-                    if not state.omni_model:
-                        await loop.run_in_executor(None, state.get_omni)
-
-                async def load_vad():
-                    if not state.vad:
-                        await loop.run_in_executor(None, state.get_vad)
-
-                await asyncio.gather(load_omni(), load_vad())
+                if not state.omni_model:
+                    await loop.run_in_executor(None, state.get_omni)
+                if not state.vad:
+                    await loop.run_in_executor(None, state.get_vad)
 
             elif state.mode == "gemma-omni":
-                async def load_gemma():
-                    if not state.gemma_model:
-                        await loop.run_in_executor(None, state.get_gemma_omni)
-
-                async def load_vad():
-                    if not state.vad:
-                        await loop.run_in_executor(None, state.get_vad)
-
-                await asyncio.gather(load_gemma(), load_vad())
+                if not state.gemma_model:
+                    await loop.run_in_executor(None, state.get_gemma_omni)
+                if not state.vad:
+                    await loop.run_in_executor(None, state.get_vad)
 
             else:
-                async def load_vad():
-                    if not state.vad:
-                        await loop.run_in_executor(None, state.get_vad)
-
-                async def load_asr():
-                    if not state.asr:
-                        await loop.run_in_executor(None, state.preload_asr)
-
-                async def load_tts():
-                    if not state.tts:
-                        await loop.run_in_executor(None, state.preload_tts)
-
-                async def load_llm():
-                    if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
-                        await loop.run_in_executor(None, state.preload_llm)
-
-                async def load_rvc():
-                    if state.config.get("tts", {}).get("rvc", {}).get("enabled", False) and not state.rvc:
-                        await loop.run_in_executor(None, state.preload_rvc)
-
-                await asyncio.gather(load_vad(), load_asr(), load_tts(), load_llm(), load_rvc())
+                if not state.vad:
+                    await loop.run_in_executor(None, state.get_vad)
+                if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
+                    await loop.run_in_executor(None, state.preload_llm)
+                if not state.tts:
+                    await loop.run_in_executor(None, state.preload_tts)
+                if not state.asr:
+                    await loop.run_in_executor(None, state.preload_asr)
+                if state.config.get("tts", {}).get("rvc", {}).get("enabled", False) and not state.rvc:
+                    await loop.run_in_executor(None, state.preload_rvc)
 
             await self.send_json(client_id, {
                 "type": "models_ready",
