@@ -12,6 +12,7 @@ import json
 import asyncio
 import base64
 import emoji
+import logging
 import tempfile
 import time
 import numpy as np
@@ -46,6 +47,8 @@ from src.utils.language_detection import (
 )
 from src.tts.tts_task_manager import TTSTaskManager
 from src.utils.sentence_splitter import SentenceSplitter
+
+logger = logging.getLogger(__name__)
 
 websocket_router = APIRouter()
 
@@ -194,7 +197,7 @@ class ConversationState:
 
         voice_config = self.config.get("character", {}).get("voice", {})
         fallback_voice = voice_config.get("kokoro_voice") or self.config.get("tts", {}).get("kokoro_voice", "ff_siwis")
-        print(f"   Qwen3-TTS preload failed, falling back to Kokoro: {exc}")
+        logger.warning("Qwen3-TTS preload failed, falling back to Kokoro: %s", exc)
         self.tts = KokoroProvider(voice=fallback_voice)
         if self.pipeline_runtime is not None:
             self.pipeline_runtime.tts = self.tts
@@ -221,7 +224,7 @@ class ConversationState:
                 or omni_config.get("ref_audio_path")
             )
 
-            print("Loading MiniCPM-o omni model...")
+            logger.info("Loading MiniCPM-o omni model")
             self.omni_model = MiniCPMoProvider(
                 model_name=omni_config.get("model_id", "openbmb/MiniCPM-o-4_5"),
                 device=omni_config.get("device", "cuda"),
@@ -240,7 +243,7 @@ class ConversationState:
                 omni=self.omni_model,
                 config=pipeline_config,
             )
-            print("MiniCPM-o loaded successfully")
+            logger.info("MiniCPM-o loaded successfully")
 
         return self.omni_model, self.omni_pipeline
 
@@ -261,7 +264,7 @@ class ConversationState:
             exaggeration = voice_config.get("chatterbox_exaggeration", 0.5)
             language = voice_config.get("chatterbox_language", "en")
 
-            print("Loading Gemma E2B + Chatterbox...")
+            logger.info("Loading Gemma E2B + Chatterbox")
             self.gemma_model = GemmaProvider(
                 model_id=gemma_config.get("model_id", "google/gemma-4-E2B-it"),
                 device=gemma_config.get("device", "cuda"),
@@ -299,7 +302,7 @@ class ConversationState:
             screen_config = gemma_config.get("screen", {})
             if screen_config.get("enabled", False):
                 self.gemma_pipeline.enable_screen_capture(screen_config)
-            print("Gemma + Chatterbox loaded successfully")
+            logger.info("Gemma + Chatterbox loaded successfully")
 
         return self.gemma_model, self.gemma_pipeline
 
@@ -332,7 +335,7 @@ class ConversationState:
                 try:
                     cancel_fn()
                 except Exception as exc:
-                    print(f"TTS cancel_inflight failed during {reason}: {exc}")
+                    logger.warning("TTS cancel_inflight failed during %s: %s", reason, exc)
 
 
 class WebSocketManager:
@@ -352,7 +355,7 @@ class WebSocketManager:
         self.active_connections[client_id] = websocket
         self.states[client_id] = ConversationState()
         await self.states[client_id].initialize()
-        print(f"Client connected: {client_id}")
+        logger.info("Client connected: %s", client_id)
 
         state = self.states[client_id]
 
@@ -377,7 +380,7 @@ class WebSocketManager:
             del self.states[client_id]
         if client_id in self.active_connections:
             del self.active_connections[client_id]
-        print(f"Client disconnected: {client_id}")
+        logger.info("Client disconnected: %s", client_id)
 
     async def send_json(self, client_id: str, data: dict):
         """Send JSON message to a client."""
@@ -385,7 +388,7 @@ class WebSocketManager:
             try:
                 await self.active_connections[client_id].send_json(data)
             except Exception as e:
-                print(f"Failed to send to {client_id}: {e}")
+                logger.warning("Failed to send to %s: %s", client_id, e)
 
     async def send_audio_bytes(self, client_id: str, audio_bytes: bytes):
         """Send raw audio bytes to a client."""
@@ -393,7 +396,7 @@ class WebSocketManager:
             try:
                 await self.active_connections[client_id].send_bytes(audio_bytes)
             except Exception as e:
-                print(f"Failed to send audio to {client_id}: {e}")
+                logger.warning("Failed to send audio to %s: %s", client_id, e)
 
     def _get_state(self, client_id: str) -> Optional[ConversationState]:
         """Safely get client state, returns None if client disconnected."""
@@ -419,7 +422,7 @@ class WebSocketManager:
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
-                print(f"Preload task cleanup error for {client_id}: {exc}")
+                logger.warning("Preload task cleanup error for %s: %s", client_id, exc)
         self._preloading.pop(client_id, None)
 
     async def _run_turn(
@@ -433,7 +436,7 @@ class WebSocketManager:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"Turn error for {client_id}: {exc}")
+            logger.exception("Turn error for %s", client_id)
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Turn error: {str(exc)}",
@@ -469,7 +472,7 @@ class WebSocketManager:
                 except asyncio.CancelledError:
                     pass
                 except Exception as exc:
-                    print(f"Cancelled turn cleanup error for {client_id}: {exc}")
+                    logger.warning("Cancelled turn cleanup error for %s: %s", client_id, exc)
 
             task = asyncio.create_task(self._run_turn(client_id, turn_coro))
             state.response_task = task
@@ -586,9 +589,10 @@ class WebSocketManager:
         ):
             retry_language = state.current_language or None
             if retry_language:
-                print(
-                    f"ASR auto-detect returned out-of-scope language={getattr(result, 'language', None)}, "
-                    f"retrying with forced language={retry_language}"
+                logger.info(
+                    "ASR auto-detect returned out-of-scope language=%s; retrying with forced language=%s",
+                    getattr(result, "language", None),
+                    retry_language,
                 )
                 retry = await loop.run_in_executor(None, lambda: _do_transcribe(retry_language))
                 if retry.text and retry.text.strip():
@@ -638,7 +642,7 @@ class WebSocketManager:
                 return
 
             if state.current_language != lang_code:
-                print(f"Language switch detected: {state.current_language} -> {lang_code}")
+                logger.info("Language switch detected: %s -> %s", state.current_language, lang_code)
                 state.current_language = lang_code
 
                 if state.pipeline_runtime is not None:
@@ -655,10 +659,10 @@ class WebSocketManager:
                 if new_voice and state.tts:
                     if hasattr(state.tts, 'set_voice'):
                         state.tts.set_voice(new_voice)
-                        print(f"   Switched {provider_name} voice to: {new_voice}")
+                        logger.info("Switched %s voice to: %s", provider_name, new_voice)
 
         except Exception as e:
-            print(f"Voice switch error: {e}")
+            logger.warning("Voice switch error: %s", e)
 
     async def _process_tts_chunk(self, client_id: str, text: str):
         """Generate and send audio for a text chunk with lip-sync data."""
@@ -678,7 +682,7 @@ class WebSocketManager:
                     expression = state.emotion_detector.get_expression(emotion)
                     if expression != state.current_expression:
                         state.current_expression = expression
-                        print(f"Expression change: {expression}")
+                        logger.debug("Expression change: %s", expression)
                         await self.send_json(client_id, {
                             "type": "expression_change",
                             "expression": expression,
@@ -696,7 +700,7 @@ class WebSocketManager:
 
             tts = state.get_tts()
         except Exception as e:
-            print(f"TTS init error: {e}")
+            logger.exception("TTS init error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"TTS unavailable: {e}"
@@ -720,7 +724,7 @@ class WebSocketManager:
                     temp_path.unlink(missing_ok=True)
                     temp_path = rvc_out
                 except Exception as e:
-                    print(f"RVC conversion error (using original): {e}")
+                    logger.warning("RVC conversion error, using original audio: %s", e)
 
             with open(temp_path, "rb") as f:
                 audio_data = f.read()
@@ -736,7 +740,7 @@ class WebSocketManager:
                 )
                 duration_ms = calculate_audio_duration_ms(pcm_data, sample_rate)
             except Exception as e:
-                print(f"Volume analysis error: {e}")
+                logger.debug("Volume analysis error: %s", e)
 
             audio_base64 = base64.b64encode(audio_data).decode("utf-8")
             await self.send_json(client_id, {
@@ -755,7 +759,7 @@ class WebSocketManager:
             temp_path.unlink(missing_ok=True)
 
         except Exception as e:
-            print(f"TTS chunk error: {e}")
+            logger.exception("TTS chunk error")
 
     # ------------------------------------------------------------------
     # Omni mode handlers
@@ -835,7 +839,7 @@ class WebSocketManager:
                     volumes = analyze_audio_volumes(pcm_data, sample_rate=sample_rate, chunk_ms=50)
                     duration_ms = calculate_audio_duration_ms(pcm_data, sample_rate)
                 except Exception as e:
-                    print(f"Volume analysis error: {e}")
+                    logger.debug("Volume analysis error: %s", e)
 
                 audio_base64 = base64.b64encode(audio_data).decode("utf-8")
                 await self.send_json(client_id, {
@@ -854,7 +858,7 @@ class WebSocketManager:
                 temp_path.unlink(missing_ok=True)
 
         except Exception as e:
-            print(f"Omni text error: {e}")
+            logger.exception("Omni text error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Omni processing error: {str(e)}"
@@ -881,10 +885,10 @@ class WebSocketManager:
             audio_float = audio_int16.astype(np.float32) / 32767.0
 
             duration_sec = len(audio_int16) / 16000
-            print(f"Omni audio received: {len(audio_bytes)} bytes, {duration_sec:.2f}s")
+            logger.debug("Omni audio received: %s bytes, %.2fs", len(audio_bytes), duration_sec)
 
             if duration_sec < 0.5:
-                print("Audio too short (< 0.5s), ignored")
+                logger.debug("Omni audio too short (< 0.5s), ignored")
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": "",
@@ -913,7 +917,7 @@ class WebSocketManager:
             await self._handle_text_omni(client_id, transcription)
 
         except Exception as e:
-            print(f"Omni audio error: {e}")
+            logger.exception("Omni audio error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Omni audio error: {str(e)}"
@@ -1027,7 +1031,7 @@ class WebSocketManager:
                     pipeline.history = pipeline.history[-max_msgs:]
 
         except Exception as e:
-            print(f"Gemma text error: {e}")
+            logger.exception("Gemma text error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Gemma processing error: {str(e)}"
@@ -1051,10 +1055,10 @@ class WebSocketManager:
         try:
             audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
             duration_sec = len(audio_int16) / 16000
-            print(f"Gemma audio received: {len(audio_bytes)} bytes, {duration_sec:.2f}s")
+            logger.debug("Gemma audio received: %s bytes, %.2fs", len(audio_bytes), duration_sec)
 
             if duration_sec < 0.5:
-                print("Audio too short (< 0.5s), ignored")
+                logger.debug("Gemma audio too short (< 0.5s), ignored")
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": "",
@@ -1066,7 +1070,7 @@ class WebSocketManager:
             await pipeline.process_speech(audio_bytes)
 
         except Exception as e:
-            print(f"Gemma audio error: {e}")
+            logger.exception("Gemma audio error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Gemma audio error: {str(e)}"
@@ -1130,7 +1134,11 @@ class WebSocketManager:
             nonlocal first_audio_logged
             if not first_audio_logged:
                 first_audio_logged = True
-                print(f"First TTS audio latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+                logger.debug(
+                    "First TTS audio latency for %s: %.1f ms",
+                    client_id,
+                    (time.perf_counter() - llm_started) * 1000,
+                )
 
             payload_trace = dict(trace_data)
             payload_trace["backend_audio_ready_epoch_ms"] = int(time.time() * 1000)
@@ -1188,7 +1196,11 @@ class WebSocketManager:
                         if not first_sentence_logged:
                             first_sentence_logged = True
                             trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
-                            print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+                            logger.debug(
+                                "LLM first sentence latency for %s: %.1f ms",
+                                client_id,
+                                (time.perf_counter() - llm_started) * 1000,
+                            )
                         await self._update_voice_for_language(state, sentence)
                         clean = self._clean_text_for_tts(sentence)
                         if clean.strip():
@@ -1208,13 +1220,21 @@ class WebSocketManager:
                     if not first_sentence_logged:
                         first_sentence_logged = True
                         trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
-                        print(f"LLM first sentence latency for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+                        logger.debug(
+                            "LLM first sentence latency for %s: %.1f ms",
+                            client_id,
+                            (time.perf_counter() - llm_started) * 1000,
+                        )
                     clean = self._clean_text_for_tts(remaining)
                     if clean.strip():
                         await self._update_voice_for_language(state, clean)
                         await tts_mgr.submit(clean)
 
-            print(f"LLM total generation time for {client_id}: {(time.perf_counter() - llm_started) * 1000:.1f} ms")
+            logger.debug(
+                "LLM total generation time for %s: %.1f ms",
+                client_id,
+                (time.perf_counter() - llm_started) * 1000,
+            )
             await tts_mgr.finish()
         except asyncio.CancelledError:
             await tts_mgr.cancel()
@@ -1351,7 +1371,7 @@ class WebSocketManager:
                 })
 
         except Exception as e:
-            print(f"ASR error: {e}")
+            logger.exception("ASR error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"ASR error: {str(e)}"
@@ -1391,7 +1411,7 @@ class WebSocketManager:
                         await self._schedule_turn(client_id, self._transcribe_and_respond_turn(client_id, event))
 
         except Exception as e:
-            print(f"VAD error: {e}")
+            logger.exception("VAD error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"VAD error: {str(e)}"
@@ -1422,10 +1442,15 @@ class WebSocketManager:
             audio_float = audio_int16.astype(np.float32) / 32767.0
 
             duration_sec = len(audio_int16) / 16000
-            print(f"Audio received: {len(audio_bytes)} bytes, {duration_sec:.2f}s, {len(audio_int16)} samples")
+            logger.debug(
+                "Audio received: %s bytes, %.2fs, %s samples",
+                len(audio_bytes),
+                duration_sec,
+                len(audio_int16),
+            )
 
             if duration_sec < 0.5:
-                print("Audio too short (< 0.5s), ignored")
+                logger.debug("Audio too short (< 0.5s), ignored")
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": "",
@@ -1457,7 +1482,7 @@ class WebSocketManager:
                 })
 
         except Exception as e:
-            print(f"Transcription error: {e}")
+            logger.exception("Transcription error")
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Transcription error: {str(e)}"
@@ -1565,7 +1590,7 @@ class WebSocketManager:
                 })
                 try:
                     await loop.run_in_executor(None, state.get_omni)
-                    print(f"   Omni model loaded for {client_id}")
+                    logger.info("Omni model loaded for %s", client_id)
                     await safe_send({
                         "type": "model_loaded",
                         "model": "omni",
@@ -1573,7 +1598,7 @@ class WebSocketManager:
                         "progress": 90
                     })
                 except Exception as e:
-                    print(f"   Omni model load error: {e}")
+                    logger.warning("Omni model load error for %s: %s", client_id, e)
                     await safe_send({
                         "type": "models_error",
                         "message": f"Omni model failed: {str(e)}"
@@ -1582,9 +1607,9 @@ class WebSocketManager:
                 if not state.vad and is_connected():
                     try:
                         await loop.run_in_executor(None, state.get_vad)
-                        print(f"   VAD loaded for {client_id}")
+                        logger.info("VAD loaded for %s", client_id)
                     except Exception as e:
-                        print(f"   VAD load warning: {e}")
+                        logger.warning("VAD load warning for %s: %s", client_id, e)
 
             elif state.mode == "gemma-omni":
                 await safe_send({
@@ -1595,7 +1620,7 @@ class WebSocketManager:
                 })
                 try:
                     await loop.run_in_executor(None, state.get_gemma_omni)
-                    print(f"   Gemma + Chatterbox loaded for {client_id}")
+                    logger.info("Gemma + Chatterbox loaded for %s", client_id)
                     await safe_send({
                         "type": "model_loaded",
                         "model": "gemma",
@@ -1603,7 +1628,7 @@ class WebSocketManager:
                         "progress": 90
                     })
                 except Exception as e:
-                    print(f"   Gemma load error: {e}")
+                    logger.warning("Gemma load error for %s: %s", client_id, e)
                     await safe_send({
                         "type": "models_error",
                         "message": f"Gemma model failed: {str(e)}"
@@ -1612,9 +1637,9 @@ class WebSocketManager:
                 if not state.vad and is_connected():
                     try:
                         await loop.run_in_executor(None, state.get_vad)
-                        print(f"   VAD loaded for {client_id}")
+                        logger.info("VAD loaded for %s", client_id)
                     except Exception as e:
-                        print(f"   VAD load warning: {e}")
+                        logger.warning("VAD load warning for %s: %s", client_id, e)
 
             else:
                 # Pipeline mode: load VAD, brain, TTS, ASR
@@ -1627,7 +1652,7 @@ class WebSocketManager:
                     })
                     try:
                         await loop.run_in_executor(None, state.get_vad)
-                        print(f"   VAD loaded for {client_id}")
+                        logger.info("VAD loaded for %s", client_id)
                         await safe_send({
                             "type": "model_loaded",
                             "model": "vad",
@@ -1635,7 +1660,7 @@ class WebSocketManager:
                             "progress": 15
                         })
                     except Exception as e:
-                        print(f"   VAD load warning: {e}")
+                        logger.warning("VAD load warning for %s: %s", client_id, e)
 
                 llm_provider = state.config.get("llm", {}).get("provider", "ollama")
                 if llm_provider == "gemma" and is_connected():
@@ -1647,7 +1672,7 @@ class WebSocketManager:
                     })
                     try:
                         await loop.run_in_executor(None, state.preload_llm)
-                        print(f"   Gemma brain loaded for {client_id}")
+                        logger.info("Gemma brain loaded for %s", client_id)
                         await safe_send({
                             "type": "model_loaded",
                             "model": "llm",
@@ -1655,7 +1680,7 @@ class WebSocketManager:
                             "progress": 55
                         })
                     except Exception as e:
-                        print(f"   LLM load error: {e}")
+                        logger.warning("LLM load error for %s: %s", client_id, e)
                         await safe_send({
                             "type": "models_error",
                             "message": f"LLM failed: {str(e)}"
@@ -1670,7 +1695,7 @@ class WebSocketManager:
                     })
                     try:
                         await loop.run_in_executor(None, state.preload_tts)
-                        print(f"   TTS loaded for {client_id}")
+                        logger.info("TTS loaded for %s", client_id)
                         await safe_send({
                             "type": "model_loaded",
                             "model": "tts",
@@ -1678,7 +1703,7 @@ class WebSocketManager:
                             "progress": 80
                         })
                     except Exception as e:
-                        print(f"   TTS load error: {e}")
+                        logger.warning("TTS load error for %s: %s", client_id, e)
                         await safe_send({
                             "type": "models_error",
                             "message": f"TTS failed: {str(e)}"
@@ -1693,7 +1718,7 @@ class WebSocketManager:
                     })
                     try:
                         await loop.run_in_executor(None, state.preload_asr)
-                        print(f"   ASR loaded for {client_id}")
+                        logger.info("ASR loaded for %s", client_id)
                         await safe_send({
                             "type": "model_loaded",
                             "model": "asr",
@@ -1701,7 +1726,7 @@ class WebSocketManager:
                             "progress": 100
                         })
                     except Exception as e:
-                        print(f"   ASR load error: {e}")
+                        logger.warning("ASR load error for %s: %s", client_id, e)
                         await safe_send({
                             "type": "models_error",
                             "message": f"ASR failed: {str(e)}"
@@ -1717,7 +1742,7 @@ class WebSocketManager:
                     })
                     try:
                         await loop.run_in_executor(None, state.preload_rvc)
-                        print(f"   RVC loaded for {client_id}")
+                        logger.info("RVC loaded for %s", client_id)
                         await safe_send({
                             "type": "model_loaded",
                             "model": "rvc",
@@ -1725,7 +1750,7 @@ class WebSocketManager:
                             "progress": 98
                         })
                     except Exception as e:
-                        print(f"   RVC load warning: {e}")
+                        logger.warning("RVC load warning for %s: %s", client_id, e)
 
             if is_connected():
                 await safe_send({
@@ -1733,14 +1758,12 @@ class WebSocketManager:
                     "message": "All models loaded!",
                     "progress": 100
                 })
-                print(f"All models preloaded for {client_id}")
+                logger.info("All models preloaded for %s", client_id)
 
         except asyncio.CancelledError:
-            print(f"Preloading cancelled for {client_id} (client disconnected)")
+            logger.info("Preloading cancelled for %s", client_id)
         except Exception as e:
-            print(f"Preloading error for {client_id}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Preloading error for %s", client_id)
             if is_connected():
                 await safe_send({
                     "type": "models_error",
@@ -1843,7 +1866,7 @@ class WebSocketManager:
             })
 
         except Exception as e:
-            print(f"Model preloading error: {e}")
+            logger.exception("Model preloading error for %s", client_id)
             await self.send_json(client_id, {
                 "type": "error",
                 "message": f"Failed to load models: {str(e)}"
@@ -1954,8 +1977,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
 
     except WebSocketDisconnect:
         await manager.disconnect(client_id)
-    except Exception as e:
-        import traceback
-        print(f"WebSocket error for {client_id}: {type(e).__name__}: {e}")
-        traceback.print_exc()
+    except Exception:
+        logger.exception("WebSocket error for %s", client_id)
         await manager.disconnect(client_id)
