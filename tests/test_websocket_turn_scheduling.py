@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -174,4 +176,94 @@ async def test_disconnect_cancels_background_preload_before_cleanup():
     assert client_id not in manager.active_connections
     assert client_id not in manager.states
     assert client_id not in manager._preload_tasks
+    assert client_id not in manager._preloading
+
+
+@pytest.mark.asyncio
+async def test_manual_pipeline_preload_runs_gpu_steps_sequentially():
+    manager = WebSocketManager()
+    client_id = "client-manual-preload"
+    sent_messages: list[dict] = []
+
+    class FakeConnection:
+        async def send_json(self, data):
+            sent_messages.append(data)
+
+    class FakeState:
+        mode = "pipeline"
+
+        def __init__(self):
+            self.config = {
+                "llm": {"provider": "gemma"},
+                "tts": {"rvc": {"enabled": True}},
+            }
+            self.vad = None
+            self.llm = None
+            self.tts = None
+            self.asr = None
+            self.rvc = None
+            self.events: list[str] = []
+            self.active_loads = 0
+            self.max_active_loads = 0
+            self.lock = threading.Lock()
+
+        def pipeline_ready(self):
+            return bool(self.llm and self.tts and self.asr and self.rvc)
+
+        def _load(self, name: str):
+            with self.lock:
+                self.events.append(f"{name}:start")
+                self.active_loads += 1
+                self.max_active_loads = max(self.max_active_loads, self.active_loads)
+
+            time.sleep(0.01)
+            setattr(self, name, object())
+
+            with self.lock:
+                self.events.append(f"{name}:end")
+                self.active_loads -= 1
+
+        def get_vad(self):
+            self._load("vad")
+            return self.vad
+
+        def preload_llm(self):
+            self._load("llm")
+            return self.llm
+
+        def preload_tts(self):
+            self._load("tts")
+            return self.tts
+
+        def preload_asr(self):
+            self._load("asr")
+            return self.asr
+
+        def preload_rvc(self):
+            self._load("rvc")
+            return self.rvc
+
+    state = FakeState()
+    manager.active_connections[client_id] = FakeConnection()
+    manager.states[client_id] = state
+
+    await manager.preload_models(client_id)
+
+    assert state.max_active_loads == 1
+    assert state.events == [
+        "vad:start",
+        "vad:end",
+        "llm:start",
+        "llm:end",
+        "tts:start",
+        "tts:end",
+        "asr:start",
+        "asr:end",
+        "rvc:start",
+        "rvc:end",
+    ]
+    assert [message["type"] for message in sent_messages] == [
+        "models_loading",
+        "models_ready",
+    ]
     assert client_id not in manager._preloading
