@@ -492,6 +492,76 @@ def test_pipeline_rejects_low_confidence_asr_when_retry_is_not_better():
     assert llm.calls == []
 
 
+def test_pipeline_accepts_confidence_less_retry_for_low_confidence_asr():
+    class GuardedASR:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio, language=None):
+            self.calls.append(language)
+            if language in (None, "", "auto"):
+                return FakeASRResult(
+                    "c'est du cobble ca va",
+                    language="fr",
+                    confidence=0.21,
+                    segments=[{"confidence": -0.84}],
+                )
+            return FakeASRResult("salut comment ca va", language=language)
+
+    class CapturingLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.calls.append(messages)
+            yield "I understand."
+
+    llm = CapturingLLM()
+    asr = GuardedASR()
+    tts = KokoroProvider()
+    pipeline = ConversationPipeline(
+        llm=llm,
+        tts=tts,
+        asr=asr,
+        config=ConversationConfig(stream_tts=False, asr_language="auto", reply_language="en"),
+    )
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result == "I understand."
+    assert asr.calls == ["auto", "fr"]
+    assert "salut comment ca va" in llm.calls[0][-1].content
+
+
+def test_pipeline_remembers_language_inferred_from_asr_text_without_language():
+    class CapturingLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.calls.append(messages)
+            yield "I understand."
+
+    class LanguageLessASR:
+        def transcribe(self, audio, language=None):
+            return FakeASRResult("Parle-moi des etoiles.", language=None, confidence=0.99)
+
+    llm = CapturingLLM()
+    tts = KokoroProvider()
+    pipeline = ConversationPipeline(
+        llm=llm,
+        tts=tts,
+        asr=LanguageLessASR(),
+        config=ConversationConfig(stream_tts=False, asr_language="auto", reply_language="en"),
+    )
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result == "I understand."
+    assert pipeline._last_user_language_code == "fr"
+    assert "The user is speaking French." in llm.calls[0][-1].content
+
+
 def test_pipeline_can_force_english_reply_while_understanding_french_input():
     class CapturingLLM:
         def __init__(self):
