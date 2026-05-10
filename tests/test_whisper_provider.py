@@ -1,8 +1,63 @@
+import sys
 from types import SimpleNamespace
 
 import numpy as np
 
 from src.asr.whisper_provider import WhisperProvider
+
+
+def test_whisper_provider_model_info_exposes_effective_device_after_cuda_fallback(monkeypatch):
+    calls = []
+
+    class FakeWhisperModel:
+        def __init__(self, model_path, device, compute_type, cpu_threads):
+            calls.append(
+                {
+                    "model_path": model_path,
+                    "device": device,
+                    "compute_type": compute_type,
+                    "cpu_threads": cpu_threads,
+                }
+            )
+            if device == "cuda":
+                raise RuntimeError("cuDNN failed to initialize")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    provider = WhisperProvider(model_size="small", device="cuda", compute_type="float16")
+
+    info_before = provider.get_model_info()
+    assert info_before["device"] == "cuda"
+    assert info_before["compute_type"] == "float16"
+    assert info_before["effective_device"] is None
+    assert info_before["effective_compute_type"] is None
+
+    provider._get_model()
+
+    info_after = provider.get_model_info()
+    assert calls == [
+        {
+            "model_path": "small",
+            "device": "cuda",
+            "compute_type": "float16",
+            "cpu_threads": 8,
+        },
+        {
+            "model_path": "small",
+            "device": "cpu",
+            "compute_type": "int8",
+            "cpu_threads": 8,
+        },
+    ]
+    assert info_after["device"] == "cuda"
+    assert info_after["compute_type"] == "float16"
+    assert info_after["effective_device"] == "cpu"
+    assert info_after["effective_compute_type"] == "int8"
+    assert info_after["loaded"] is True
 
 
 def test_whisper_provider_rejects_low_confidence_repetitive_hallucination():

@@ -119,6 +119,8 @@ class WhisperProvider(BaseASR):
         
         # Lazy loading - model loaded on first use
         self._model = None
+        self._effective_device: Optional[str] = None
+        self._effective_compute_type: Optional[str] = None
 
     @staticmethod
     def _looks_repetitive_hallucination(text: str) -> bool:
@@ -284,6 +286,8 @@ class WhisperProvider(BaseASR):
                     raise
             
             model_name = self.model_size if not is_french_model else f"{self.model_size} 🇫🇷"
+            self._effective_device = device
+            self._effective_compute_type = compute_type
             logger.info("%s loaded (device=%s, compute=%s)", model_name, device, compute_type)
             
         return self._model
@@ -464,6 +468,8 @@ class WhisperProvider(BaseASR):
         info["model_size"] = self.model_size
         info["device"] = self.device
         info["compute_type"] = self.compute_type
+        info["effective_device"] = self._effective_device
+        info["effective_compute_type"] = self._effective_compute_type
         info["beam_size"] = self.beam_size
         info["loaded"] = self._model is not None
         return info
