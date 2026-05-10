@@ -644,7 +644,12 @@ class RVCConverter:
         finally:
             self._reset_worker_state()
 
-    def _read_worker_response_line(self, timeout_sec: float) -> str:
+    def _read_worker_response_line(
+        self,
+        timeout_sec: float,
+        *,
+        operation: str = "response",
+    ) -> str:
         if self._worker_process is None or self._worker_process.stdout is None:
             raise RuntimeError("RVC worker stdout is not available")
 
@@ -665,7 +670,7 @@ class RVCConverter:
         except queue.Empty as exc:
             self._terminate_worker_process()
             raise TimeoutError(
-                f"RVC worker response timed out after {timeout_sec:.1f}s.\n"
+                f"RVC worker {operation} timed out after {timeout_sec:.1f}s.\n"
                 f"{self._worker_error_summary()}"
             ) from exc
 
@@ -703,26 +708,33 @@ class RVCConverter:
         self._worker_stderr_thread.start()
 
         assert self._worker_process.stdout is not None
-        ready_line = self._worker_process.stdout.readline().strip()
-        if not ready_line:
-            raise RuntimeError(
-                "RVC worker exited before initialization.\n"
-                f"{self._worker_error_summary()}\n{self.install_hint()}"
-            )
-
         try:
-            ready_payload = json.loads(ready_line)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "RVC worker returned an invalid startup response.\n"
-                f"stdout: {ready_line}\n{self._worker_error_summary()}"
-            ) from exc
+            ready_line = self._read_worker_response_line(
+                self.request_timeout_sec,
+                operation="startup",
+            ).strip()
+            if not ready_line:
+                raise RuntimeError(
+                    "RVC worker exited before initialization.\n"
+                    f"{self._worker_error_summary()}\n{self.install_hint()}"
+                )
 
-        if ready_payload.get("status") != "ready":
-            raise RuntimeError(
-                "RVC worker failed to start.\n"
-                f"{ready_payload}\n{self._worker_error_summary()}"
-            )
+            try:
+                ready_payload = json.loads(ready_line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "RVC worker returned an invalid startup response.\n"
+                    f"stdout: {ready_line}\n{self._worker_error_summary()}"
+                ) from exc
+
+            if ready_payload.get("status") != "ready":
+                raise RuntimeError(
+                    "RVC worker failed to start.\n"
+                    f"{ready_payload}\n{self._worker_error_summary()}"
+                )
+        except Exception:
+            self._terminate_worker_process()
+            raise
 
         self._converter = self._worker_process
         self._backend_name = "worker"

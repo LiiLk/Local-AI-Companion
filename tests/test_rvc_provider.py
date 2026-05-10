@@ -133,6 +133,18 @@ class FakeBlockingPopen(FakePopen):
         self.stdin = _BlockingStdin(self)
 
 
+class _NeverReadyStdout:
+    def readline(self):
+        time.sleep(0.2)
+        return ""
+
+
+class FakeNeverReadyPopen(FakePopen):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stdout = _NeverReadyStdout()
+
+
 def test_convert_file_with_modern_rvc_backend(tmp_path, monkeypatch):
     fake_module = types.ModuleType("rvc_inferpy")
     fake_module.RVCConverter = FakeModernRVC
@@ -257,6 +269,38 @@ def test_worker_backend_times_out_and_resets_worker(tmp_path, monkeypatch):
     )
 
     with pytest.raises(TimeoutError):
+        converter.convert_file(input_path, output_path)
+
+    assert converter._worker_process is None
+
+
+def test_worker_startup_times_out_and_resets_worker(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    index_path = tmp_path / "March-7th.index"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+    index_path.write_bytes(b"fake index")
+    input_path.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", FakeNeverReadyPopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        index_path=index_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+        request_timeout_sec=0.01,
+    )
+
+    with pytest.raises(TimeoutError, match="startup timed out"):
         converter.convert_file(input_path, output_path)
 
     assert converter._worker_process is None
