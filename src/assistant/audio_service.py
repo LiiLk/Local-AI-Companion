@@ -81,7 +81,9 @@ class AudioService:
         self.config = config or AudioServiceConfig()
 
         # State
-        self._state = MicState.MUTED if self.config.start_muted else MicState.LISTENING
+        self._muted_by_user = bool(self.config.start_muted)
+        self._processing_blocked = False
+        self._state = self._effective_state()
         self._running = False
         self._stream: Optional[object] = None
         self._capture_thread: Optional[threading.Thread] = None
@@ -122,6 +124,13 @@ class AudioService:
     @property
     def is_listening(self) -> bool:
         return self._state == MicState.LISTENING
+
+    def _effective_state(self) -> MicState:
+        if self._muted_by_user:
+            return MicState.MUTED
+        if self._processing_blocked:
+            return MicState.PROCESSING
+        return MicState.LISTENING
 
     def _set_state(self, new_state: MicState):
         """Set state and notify callback."""
@@ -176,36 +185,31 @@ class AudioService:
 
     def toggle_mute(self) -> bool:
         """Toggle mute state. Returns True if now muted."""
-        if self._state == MicState.MUTED:
-            self._set_state(MicState.LISTENING)
-            self._vad.reset()
-            return False
-        if self._state == MicState.LISTENING:
-            self._set_state(MicState.MUTED)
-            self._vad.reset()
-            return True
-        # If processing, don't change state
-        return self._state == MicState.MUTED
+        self._muted_by_user = not self._muted_by_user
+        self._set_state(self._effective_state())
+        self._vad.reset()
+        return self._muted_by_user
 
     def mute(self):
         """Mute microphone."""
-        if self._state != MicState.MUTED:
-            self._set_state(MicState.MUTED)
+        if not self._muted_by_user:
+            self._muted_by_user = True
+            self._set_state(self._effective_state())
             self._vad.reset()
 
     def unmute(self):
         """Unmute microphone."""
-        if self._state == MicState.MUTED:
-            self._set_state(MicState.LISTENING)
+        if self._muted_by_user:
+            self._muted_by_user = False
+            self._set_state(self._effective_state())
             self._vad.reset()
 
     def set_processing(self, processing: bool):
         """Set processing state (ignores audio while AI is speaking)."""
-        if processing:
-            self._set_state(MicState.PROCESSING)
+        if self._processing_blocked != processing:
+            self._processing_blocked = processing
+            self._set_state(self._effective_state())
             self._vad.reset()
-        else:
-            self._set_state(MicState.LISTENING)
 
     def _list_input_devices(self) -> list[tuple[int, dict]]:
         devices = []
