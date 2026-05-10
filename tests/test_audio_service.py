@@ -3,7 +3,67 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from src.assistant.audio_service import AudioService
+from src.assistant.audio_service import AudioService, MicState
+
+
+class DummyVAD:
+    def __init__(self):
+        self.reset_calls = 0
+
+    def reset(self):
+        self.reset_calls += 1
+
+
+def make_audio_service_state(
+    *,
+    muted_by_user: bool = False,
+    processing_blocked: bool = False,
+) -> AudioService:
+    service = object.__new__(AudioService)
+    service._muted_by_user = muted_by_user
+    service._processing_blocked = processing_blocked
+    service._state = service._effective_state()
+    service._vad = DummyVAD()
+    service.on_state_change = None
+    return service
+
+
+def test_audio_service_toggle_mute_works_while_processing():
+    service = make_audio_service_state(processing_blocked=True)
+
+    muted = service.toggle_mute()
+
+    assert muted is True
+    assert service.state == MicState.MUTED
+    assert service._vad.reset_calls == 1
+
+
+def test_audio_service_unmute_while_processing_returns_to_processing_state():
+    service = make_audio_service_state(muted_by_user=True, processing_blocked=True)
+
+    muted = service.toggle_mute()
+
+    assert muted is False
+    assert service.state == MicState.PROCESSING
+    assert service._vad.reset_calls == 1
+
+
+def test_audio_service_processing_release_preserves_user_mute():
+    service = make_audio_service_state(muted_by_user=True, processing_blocked=True)
+
+    service.set_processing(False)
+
+    assert service.state == MicState.MUTED
+    assert service._vad.reset_calls == 1
+
+
+def test_audio_service_processing_release_restores_listening_when_not_muted():
+    service = make_audio_service_state(processing_blocked=True)
+
+    service.set_processing(False)
+
+    assert service.state == MicState.LISTENING
+    assert service._vad.reset_calls == 1
 
 
 def test_audio_service_resample_uses_soxr_when_available(monkeypatch):
