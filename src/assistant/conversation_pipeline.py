@@ -403,6 +403,13 @@ class ConversationPipeline:
         if original_segment_confidence is not None and retry_segment_confidence is not None:
             return float(retry_segment_confidence) > float(original_segment_confidence)
 
+        if (
+            self._asr_result_is_low_confidence(original)
+            and retry_language_confidence is None
+            and retry_segment_confidence is None
+        ):
+            return True
+
         return False
 
     async def _transcribe_once(self, audio_bytes: bytes, language: Optional[str]) -> ASRResult:
@@ -421,6 +428,11 @@ class ConversationPipeline:
             str(detect_text_language(transcription, default=self._language_default()))
         )
         return asr_code or text_language or self._current_language_code or "en"
+
+    def _remember_user_language(self, language_code: Optional[str]) -> None:
+        normalized = self._normalize_supported_language(language_code)
+        if normalized:
+            self._last_user_language_code = normalized
 
     def _resolve_response_language(self, transcription: str, asr_language: Optional[str]) -> str:
         configured_reply_language = self._configured_reply_language()
@@ -577,6 +589,7 @@ class ConversationPipeline:
                 transcription,
                 getattr(transcription_result, "language", None),
             )
+            self._remember_user_language(user_language)
             self._apply_language_hint(response_language)
             
             logger.info(f"📝 Transcription: {transcription}")
@@ -664,6 +677,7 @@ class ConversationPipeline:
             }
             user_language = self._resolve_user_language(user_text, self.config.asr_language)
             response_language = self._resolve_response_language(user_text, self.config.asr_language)
+            self._remember_user_language(user_language)
             self._apply_language_hint(response_language)
 
             logger.info("⌨️ Desktop text input: %s", user_text[:120])

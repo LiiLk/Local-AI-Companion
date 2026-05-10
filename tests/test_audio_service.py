@@ -66,6 +66,34 @@ def test_audio_service_processing_release_restores_listening_when_not_muted():
     assert service._vad.reset_calls == 1
 
 
+def test_audio_service_start_preserves_pre_start_user_mute(monkeypatch):
+    class FakeThread:
+        def __init__(self, target, daemon, name):
+            self.target = target
+            self.daemon = daemon
+            self.name = name
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+    service = make_audio_service_state(muted_by_user=True)
+    service.config = SimpleNamespace(start_muted=False)
+    service._running = False
+    service._loop = None
+    service._stream = None
+    service._capture_thread = None
+    service._capture_loop = lambda: None
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+    monkeypatch.setattr("src.assistant.audio_service.threading.Thread", FakeThread)
+
+    service.start()
+
+    assert service.state == MicState.MUTED
+    assert service._muted_by_user is True
+    assert service._capture_thread.started is True
+
+
 def test_audio_service_resample_uses_soxr_when_available(monkeypatch):
     calls = []
 

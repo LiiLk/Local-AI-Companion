@@ -164,8 +164,7 @@ class AudioService:
 
         logger.info("🎤 AudioService started")
 
-        if not self.config.start_muted:
-            self._set_state(MicState.LISTENING)
+        self._set_state(self._effective_state())
 
     def stop(self):
         """Stop audio capture."""
