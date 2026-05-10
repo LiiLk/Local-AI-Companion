@@ -370,13 +370,126 @@ def test_pipeline_retries_low_confidence_language_with_previous_language_hint():
         asr=asr,
         config=ConversationConfig(stream_tts=False, asr_language="auto"),
     )
-    pipeline._current_language_code = "fr"
+    pipeline._last_user_language_code = "fr"
 
     result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
 
     assert result == "Ça va bien."
     assert asr.calls == ["auto", "fr"]
     assert "Comment ça va ?" in llm.messages[-1].content
+
+
+def test_pipeline_reply_language_does_not_force_asr_retry_language():
+    class GuardedASR:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio, language=None):
+            self.calls.append(language)
+            if language in (None, "", "auto"):
+                return FakeASRResult(
+                    "c'est du cobble Ã§a va",
+                    language="fr",
+                    confidence=0.21,
+                    segments=[{"confidence": -0.84}],
+                )
+            if language == "en":
+                return FakeASRResult(
+                    "That's a good cobalt sound",
+                    language="en",
+                    confidence=0.99,
+                    segments=[{"confidence": -0.20}],
+                )
+            if language == "fr":
+                return FakeASRResult(
+                    "salut comment ca va",
+                    language="fr",
+                    confidence=0.99,
+                    segments=[{"confidence": -0.20}],
+                )
+            return FakeASRResult("corrected", language=language, confidence=0.99)
+
+    class CapturingLLM:
+        def __init__(self):
+            self.messages = None
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.messages = messages
+            self.calls.append(messages)
+            yield "I understand."
+
+    llm = CapturingLLM()
+    asr = GuardedASR()
+    tts = KokoroProvider()
+    pipeline = ConversationPipeline(
+        llm=llm,
+        tts=tts,
+        asr=asr,
+        config=ConversationConfig(
+            stream_tts=False,
+            asr_language="auto",
+            reply_language="en",
+        ),
+    )
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result == "I understand."
+    assert asr.calls == ["auto", "fr"]
+    assert "salut comment ca va" in llm.calls[0][-1].content
+    assert "reply ONLY in English" in llm.calls[0][-1].content
+    assert pipeline._last_user_language_code == "fr"
+
+
+def test_pipeline_rejects_low_confidence_asr_when_retry_is_not_better():
+    class GuardedASR:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio, language=None):
+            self.calls.append(language)
+            if language == "en":
+                return FakeASRResult(
+                    "That's a good cobalt sound",
+                    language="en",
+                    confidence=0.99,
+                    segments=[{"confidence": -0.20}],
+                )
+            return FakeASRResult(
+                "c'est du cobble ca va",
+                language="fr",
+                confidence=0.21,
+                segments=[{"confidence": -0.84}],
+            )
+
+    class CapturingLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_stream(self, messages):
+            self.calls.append(messages)
+            yield "I understand."
+
+    llm = CapturingLLM()
+    asr = GuardedASR()
+    tts = KokoroProvider()
+    pipeline = ConversationPipeline(
+        llm=llm,
+        tts=tts,
+        asr=asr,
+        config=ConversationConfig(
+            stream_tts=False,
+            asr_language="auto",
+            reply_language="en",
+        ),
+    )
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result is None
+    assert asr.calls == ["auto", "fr"]
+    assert llm.calls == []
 
 
 def test_pipeline_can_force_english_reply_while_understanding_french_input():
