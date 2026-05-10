@@ -254,6 +254,7 @@ class ConversationPipeline:
         self._is_processing = False
         self._current_expression: Optional[str] = None
         self._current_language_code: str = self._normalize_supported_language(self.config.asr_language) or "en"
+        self._last_user_language_code: Optional[str] = self._normalize_supported_language(self.config.asr_language)
         self._active_run_id: int = 0
         self._run_counter: int = 0
 
@@ -321,7 +322,7 @@ class ConversationPipeline:
         return normalize_language_code(language)
 
     def _language_default(self) -> str:
-        return self._current_language_code or "en"
+        return self._last_user_language_code or self._current_language_code or "en"
 
     def _configured_reply_language(self) -> Optional[str]:
         return self._normalize_supported_language(self.config.reply_language)
@@ -345,7 +346,7 @@ class ConversationPipeline:
         if configured_language is not None:
             return False
 
-        current_language = self._normalize_supported_language(self._current_language_code)
+        current_language = self._normalize_supported_language(self._last_user_language_code)
         detected_language = self._normalize_supported_language(getattr(result, "language", None))
         if not current_language or not detected_language or detected_language == current_language:
             return False
@@ -364,6 +365,45 @@ class ConversationPipeline:
         )
 
         return low_language_confidence or low_segment_confidence
+
+    def _asr_result_is_low_confidence(self, result: ASRResult) -> bool:
+        language_confidence = getattr(result, "confidence", None)
+        segment_confidence = self._result_segment_confidence(result)
+
+        low_language_confidence = (
+            language_confidence is not None and float(language_confidence) < 0.35
+        )
+        low_segment_confidence = (
+            segment_confidence is not None and float(segment_confidence) < -0.80
+        )
+
+        if language_confidence is not None and segment_confidence is not None:
+            return low_language_confidence and low_segment_confidence
+        return low_language_confidence or low_segment_confidence
+
+    def _should_retry_detected_language(self, result: ASRResult) -> bool:
+        if self._normalize_supported_language(self.config.asr_language) is not None:
+            return False
+        detected_language = self._normalize_supported_language(getattr(result, "language", None))
+        if not detected_language:
+            return False
+        return self._asr_result_is_low_confidence(result)
+
+    def _asr_retry_is_better(self, original: ASRResult, retry: ASRResult) -> bool:
+        if not retry.text or not retry.text.strip():
+            return False
+
+        original_language_confidence = getattr(original, "confidence", None)
+        retry_language_confidence = getattr(retry, "confidence", None)
+        if original_language_confidence is not None and retry_language_confidence is not None:
+            return float(retry_language_confidence) > float(original_language_confidence)
+
+        original_segment_confidence = self._result_segment_confidence(original)
+        retry_segment_confidence = self._result_segment_confidence(retry)
+        if original_segment_confidence is not None and retry_segment_confidence is not None:
+            return float(retry_segment_confidence) > float(original_segment_confidence)
+
+        return False
 
     async def _transcribe_once(self, audio_bytes: bytes, language: Optional[str]) -> ASRResult:
         audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -689,33 +729,36 @@ class ConversationPipeline:
         if not result.text or not result.text.strip():
             return None
 
+        retried_languages: set[str] = set()
         detected_lang = self._normalize_supported_language(getattr(result, "language", None))
         if (
             self._normalize_supported_language(self.config.asr_language) is None
             and getattr(result, "language", None)
             and detected_lang is None
-            and self._current_language_code
+            and self._last_user_language_code
         ):
-            retry_language = self._current_language_code
+            retry_language = self._last_user_language_code
             logger.warning(
                 "ASR auto-detect returned out-of-scope language=%s, retrying with forced language=%s",
                 getattr(result, "language", None),
                 retry_language,
             )
+            retried_languages.add(retry_language)
             retry_result = await self._transcribe_once(audio_bytes, retry_language)
-            if retry_result.text and retry_result.text.strip():
+            if self._asr_retry_is_better(result, retry_result):
                 result = retry_result
 
         if self._should_retry_with_language_hint(result):
-            retry_language = self._current_language_code
+            retry_language = self._last_user_language_code
             logger.warning(
                 "ASR low-confidence language=%s (confidence=%s), retrying with previous language=%s",
                 getattr(result, "language", None),
                 getattr(result, "confidence", None),
                 retry_language,
             )
+            retried_languages.add(retry_language)
             retry_result = await self._transcribe_once(audio_bytes, retry_language)
-            if retry_result.text and retry_result.text.strip():
+            if self._asr_retry_is_better(result, retry_result):
                 logger.info(
                     "ASR retry accepted: %r -> %r",
                     result.text.strip()[:80],
@@ -723,9 +766,37 @@ class ConversationPipeline:
                 )
                 result = retry_result
 
+        if self._should_retry_detected_language(result):
+            retry_language = self._normalize_supported_language(getattr(result, "language", None))
+            if retry_language and retry_language not in retried_languages:
+                logger.warning(
+                    "ASR low-confidence transcript in detected language=%s; retrying with explicit language hint",
+                    retry_language,
+                )
+                retried_languages.add(retry_language)
+                retry_result = await self._transcribe_once(audio_bytes, retry_language)
+                if self._asr_retry_is_better(result, retry_result):
+                    logger.info(
+                        "ASR detected-language retry accepted: %r -> %r",
+                        result.text.strip()[:80],
+                        retry_result.text.strip()[:80],
+                    )
+                    result = retry_result
+
+        if self._asr_result_is_low_confidence(result):
+            logger.warning(
+                "Rejecting low-confidence ASR transcript: language=%s confidence=%s segment_confidence=%s text=%r",
+                getattr(result, "language", None),
+                getattr(result, "confidence", None),
+                self._result_segment_confidence(result),
+                result.text.strip()[:120],
+            )
+            return None
+
         normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
         if normalized_lang:
             result.language = normalized_lang
+            self._last_user_language_code = normalized_lang
         return result
     
     async def _get_full_response(

@@ -307,6 +307,20 @@ class AudioService:
         if src_rate == dst_rate or audio.size == 0:
             return audio
 
+        try:
+            import soxr
+
+            return soxr.resample(
+                audio.astype(np.float32, copy=False),
+                src_rate,
+                dst_rate,
+            ).astype(np.float32, copy=False)
+        except Exception as exc:
+            logger.debug(
+                "soxr resampling unavailable, falling back to linear interpolation: %s",
+                exc,
+            )
+
         target_length = max(1, int(round(audio.size * dst_rate / src_rate)))
         src_positions = np.arange(audio.size, dtype=np.float32)
         dst_positions = np.linspace(0, audio.size - 1, num=target_length, dtype=np.float32)
