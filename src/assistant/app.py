@@ -57,6 +57,7 @@ from src.utils.logging_setup import (
     get_conversation_logger,
     log_conversation_event,
 )
+from src.utils.startup_profiler import StartupProfiler
 
 # Conditional imports
 try:
@@ -100,6 +101,11 @@ def _describe_exception(exc: BaseException) -> str:
     if message:
         return message
     return exc.__class__.__name__
+
+
+def _startup_step_name(label: str, suffix: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return f"preload_{normalized or 'step'}_{suffix}"
 
 
 def resolve_turn_timeout_sec(config: dict) -> int:
@@ -306,10 +312,14 @@ class Live2DAssistant:
     """
     
     def __init__(self, config_path: Optional[Path] = None):
+        self._startup_profiler = StartupProfiler("desktop")
+        self._startup_profile_logged = False
+
         # Load config
         self.config_path = config_path or PROJECT_ROOT / "config" / "config.yaml"
         self.config = load_config(self.config_path)
         self.config = resolve_character_config(self.config)
+        self._mark_startup_step("config_loaded")
 
         # State
         self._running = False
@@ -356,12 +366,28 @@ class Live2DAssistant:
         logger.info("Live2DAssistant created")
         logger.info("Runtime logs: %s", RUNTIME_LOG_PATH)
         logger.info("Conversation logs: %s", CONVERSATION_LOG_PATH)
+
+    def _mark_startup_step(self, name: str) -> None:
+        profiler = getattr(self, "_startup_profiler", None)
+        if profiler is not None:
+            profiler.mark(name)
+
+    def _finish_startup_profile(self, status: str) -> None:
+        if getattr(self, "_startup_profile_logged", False):
+            return
+        self._startup_profile_logged = True
+        profiler = getattr(self, "_startup_profiler", None)
+        if profiler is None:
+            return
+        profiler.mark(f"startup_{status}")
+        profiler.log_summary(logger, status=status)
     
     def _create_components(self):
         """Create ASR, LLM, TTS, and pipeline components."""
         character_config = self.config.get('character', {})
         mode = self.config.get('mode', 'pipeline')
         self._pipeline_runtime = None
+        self._mark_startup_step("components_create_start")
 
         logger.info("=" * 50)
         logger.info("STACK CONFIGURATION")
@@ -491,7 +517,9 @@ class Live2DAssistant:
 
         else:
             self._pipeline_runtime = create_pipeline_runtime(self.config)
+            self._mark_startup_step("pipeline_runtime_created")
             runtime = self._pipeline_runtime.build_components()
+            self._mark_startup_step("pipeline_components_built")
             logger.info("LLM: %s", runtime.llm_summary)
             logger.info("TTS: %s", runtime.tts_summary)
             logger.info("ASR: %s", runtime.asr_summary)
@@ -540,6 +568,7 @@ class Live2DAssistant:
         self.audio_service.on_speech_end = self._on_speech_end
         self.audio_service.on_speech_detected = self._on_speech_detected
         self.audio_service.on_state_change = self._on_mic_state_change
+        self._mark_startup_step("audio_service_created")
 
         logger.info("All components created")
 
@@ -1189,12 +1218,16 @@ class Live2DAssistant:
         def preload_step(label: str, load_fn) -> bool:
             if shutdown_requested():
                 logger.info("Skipping %s preload because shutdown was requested", label)
+                self._mark_startup_step(_startup_step_name(label, "skipped"))
                 return False
             with self._preload_runtime_lock:
                 if shutdown_requested():
                     logger.info("Skipping %s preload because shutdown was requested", label)
+                    self._mark_startup_step(_startup_step_name(label, "skipped"))
                     return False
+                self._mark_startup_step(_startup_step_name(label, "start"))
                 load_fn()
+                self._mark_startup_step(_startup_step_name(label, "done"))
             return not shutdown_requested()
 
         def close_partial_pipeline_runtime() -> None:
@@ -1215,15 +1248,18 @@ class Live2DAssistant:
 
         try:
             self._set_backend_health(state="warming_up", runtime_error=None)
+            self._mark_startup_step("background_preload_start")
             if hasattr(self, '_omni_pipeline') and self._omni_pipeline:
                 logger.info("⏳ Pre-loading omni model in background...")
                 if not preload_step("omni", self._omni_pipeline.preload):
+                    self._finish_startup_profile("shutdown")
                     return
                 logger.info("✅ Omni model ready")
 
             if hasattr(self, '_gemma_pipeline') and self._gemma_pipeline:
                 logger.info("⏳ Pre-loading Gemma + Chatterbox in background...")
                 if not preload_step("Gemma + Chatterbox", self._gemma_pipeline.preload):
+                    self._finish_startup_profile("shutdown")
                     return
                 logger.info("✅ Gemma + Chatterbox ready")
 
@@ -1234,21 +1270,25 @@ class Live2DAssistant:
 
                     if not preload_step("LLM", runtime.preload_llm):
                         close_partial_pipeline_runtime()
+                        self._finish_startup_profile("shutdown")
                         return
                     self.pipeline.llm = runtime.llm
 
                     if not preload_step("ASR", runtime.preload_asr):
                         close_partial_pipeline_runtime()
+                        self._finish_startup_profile("shutdown")
                         return
                     self.pipeline.asr = runtime.asr
 
                     if not preload_step("TTS", runtime.preload_tts):
                         close_partial_pipeline_runtime()
+                        self._finish_startup_profile("shutdown")
                         return
                     self.pipeline.tts = runtime.tts
 
                     if not preload_step("RVC", runtime.preload_rvc):
                         close_partial_pipeline_runtime()
+                        self._finish_startup_profile("shutdown")
                         return
                     self.pipeline.rvc = runtime.rvc
                 logger.info("✅ Pipeline models ready")
@@ -1256,6 +1296,7 @@ class Live2DAssistant:
             if not self._running:
                 logger.info("Model preload finished after shutdown began; skipping audio start")
                 close_partial_pipeline_runtime()
+                self._finish_startup_profile("shutdown")
                 return
 
             degraded_reason = self._collect_degraded_reason()
@@ -1266,11 +1307,15 @@ class Live2DAssistant:
             )
             if self.audio_service and self._loop and not self.audio_service._running:
                 self.audio_service.start(self._loop)
+                self._mark_startup_step("audio_capture_started")
                 logger.info("✅ Audio capture enabled after model preload")
             self._dispatch_frontend_event("onBackendReady", self.get_runtime_state())
+            self._finish_startup_profile("degraded" if degraded_reason else "ready")
 
         except Exception as e:
             self._set_backend_health(state="error", runtime_error=str(e))
+            self._mark_startup_step("background_preload_error")
+            self._finish_startup_profile("error")
             logger.error(f"Background preload failed: {e}", exc_info=True)
             self._dispatch_frontend_event("onError", str(e), self._resolve_turn_id())
 
@@ -1279,6 +1324,7 @@ class Live2DAssistant:
         if self._preload_thread and self._preload_thread.is_alive():
             return
 
+        self._mark_startup_step("background_preload_thread_start")
         self._preload_thread = threading.Thread(
             target=self._preload_models_and_start_audio,
             daemon=True,
@@ -1431,11 +1477,13 @@ class Live2DAssistant:
         import threading
         self._loop_thread = threading.Thread(target=run_loop, daemon=True)
         self._loop_thread.start()
+        self._mark_startup_step("event_loop_started")
         logger.info("✅ Event loop started in background thread")
 
         if bridge_only:
             self._bridge_server = DesktopBridgeServer(self, port=bridge_port)
             asyncio.run_coroutine_threadsafe(self._bridge_server.start(), self._loop).result(timeout=5)
+            self._mark_startup_step("bridge_server_started")
             logger.info("Bridge-only desktop backend enabled on port %s", bridge_port)
         
         # Pre-load models without blocking the window, then start audio capture
