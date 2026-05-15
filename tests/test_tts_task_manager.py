@@ -186,3 +186,19 @@ async def test_llm_stream_not_blocked():
 
     await mgr.finish()
     assert len(delivered) == 3
+
+
+@pytest.mark.asyncio
+async def test_submit_backpressures_when_queue_is_full():
+    tts = FakeTTS()
+
+    async def on_audio(payload):
+        pass
+
+    mgr = TTSTaskManager(tts=tts, on_audio_ready=on_audio, max_queue_size=1)
+    await mgr.submit("Queued sentence.")
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(mgr.submit("Blocked sentence."), timeout=0.02)
+
+    await mgr.cancel()

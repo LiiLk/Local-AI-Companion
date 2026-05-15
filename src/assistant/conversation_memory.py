@@ -73,7 +73,7 @@ class ConversationMemoryStore:
                     ),
                 )
             )
-        context.extend(select_recent_turns(self.load_messages(), self.config.max_recent_turns))
+        context.extend(self.load_recent_messages(self.config.max_recent_turns * 2))
         return context
 
     def load_messages(self) -> list[Message]:
@@ -87,27 +87,44 @@ class ConversationMemoryStore:
                     line = line.strip()
                     if not line:
                         continue
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Ignoring malformed memory line %s in %s",
-                            line_number,
-                            self.config.history_path,
-                        )
-                        continue
-
-                    role = str(payload.get("role") or "")
-                    content = _truncate_memory_text(
-                        str(payload.get("content") or ""),
-                        self.config.max_message_chars,
+                    message = _parse_memory_line(
+                        line,
+                        max_message_chars=self.config.max_message_chars,
+                        history_path=self.config.history_path,
+                        line_number=line_number,
                     )
-                    if role not in VALID_MEMORY_ROLES or not content:
-                        continue
-                    messages.append(Message(role=role, content=content))
+                    if message:
+                        messages.append(message)
         except OSError as exc:
             logger.warning("Could not read conversation memory: %s", exc)
         return messages
+
+    def load_recent_messages(self, max_messages: int) -> list[Message]:
+        """Return the newest valid messages without loading the full history file."""
+        if (
+            not self.enabled
+            or max_messages <= 0
+            or not self.config.history_path.exists()
+        ):
+            return []
+
+        messages: list[Message] = []
+        try:
+            for line in _iter_file_lines_reverse(self.config.history_path):
+                message = _parse_memory_line(
+                    line,
+                    max_message_chars=self.config.max_message_chars,
+                    history_path=self.config.history_path,
+                )
+                if not message:
+                    continue
+                messages.append(message)
+                if len(messages) >= max_messages:
+                    break
+        except OSError as exc:
+            logger.warning("Could not read recent conversation memory: %s", exc)
+            return []
+        return list(reversed(messages))
 
     def load_summary(self) -> str:
         if (
@@ -355,6 +372,58 @@ def select_recent_turns(messages: list[Message], max_recent_turns: int) -> list[
     if max_recent_turns <= 0:
         return []
     return list(messages[-max_recent_turns * 2 :])
+
+
+def _parse_memory_line(
+    line: str,
+    *,
+    max_message_chars: int,
+    history_path: Path,
+    line_number: int | None = None,
+) -> Message | None:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        if line_number is None:
+            logger.warning("Ignoring malformed memory line in %s", history_path)
+        else:
+            logger.warning(
+                "Ignoring malformed memory line %s in %s",
+                line_number,
+                history_path,
+            )
+        return None
+
+    role = str(payload.get("role") or "")
+    content = _truncate_memory_text(
+        str(payload.get("content") or ""),
+        max_message_chars,
+    )
+    if role not in VALID_MEMORY_ROLES or not content:
+        return None
+    return Message(role=role, content=content)
+
+
+def _iter_file_lines_reverse(path: Path, chunk_size: int = 8192):
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        position = handle.tell()
+        buffer = b""
+        while position > 0:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            parts = (chunk + buffer).split(b"\n")
+            buffer = parts[0]
+            for raw_line in reversed(parts[1:]):
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if line:
+                    yield line
+        if buffer:
+            line = buffer.decode("utf-8", errors="replace").strip()
+            if line:
+                yield line
 
 
 async def _collect_llm_text(llm: Any, messages: list[Message], max_chars: int) -> str:

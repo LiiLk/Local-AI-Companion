@@ -36,6 +36,7 @@ def test_build_pipeline_conversation_config_uses_pipeline_defaults():
         },
         "tts": {
             "stream_tts": True,
+            "max_queue_size": 4,
             "auto_detect_language": False,
         },
         "asr": {
@@ -51,6 +52,7 @@ def test_build_pipeline_conversation_config_uses_pipeline_defaults():
     assert conversation_config.character_name == "March 7th"
     assert conversation_config.system_prompt == "You are March 7th."
     assert conversation_config.stream_tts is True
+    assert conversation_config.tts_max_queue_size == 4
     assert conversation_config.auto_detect_language is False
     assert conversation_config.asr_language == "auto"
     assert conversation_config.reply_language == "en"

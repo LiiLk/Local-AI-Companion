@@ -423,6 +423,7 @@ class Live2DAssistant:
                 character_name=character_config.get('name', 'AI'),
                 system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
                 stream_tts=omni_config.get('stream_tts', False),
+                tts_max_queue_size=max(0, int(self.config.get('tts', {}).get('max_queue_size', 8))),
                 reply_language=self.config.get('pipeline', {}).get('reply_language'),
                 omni_use_single_pass=omni_config.get('use_single_pass', True),
                 omni_transcribe_for_history=omni_config.get('transcribe_for_history', False),
@@ -491,6 +492,7 @@ class Live2DAssistant:
                 character_name=character_config.get('name', 'AI'),
                 system_prompt=character_config.get('system_prompt', 'You are a helpful assistant.'),
                 stream_tts=tts_config.get('stream_tts', True),
+                tts_max_queue_size=max(0, int(tts_config.get('max_queue_size', 8))),
                 reply_language=self.config.get('pipeline', {}).get('reply_language'),
             )
             self._gemma_pipeline = GemmaOmniPipeline(

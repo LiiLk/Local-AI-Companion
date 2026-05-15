@@ -3,7 +3,8 @@ TTS Task Manager -- Decouples LLM streaming from TTS synthesis.
 
 Accepts sentences via submit(), synthesizes them sequentially
 (GPU-safe), and delivers audio payloads via callback in order.
-The LLM stream never blocks while TTS is working.
+The queue is bounded so very long LLM streams apply backpressure instead of
+growing memory without limit while TTS is working.
 """
 
 import asyncio
@@ -59,6 +60,7 @@ class TTSTaskManager:
         lip_sync_chunk_ms: int = 50,
         on_expression: Optional[Callable[..., Coroutine]] = None,
         emotion_detector: Optional[Any] = None,
+        max_queue_size: int = 8,
     ):
         self._tts = tts
         self._on_audio_ready = on_audio_ready
@@ -67,7 +69,10 @@ class TTSTaskManager:
         self._lip_sync_chunk_ms = lip_sync_chunk_ms
         self._on_expression = on_expression
         self._emotion_detector = emotion_detector
-        self._queue: asyncio.Queue[tuple[str, Optional[str], float] | None] = asyncio.Queue()
+        queue_maxsize = max(0, int(max_queue_size))
+        self._queue: asyncio.Queue[tuple[str, Optional[str], float] | None] = asyncio.Queue(
+            maxsize=queue_maxsize
+        )
         self._worker_task: Optional[asyncio.Task] = None
 
     async def start(self):
@@ -212,8 +217,10 @@ class TTSTaskManager:
         await self._on_audio_ready(payload)
 
     async def _apply_rvc(self, wav_bytes: bytes) -> tuple[bytes, bytes, int]:
-        src = Path(tempfile.mktemp(suffix=".wav"))
-        dst = Path(tempfile.mktemp(suffix=".rvc.wav"))
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as src_file:
+            src = Path(src_file.name)
+        with tempfile.NamedTemporaryFile(suffix=".rvc.wav", delete=False) as dst_file:
+            dst = Path(dst_file.name)
         try:
             src.write_bytes(wav_bytes)
             loop = asyncio.get_event_loop()

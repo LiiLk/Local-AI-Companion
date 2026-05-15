@@ -237,6 +237,7 @@ class ConversationState:
             pipeline_config = ConversationConfig(
                 character_name=character.get("name", "AI"),
                 system_prompt=character.get("system_prompt", "You are a helpful assistant."),
+                tts_max_queue_size=max(0, int(self.config.get("tts", {}).get("max_queue_size", 8))),
                 reply_language=self.config.get("pipeline", {}).get("reply_language"),
             )
             self.omni_pipeline = OmniPipeline(
@@ -291,6 +292,7 @@ class ConversationState:
                 character_name=character.get("name", "AI"),
                 system_prompt=character.get("system_prompt", "You are a helpful assistant."),
                 stream_tts=tts_config.get("stream_tts", True),
+                tts_max_queue_size=max(0, int(tts_config.get("max_queue_size", 8))),
                 reply_language=self.config.get("pipeline", {}).get("reply_language"),
             )
             self.gemma_pipeline = GemmaOmniPipeline(
@@ -1174,6 +1176,7 @@ class WebSocketManager:
             tts=tts_obj,
             on_audio_ready=_on_ws_audio,
             rvc=rvc_obj,
+            max_queue_size=max(0, int(state.config.get("tts", {}).get("max_queue_size", 8))),
             emotion_detector=state.emotion_detector,
         )
         await tts_mgr.start()

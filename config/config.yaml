@@ -97,6 +97,9 @@ tts:
   # - "chatterbox" / "edge" : optional fallbacks
   provider: "kokoro"
   stream_tts: true
+  # Max queued sentences waiting for TTS. Keeps long LLM streams memory-bounded.
+  # Set to 0 only for the legacy unbounded queue behavior.
+  max_queue_size: 8
   warmup_on_start: true
   auto_detect_language: true
   kokoro_voice: "ff_siwis"

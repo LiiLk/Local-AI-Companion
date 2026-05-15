@@ -235,6 +235,7 @@ def build_pipeline_conversation_config(config: dict) -> ConversationConfig:
         character_name=character_config.get("name", "AI"),
         system_prompt=character_config.get("system_prompt", "You are a helpful assistant."),
         stream_tts=tts_config.get("stream_tts", True),
+        tts_max_queue_size=max(0, int(tts_config.get("max_queue_size", 8))),
         auto_detect_language=tts_config.get("auto_detect_language", True),
         asr_language=asr_config.get("language", "auto"),
         reply_language=config.get("pipeline", {}).get("reply_language"),

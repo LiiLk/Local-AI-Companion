@@ -326,6 +326,7 @@ llm:
 
 tts:
   provider: "kokoro"
+  max_queue_size: 8
   warmup_on_start: true
   rvc:
     enabled: true
