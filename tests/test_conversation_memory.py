@@ -45,6 +45,40 @@ def test_memory_store_persists_and_loads_bounded_recent_context():
         shutil.rmtree(test_dir, ignore_errors=True)
 
 
+def test_memory_store_loads_recent_context_from_tail():
+    test_dir = _test_dir("tail-context")
+    try:
+        history_path = test_dir / "conversation.jsonl"
+        old_entries = "".join(
+            f'{{"role":"user","content":"old {index}"}}\n'
+            for index in range(200)
+        )
+        history_path.write_text(
+            old_entries
+            + '{"role":"assistant","content":"old ignored"}\n'
+            + "not-json\n"
+            + '{"role":"user","content":"latest user"}\n'
+            + '{"role":"assistant","content":"latest assistant"}\n',
+            encoding="utf-8",
+        )
+        store = ConversationMemoryStore(
+            ConversationMemoryConfig(
+                history_path=history_path,
+                summary_path=test_dir / "summary.txt",
+                max_recent_turns=1,
+            )
+        )
+
+        messages = store.load_context_messages()
+
+        assert [(message.role, message.content) for message in messages] == [
+            ("user", "latest user"),
+            ("assistant", "latest assistant"),
+        ]
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
 def test_memory_store_includes_existing_summary_as_system_context():
     test_dir = _test_dir("summary-context")
     try:
