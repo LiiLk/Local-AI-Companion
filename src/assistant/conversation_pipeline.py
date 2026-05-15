@@ -61,6 +61,7 @@ class ConversationConfig:
     # TTS
     tts_sample_rate: int = 24000
     lip_sync_chunk_ms: int = 50  # Chunk size for volume analysis
+    tts_max_queue_size: int = 8
     
     # Behavior
     stream_tts: bool = True  # Synthesize sentence-by-sentence
@@ -902,6 +903,7 @@ class ConversationPipeline:
             rvc=self.rvc,
             sample_rate=self.config.tts_sample_rate,
             lip_sync_chunk_ms=self.config.lip_sync_chunk_ms,
+            max_queue_size=self.config.tts_max_queue_size,
             on_expression=_on_expression,
             emotion_detector=self.emotion_detector,
         )
