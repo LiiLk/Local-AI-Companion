@@ -27,6 +27,7 @@ env/
 .venv-qwen3-tts/
 .venv-qwen3-asr/
 .venv-qwen3-asr-worker/
+.venv-audit/
 .env/
 
 # IDE
@@ -55,6 +56,7 @@ Thumbs.db
 *.ogg
 models/
 logs/
+reports/
 data/memory/
 data/benchmarks/
 *.log
