@@ -16,7 +16,7 @@ async def _make_llm(handler):
         app_title="Local-AI-Companion",
         options={
             "temperature": 0.6,
-            "max_completion_tokens": 96,
+            "max_completion_tokens": 512,
             "reasoning": {"effort": "high"},
         },
     )
@@ -60,7 +60,7 @@ async def test_openrouter_chat_sends_openai_compatible_payload():
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
             "temperature": 0.6,
-            "max_completion_tokens": 96,
+            "max_completion_tokens": 512,
             "reasoning": {"effort": "high"},
         }
     ]
