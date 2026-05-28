@@ -34,12 +34,16 @@ Experimental omni / multimodal providers:
 python -m venv .venv-omni-experiment
 .venv-omni-experiment\Scripts\activate
 python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python -m pip install -r requirements-optional-omni.txt
 ```
 
-Do not install `requirements-optional-omni.txt` into the stable runtime
-environment for now. `minicpmo-utils` currently pins `pillow==10.4.0`, which
-conflicts with the audited runtime lower bound `pillow>=12.2.0`.
+Install `requirements.txt` first because omni modes still start through the
+normal app entry points and shared modules before loading provider-specific
+extras. Keep this as a separate experiment environment: do not install
+`requirements-optional-omni.txt` into the stable runtime environment for now.
+`minicpmo-utils` currently pins `pillow==10.4.0`, which conflicts with the
+audited runtime lower bound `pillow>=12.2.0`.
 
 Audit tooling:
 
