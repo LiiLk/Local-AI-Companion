@@ -28,6 +28,7 @@ env/
 .venv-qwen3-asr/
 .venv-qwen3-asr-worker/
 .venv-audit/
+.venv-prcheck/
 .env/
 
 # IDE
