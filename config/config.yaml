@@ -71,7 +71,7 @@ llm:
       presence_penalty: 0.1
 
   openrouter:
-    model: "deepseek/deepseek-v4-pro"
+    model: "deepseek/deepseek-v4-flash"
     api_key: null  # keep null here; use env or config.local.yaml
     api_key_env: "OPENROUTER_API_KEY"
     base_url: "https://openrouter.ai/api/v1"
@@ -85,7 +85,7 @@ llm:
       top_p: 0.9
       max_completion_tokens: 96
       reasoning:
-        effort: "none"
+        effort: "high"
 
 character:
   preset: "march7th"
