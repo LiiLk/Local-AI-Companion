@@ -37,6 +37,7 @@ env/
 *.swo
 *~
 .pytest_cache/
+.pytest-tmp/
 .codex_pytest*/
 .codex_tmp_pytest/
 .codex_test_artifacts/

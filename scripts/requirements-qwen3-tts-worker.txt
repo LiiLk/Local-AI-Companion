@@ -1,1 +1,3 @@
+-c ../constraints-security.txt
+
 qwen-tts==0.1.1
