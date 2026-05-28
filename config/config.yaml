@@ -71,7 +71,7 @@ llm:
       presence_penalty: 0.1
 
   openrouter:
-    model: "x-ai/grok-4.1-fast"
+    model: "deepseek/deepseek-v4-pro"
     api_key: null  # keep null here; use env or config.local.yaml
     api_key_env: "OPENROUTER_API_KEY"
     base_url: "https://openrouter.ai/api/v1"

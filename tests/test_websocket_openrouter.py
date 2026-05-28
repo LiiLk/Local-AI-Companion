@@ -16,7 +16,7 @@ async def test_conversation_state_initialize_selects_openrouter(monkeypatch):
         "llm": {
             "provider": "openrouter",
             "openrouter": {
-                "model": "x-ai/grok-4.1-fast",
+                "model": "deepseek/deepseek-v4-pro",
                 "api_key": "test-key",
             },
         },
@@ -28,7 +28,7 @@ async def test_conversation_state_initialize_selects_openrouter(monkeypatch):
 
     def fake_create_pipeline_runtime(config, *, initial_tts_language=None):
         openrouter_config = config["llm"]["openrouter"]
-        assert openrouter_config["model"] == "x-ai/grok-4.1-fast"
+        assert openrouter_config["model"] == "deepseek/deepseek-v4-pro"
         assert openrouter_config["api_key"] == "test-key"
         assert initial_tts_language == "en"
         return runtime

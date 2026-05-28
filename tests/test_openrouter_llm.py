@@ -9,7 +9,7 @@ from src.llm.openrouter_llm import OpenRouterLLM
 
 async def _make_llm(handler):
     llm = OpenRouterLLM(
-        model="x-ai/grok-4.1-fast",
+        model="deepseek/deepseek-v4-pro",
         api_key="test-key",
         base_url="https://openrouter.test/api/v1",
         app_url="http://localhost",
@@ -38,7 +38,7 @@ async def test_openrouter_chat_sends_openai_compatible_payload():
         return httpx.Response(
             200,
             json={
-                "model": "x-ai/grok-4.1-fast",
+                "model": "deepseek/deepseek-v4-pro",
                 "choices": [{"message": {"content": "ok"}}],
             },
         )
@@ -52,7 +52,7 @@ async def test_openrouter_chat_sends_openai_compatible_payload():
     assert response.content == "ok"
     assert seen_payloads == [
         {
-            "model": "x-ai/grok-4.1-fast",
+            "model": "deepseek/deepseek-v4-pro",
             "messages": [{"role": "user", "content": "Hello"}],
             "stream": False,
             "temperature": 0.6,
@@ -90,7 +90,7 @@ def test_openrouter_error_text_falls_back_to_exception_type():
 
 def test_openrouter_requires_api_key():
     with pytest.raises(RuntimeError, match="OpenRouter API key is missing"):
-        OpenRouterLLM(model="x-ai/grok-4.1-fast", api_key=None, api_key_env="MISSING_TEST_KEY")
+        OpenRouterLLM(model="deepseek/deepseek-v4-pro", api_key=None, api_key_env="MISSING_TEST_KEY")
 
 
 def test_openrouter_extracts_modalities_from_model_metadata():
@@ -107,7 +107,7 @@ def test_openrouter_extracts_modalities_from_model_metadata():
 def test_openrouter_extracts_modalities_from_single_model_payload():
     payload = {
         "data": {
-            "id": "x-ai/grok-4.1-fast",
+            "id": "deepseek/deepseek-v4-pro",
             "architecture": {"input_modalities": ["text", "image", "file"]},
         }
     }
@@ -117,7 +117,7 @@ def test_openrouter_extracts_modalities_from_single_model_payload():
 
 def test_openrouter_validate_required_modalities_accepts_vision_model():
     llm = OpenRouterLLM(
-        model="x-ai/grok-4.1-fast",
+        model="deepseek/deepseek-v4-pro",
         api_key="test-key",
         required_input_modalities=["image"],
     )
@@ -128,7 +128,7 @@ def test_openrouter_validate_required_modalities_accepts_vision_model():
 
 def test_openrouter_validate_required_modalities_rejects_text_only_model():
     llm = OpenRouterLLM(
-        model="x-ai/grok-4.1-fast",
+        model="deepseek/deepseek-v4-pro",
         api_key="test-key",
         required_input_modalities=["image"],
     )
