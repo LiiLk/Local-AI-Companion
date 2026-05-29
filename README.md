@@ -385,7 +385,12 @@ This path is useful for experimentation and premium local voice cloning, but it 
 
 ### Gemma / MiniCPM-o
 
-Both multimodal paths are available in the codebase, but they are secondary modes and should be treated as such:
+Both multimodal paths are available in the codebase, but they are secondary modes and should be treated as such. Keep them in separate experiment environments because MiniCPM-o uses the Transformers 4.51-4.52 line while Gemma uses Transformers 5.x+:
+
+```powershell
+python -m pip install -r requirements-optional-omni.txt        # MiniCPM-o / mode: "omni"
+python -m pip install -r requirements-optional-gemma-omni.txt  # Gemma / mode: "gemma-omni"
+```
 
 ```yaml
 mode: "omni"
