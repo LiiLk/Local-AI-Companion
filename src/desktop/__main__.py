@@ -15,7 +15,8 @@ Usage:
 import argparse
 import logging
 import os
-import subprocess
+# Launches only the local uvicorn backend with fixed module args.
+import subprocess  # nosec B404
 import sys
 import time
 import warnings
@@ -86,14 +87,27 @@ def check_dependencies():
     return True
 
 
-def check_backend_running(host: str = "localhost", port: int = 8000) -> bool:
+# Explicit opt-in only; default is 127.0.0.1.
+WILDCARD_HOSTS = {"0.0.0.0", "::"}  # nosec
+
+
+def normalize_backend_host(host: str | None) -> str:
+    value = (host or "127.0.0.1").strip()
+    if value.lower() == "localhost":
+        return "127.0.0.1"
+    return value
+
+
+def check_backend_running(host: str = "127.0.0.1", port: int = 8000) -> bool:
     """Check if the backend server is running."""
     import socket
     
+    host = normalize_backend_host(host)
+    health_host = "127.0.0.1" if host in WILDCARD_HOSTS else host
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1)
-            s.connect((host, port))
+            s.connect((health_host, port))
             return True
     except (socket.timeout, ConnectionRefusedError):
         return False
@@ -101,6 +115,13 @@ def check_backend_running(host: str = "localhost", port: int = 8000) -> bool:
 
 def start_backend(host: str = "127.0.0.1", port: int = 8000):
     """Start the backend server in a subprocess."""
+    host = normalize_backend_host(host)
+    if host in WILDCARD_HOSTS:
+        logger.warning(
+            "Starting backend on %s. This exposes the local API beyond loopback; "
+            "use only when LAN access is intentional.",
+            host,
+        )
     logger.info(f"Starting backend server on {host}:{port}...")
     
     cmd = [
@@ -110,17 +131,18 @@ def start_backend(host: str = "127.0.0.1", port: int = 8000):
         "--port", str(port)
     ]
     
-    process = subprocess.Popen(
+    # Fixed local backend command, shell=False.
+    process = subprocess.Popen(  # nosec B603
         cmd,
         cwd=str(PROJECT_ROOT),
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
+        stderr=subprocess.STDOUT,
+        shell=False,
     )
     
     # Wait for server to be ready
-    health_host = "localhost" if host == "0.0.0.0" else host
     for _ in range(30):
-        if check_backend_running(health_host, port):
+        if check_backend_running(host, port):
             logger.info("✅ Backend server is ready")
             return process
         time.sleep(0.5)
@@ -141,8 +163,8 @@ def main():
     )
     parser.add_argument(
         "--host",
-        default="localhost",
-        help="Backend host (default: localhost; use 0.0.0.0 only for LAN access)"
+        default="127.0.0.1",
+        help="Backend host (default: 127.0.0.1; use 0.0.0.0 only for LAN access)"
     )
     parser.add_argument(
         "--port", "-p",
@@ -183,6 +205,7 @@ def main():
     )
     
     args = parser.parse_args()
+    args.host = normalize_backend_host(args.host)
     
     # Check dependencies
     if not check_dependencies():

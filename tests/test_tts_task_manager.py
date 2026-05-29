@@ -202,3 +202,31 @@ async def test_submit_backpressures_when_queue_is_full():
         await asyncio.wait_for(mgr.submit("Blocked sentence."), timeout=0.02)
 
     await mgr.cancel()
+
+
+@pytest.mark.asyncio
+async def test_deletes_provider_owned_audio_path_after_delivery(tmp_path):
+    class TempFileTTS(FakeTTS):
+        def __init__(self):
+            super().__init__()
+            self.generated_path = tmp_path / "provider-owned.wav"
+
+        async def synthesize(self, text, output_path=None):
+            result = await super().synthesize(text, self.generated_path)
+            result.metadata = {"delete_audio_path": True}
+            return result
+
+    tts = TempFileTTS()
+    delivered = []
+
+    async def on_audio(payload):
+        delivered.append(payload["text"])
+        assert tts.generated_path.exists()
+
+    mgr = TTSTaskManager(tts=tts, on_audio_ready=on_audio)
+    await mgr.start()
+    await mgr.submit("Clean me up.")
+    await mgr.finish()
+
+    assert delivered == ["Clean me up."]
+    assert not tts.generated_path.exists()

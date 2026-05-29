@@ -77,8 +77,10 @@ class ChatterboxTTSProvider(BaseTTS):
         cfg_weight: float = 0.5,
         language: str = "en",
         prefer_full_gpu: bool = False,
+        model_revision: str | None = None,
     ):
         self.model_id = model_id
+        self.model_revision = model_revision
         self.ref_audio_path = Path(ref_audio_path) if ref_audio_path else None
         self.exaggeration = exaggeration
         self.cfg_weight = cfg_weight
@@ -118,6 +120,13 @@ class ChatterboxTTSProvider(BaseTTS):
             _original_get_session = ChatterboxOnnx._download_and_get_session
             _original_load_tokenizer = ChatterboxOnnx._load_tokenizer
             _target_model_id = self.model_id  # our multilingual model ID
+            _target_revision = self.model_revision
+            if not _target_revision:
+                logger.warning(
+                    "Chatterbox model %s has no pinned Hugging Face revision; "
+                    "pass model_revision=<commit SHA> for reproducible downloads.",
+                    _target_model_id,
+                )
 
             def _gpu_session(self_inner, filename: str) -> onnxruntime.InferenceSession:
                 from huggingface_hub import hf_hub_download
@@ -128,6 +137,7 @@ class ChatterboxTTSProvider(BaseTTS):
                     filename=filename,
                     local_dir=self_inner.output_dir,
                     subfolder='onnx',
+                    revision=_target_revision,
                     local_files_only=local_files_only,
                 )
                 hf_hub_download(
@@ -135,6 +145,7 @@ class ChatterboxTTSProvider(BaseTTS):
                     filename=filename.replace(".onnx", ".onnx_data"),
                     local_dir=self_inner.output_dir,
                     subfolder='onnx',
+                    revision=_target_revision,
                     local_files_only=local_files_only,
                 )
                 if self.prefer_full_gpu and can_use_cuda:
@@ -162,6 +173,7 @@ class ChatterboxTTSProvider(BaseTTS):
                     repo_id=_target_model_id,
                     filename="tokenizer.json",
                     local_dir=self_inner.output_dir,
+                    revision=_target_revision,
                 )
                 return Tokenizer.from_file(tokenizer_path)
 

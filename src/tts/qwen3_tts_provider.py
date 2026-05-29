@@ -15,7 +15,8 @@ import io
 import json
 import logging
 import os
-import subprocess
+# Worker subprocesses are local, argument-list based, and validated.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import threading
@@ -155,11 +156,16 @@ class Qwen3TTSProvider(BaseTTS):
     @staticmethod
     def _kill_process_tree(process: subprocess.Popen[str]) -> None:
         if os.name == "nt":
+            pid = int(process.pid)
+            if pid <= 0:
+                return
             system_root = Path(os.environ.get("SystemRoot", "C:/Windows"))
             taskkill = system_root / "System32" / "taskkill.exe"
-            command = [str(taskkill if taskkill.exists() else "taskkill"), "/PID", str(process.pid), "/T", "/F"]
+            taskkill_exe = str(taskkill.resolve()) if taskkill.is_file() else "taskkill"
+            command = [taskkill_exe, "/PID", str(pid), "/T", "/F"]
             try:
-                subprocess.run(
+                # Fixed taskkill command with validated PID and shell=False.
+                subprocess.run(  # nosec B603
                     command,
                     capture_output=True,
                     text=True,
@@ -167,16 +173,17 @@ class Qwen3TTSProvider(BaseTTS):
                     errors="replace",
                     timeout=10,
                     check=False,
+                    shell=False,
                 )
                 return
             except Exception:
-                pass
+                logger.debug("Failed to terminate Qwen3-TTS worker process tree", exc_info=True)
 
         try:
             process.kill()
             process.wait(timeout=5)
         except Exception:
-            pass
+            logger.debug("Failed to kill Qwen3-TTS worker process", exc_info=True)
 
     @staticmethod
     def resolve_mode_for_model(
@@ -299,12 +306,19 @@ class Qwen3TTSProvider(BaseTTS):
         worker_script: Path,
         site_packages_dir: Path | None = None,
     ) -> bool:
+        try:
+            cls._validate_worker_process_inputs(python_path, worker_script)
+        except RuntimeError as exc:
+            logger.debug("Qwen3-TTS worker import check skipped: %s", exc)
+            return False
+
         command = [str(python_path), str(worker_script), "--check-imports"]
         if site_packages_dir and site_packages_dir.exists():
             command.extend(["--site-packages-dir", str(site_packages_dir)])
 
         try:
-            result = subprocess.run(
+            # Validated local worker script, shell=False.
+            result = subprocess.run(  # nosec B603
                 command,
                 cwd=str(PROJECT_ROOT),
                 capture_output=True,
@@ -313,6 +327,7 @@ class Qwen3TTSProvider(BaseTTS):
                 errors="replace",
                 timeout=90,
                 check=False,
+                shell=False,
             )
         except Exception:
             return False
@@ -406,11 +421,22 @@ class Qwen3TTSProvider(BaseTTS):
             command.extend(["--site-packages-dir", str(self.site_packages_dir)])
         return command
 
+    @staticmethod
+    def _validate_worker_process_inputs(python_path: Path, worker_script: Path) -> None:
+        if not python_path.is_file():
+            raise RuntimeError(f"Qwen3-TTS worker Python executable not found: {python_path}")
+        if not worker_script.is_file():
+            raise RuntimeError(f"Qwen3-TTS worker script not found: {worker_script}")
+        if worker_script.suffix.lower() != ".py":
+            raise RuntimeError(f"Qwen3-TTS worker script must be a Python file: {worker_script}")
+
     def _spawn_worker(self) -> None:
         if self._worker_process is not None:
             return
 
-        process = subprocess.Popen(
+        self._validate_worker_process_inputs(self.python_path, self.worker_script)
+        # Validated local worker script, shell=False.
+        process = subprocess.Popen(  # nosec B603
             self._worker_command(),
             cwd=str(PROJECT_ROOT),
             stdin=subprocess.PIPE,
@@ -420,6 +446,7 @@ class Qwen3TTSProvider(BaseTTS):
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            shell=False,
         )
 
         self._worker_process = process
@@ -477,7 +504,7 @@ class Qwen3TTSProvider(BaseTTS):
                 process.stdin.flush()
                 process.stdout.readline()
         except Exception:
-            pass
+            logger.debug("Failed to request Qwen3-TTS worker shutdown", exc_info=True)
 
         try:
             process.wait(timeout=5)

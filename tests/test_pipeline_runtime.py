@@ -6,6 +6,7 @@ from src.assistant.pipeline_runtime import (
     build_pipeline_conversation_config,
     close_pipeline_runtime_services,
     create_pipeline_runtime,
+    create_pipeline_tts,
     preload_pipeline_asr,
     preload_pipeline_rvc,
     preload_pipeline_tts,
@@ -245,3 +246,39 @@ def test_pipeline_runtime_resolves_degraded_backend_status():
     assert status.state == "degraded"
     assert status.degraded_reason == "fallback active | slow mode"
     assert status.runtime_error is None
+
+
+def test_chatterbox_tts_receives_configured_model_revision():
+    config = {
+        "tts": {
+            "provider": "chatterbox",
+            "chatterbox": {
+                "model_revision": "abc123",
+            },
+        },
+    }
+
+    tts, _summary = create_pipeline_tts(config)
+
+    assert tts.model_revision == "abc123"
+    tts.cleanup()
+
+
+def test_routed_tts_chatterbox_receives_configured_model_revision():
+    config = {
+        "tts": {
+            "provider": "qwen3",
+            "chatterbox": {
+                "model_revision": "abc123",
+            },
+            "qwen3": {
+                "backend": "worker",
+                "python_path": "/definitely/missing/python",
+            },
+        },
+    }
+
+    tts, _summary = create_pipeline_tts(config)
+
+    assert tts._providers["chatterbox"].model_revision == "abc123"
+    tts.cleanup()
