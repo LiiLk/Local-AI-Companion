@@ -1,0 +1,25 @@
+# Experimental MiniCPM-o omni dependencies.
+#
+# These are intentionally separate from requirements.txt because the stable
+# audited product path is Whisper -> LLM text -> Kokoro -> RVC.
+#
+# Security note, May 2026:
+# minicpmo-utils currently pins pillow==10.4.0, which conflicts with the
+# audited runtime lower bound pillow>=12.2.0. Keep this optional path in a
+# separate experiment environment until upstream releases a compatible version.
+#
+# Compatibility note, May 2026:
+# MiniCPM-o / minicpmo-utils needs the Transformers 4.51-4.52 line. Do not add
+# Gemma 4's Transformers 5.x dependency here; install Gemma in its own
+# environment from requirements-optional-gemma-omni.txt instead.
+
+transformers>=4.51.0,<4.53.0   # MiniCPM-o compatible line; minicpmo-utils[all] is incompatible with 5.x
+accelerate>=0.26.0             # Model loading utilities
+minicpmo-utils[all]>=1.0.2     # MiniCPM-o utilities (TTS, streaming)
+bitsandbytes>=0.45.0           # NF4 quantization (MiniCPM-o)
+
+# NOTE: numba must NOT be installed - it causes LLVM DLL conflicts with
+# TensorRT (from onnxruntime-gpu) on Windows, making librosa.load() hang.
+# We use soundfile+soxr for audio resampling instead of librosa.
+soxr                           # Audio resampling
+mss>=9.0.0                     # Fast screen capture

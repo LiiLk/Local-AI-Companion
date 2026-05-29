@@ -1,4 +1,8 @@
-# Local AI Companion - Dependencies
+# Local AI Companion - Runtime dependencies
+#
+# Keep security-sensitive transitive lower bounds in constraints-security.txt.
+# pip applies the constraints automatically when installing this file.
+-c constraints-security.txt
 
 # Async HTTP client (for communicating with Ollama)
 httpx>=0.25.0
@@ -16,20 +20,11 @@ faster-whisper>=1.0.0  # Optimized Whisper (4x faster)
 sounddevice>=0.4.0     # Microphone audio capture
 huggingface_hub>=0.20.0  # For downloading optimized French models
 
-# Omni Model (MiniCPM-o 4.5 - unified ASR/LLM/TTS)
-transformers>=5.0.0            # Gemma 4 requires transformers 5.x+
-accelerate>=0.26.0             # Model loading utilities
-minicpmo-utils[all]>=1.0.2    # MiniCPM-o utilities (TTS, streaming)
-bitsandbytes>=0.45.0           # NF4 quantization (MiniCPM-o + Gemma E4B)
-# NOTE: numba must NOT be installed — it causes LLVM DLL conflicts with
-# TensorRT (from onnxruntime-gpu) on Windows, making librosa.load() hang.
-# We use soundfile+soxr for audio resampling instead of librosa.
-
 # Web Server
-fastapi>=0.104.0       # Async web framework
+fastapi>=0.136.1       # Async web framework
 uvicorn>=0.24.0        # ASGI server
 websockets>=12.0       # WebSocket support
-python-multipart>=0.0.6  # For file uploads
+python-multipart>=0.0.27  # For file uploads
 torchaudio>=2.1.0      # Audio processing for TTS
 
 # Live2D Avatar Overlay
@@ -37,24 +32,13 @@ PyQt6>=6.8.0           # Native transparent desktop shell
 PyQt6-WebEngine>=6.8.0 # Embedded Chromium view for Live2D shell
 pywebview>=6.0.0       # Transparent window for Live2D avatar (6.0+ required for transparency)
 pynput>=1.7.0          # Global hotkeys (F11, F12)
-numpy>=1.24.0          # Audio analysis for lip-sync
+numpy>=1.26.4,<2.0     # Audio analysis for lip-sync; keep aligned with RVC worker
 
 # Desktop Companion (optional)
 pystray>=0.19.0        # System tray icon
-pillow>=10.0.0         # Image handling for tray icon
+pillow>=12.2.0         # Image handling for tray icon
 
 # Language Detection (for auto voice switching)
 langdetect>=1.0.9      # Language detection
 emoji>=2.0.0           # Emoji removal for TTS
 silero-vad
-
-# Gemma-Omni Avatar (Phase 1)
-soxr                           # Audio resampling (required by transformers 5.x)
-onnxruntime-gpu>=1.24.0        # ONNX Runtime with CUDA for Chatterbox (Q4 needs GQA v2)
-chatterbox-onnx                # Chatterbox ONNX inference package
-mss>=9.0.0                     # Fast screen capture
-
-
-# Testing
-pytest>=8.0.0
-pytest-asyncio>=0.23.0

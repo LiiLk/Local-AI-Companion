@@ -28,6 +28,7 @@ env/
 .venv-qwen3-asr/
 .venv-qwen3-asr-worker/
 .venv-audit/
+.venv-prcheck/
 .env/
 
 # IDE
@@ -37,6 +38,7 @@ env/
 *.swo
 *~
 .pytest_cache/
+.pytest-tmp/
 .codex_pytest*/
 .codex_tmp_pytest/
 .codex_test_artifacts/
