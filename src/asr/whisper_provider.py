@@ -189,6 +189,7 @@ class WhisperProvider(BaseASR):
             )
         
         hf_repo = model_config["hf_repo"]
+        hf_revision = model_config.get("revision")
         local_path = MODELS_DIR / model_config["local_path"]
         ctranslate2_path = local_path / "ctranslate2"
         
@@ -204,8 +205,17 @@ class WhisperProvider(BaseASR):
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         
         # Download only CTranslate2 files (smaller than full model)
+        if not hf_revision:
+            logger.warning(
+                "French Whisper model %s has no pinned Hugging Face revision; "
+                "set MODEL_SIZES[%r]['revision'] to a commit SHA for reproducible downloads.",
+                hf_repo,
+                self.model_size,
+            )
+
         snapshot_download(
             repo_id=hf_repo,
+            revision=hf_revision,
             local_dir=str(local_path),
             allow_patterns="ctranslate2/*",
             local_dir_use_symlinks=False,

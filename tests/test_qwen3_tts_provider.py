@@ -1,3 +1,8 @@
+import tempfile
+from pathlib import Path
+
+import pytest
+
 from src.tts.qwen3_tts_provider import Qwen3TTSProvider
 
 
@@ -42,3 +47,28 @@ def test_qwen3_tts_warmup_uses_french_when_router_hint_is_french():
     provider.set_language("fr")
 
     assert provider._warmup_text() == "Bonjour."
+
+
+def test_qwen3_tts_worker_import_check_rejects_missing_python():
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as handle:
+        worker_script = Path(handle.name)
+        handle.write(b"print('ok')")
+
+    try:
+        assert Qwen3TTSProvider._worker_import_check(
+            worker_script.with_name("missing-python.exe"),
+            worker_script,
+        ) is False
+    finally:
+        worker_script.unlink(missing_ok=True)
+
+
+def test_qwen3_tts_worker_validation_rejects_non_python_script():
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as handle:
+        worker_script = Path(handle.name)
+
+    try:
+        with pytest.raises(RuntimeError, match="must be a Python file"):
+            Qwen3TTSProvider._validate_worker_process_inputs(Path(__file__), worker_script)
+    finally:
+        worker_script.unlink(missing_ok=True)

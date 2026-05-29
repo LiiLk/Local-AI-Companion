@@ -15,9 +15,11 @@ Disadvantages:
 - No voice cloning
 """
 
-import edge_tts
+import tempfile
 from pathlib import Path
 from typing import AsyncGenerator
+
+import edge_tts
 
 from .base import BaseTTS, TTSResult, Voice
 
@@ -94,7 +96,13 @@ class EdgeTTSProvider(BaseTTS):
         
         # Define output path
         if output_path is None:
-            output_path = Path(f"/tmp/tts_output_{hash(text)}.mp3")
+            temp_file = tempfile.NamedTemporaryFile(
+                prefix="local_ai_companion_edge_tts_",
+                suffix=".mp3",
+                delete=False,
+            )
+            temp_file.close()
+            output_path = Path(temp_file.name)
         
         # Generate and save audio
         await communicate.save(str(output_path))
