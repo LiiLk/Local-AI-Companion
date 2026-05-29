@@ -152,69 +152,84 @@ class TTSTaskManager:
         if result.metadata:
             metadata.update(result.metadata)
 
-        file_read_ms = float(metadata.get("file_read_ms", 0.0) or 0.0)
-        file_write_ms = float(metadata.get("file_write_ms", 0.0) or 0.0)
-        provider_roundtrip_ms = float(metadata.get("provider_roundtrip_ms", synth_elapsed_ms) or synth_elapsed_ms)
-        provider_wait_ms = max(0.0, provider_roundtrip_ms - float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms))
-
-        if result.audio_data:
-            full_wav = result.audio_data
-            pcm, sr = _read_wav_bytes(full_wav)
-        elif result.audio_path:
-            read_started = time.perf_counter()
-            full_wav = Path(result.audio_path).read_bytes()
-            pcm, sr = _read_wav_file(Path(result.audio_path))
-            file_read_ms += (time.perf_counter() - read_started) * 1000
-
-        if not full_wav or pcm is None:
-            return
-
-        rvc_ms = 0.0
-        if self._rvc:
-            rvc_started = time.perf_counter()
-            full_wav, pcm, sr = await self._apply_rvc(full_wav)
-            rvc_ms = (time.perf_counter() - rvc_started) * 1000
-
-        volumes = _analyze_volumes(pcm, sr, self._lip_sync_chunk_ms)
-        duration_ms = int(len(pcm) / (sr * 2) * 1000)
-        total_tts_ms = (time.perf_counter() - synth_started) * 1000
-        attn_used = metadata.get("attn_implementation") or metadata.get("attn_implementation_actual")
-
-        logger.info(
-            "TTS sentence metrics: text=%r queue_wait_ms=%.1f synth_ms=%.1f provider_wait_ms=%.1f total_ms=%.1f file_write_ms=%.1f file_read_ms=%.1f rvc_ms=%.1f attn=%s",
-            text[:80],
-            queue_wait_ms,
-            float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
-            provider_wait_ms,
-            total_tts_ms,
-            file_write_ms,
-            file_read_ms,
-            rvc_ms,
-            attn_used or "unknown",
+        cleanup_audio_path = (
+            Path(result.audio_path)
+            if result.audio_path and metadata.get("delete_audio_path")
+            else None
         )
+        try:
+            file_read_ms = float(metadata.get("file_read_ms", 0.0) or 0.0)
+            file_write_ms = float(metadata.get("file_write_ms", 0.0) or 0.0)
+            provider_roundtrip_ms = float(
+                metadata.get("provider_roundtrip_ms", synth_elapsed_ms) or synth_elapsed_ms
+            )
+            provider_wait_ms = max(
+                0.0,
+                provider_roundtrip_ms
+                - float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
+            )
 
-        payload = {
-            "audio_base64": base64.b64encode(full_wav).decode("utf-8"),
-            "wav_bytes": full_wav,
-            "pcm_bytes": pcm,
-            "volumes": volumes,
-            "duration_ms": duration_ms,
-            "sample_rate": sr,
-            "text": text,
-            "expression": expression,
-            "tts_metrics": {
-                "synth_ms": float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
-                "provider_roundtrip_ms": provider_roundtrip_ms,
-                "provider_wait_ms": provider_wait_ms,
-                "total_ms": total_tts_ms,
-                "file_write_ms": file_write_ms,
-                "file_read_ms": file_read_ms,
-                "rvc_ms": rvc_ms,
-                "attn_implementation": attn_used,
-            },
-        }
+            if result.audio_data:
+                full_wav = result.audio_data
+                pcm, sr = _read_wav_bytes(full_wav)
+            elif result.audio_path:
+                read_started = time.perf_counter()
+                full_wav = Path(result.audio_path).read_bytes()
+                pcm, sr = _read_wav_file(Path(result.audio_path))
+                file_read_ms += (time.perf_counter() - read_started) * 1000
 
-        await self._on_audio_ready(payload)
+            if not full_wav or pcm is None:
+                return
+
+            rvc_ms = 0.0
+            if self._rvc:
+                rvc_started = time.perf_counter()
+                full_wav, pcm, sr = await self._apply_rvc(full_wav)
+                rvc_ms = (time.perf_counter() - rvc_started) * 1000
+
+            volumes = _analyze_volumes(pcm, sr, self._lip_sync_chunk_ms)
+            duration_ms = int(len(pcm) / (sr * 2) * 1000)
+            total_tts_ms = (time.perf_counter() - synth_started) * 1000
+            attn_used = metadata.get("attn_implementation") or metadata.get("attn_implementation_actual")
+
+            logger.info(
+                "TTS sentence metrics: text=%r queue_wait_ms=%.1f synth_ms=%.1f provider_wait_ms=%.1f total_ms=%.1f file_write_ms=%.1f file_read_ms=%.1f rvc_ms=%.1f attn=%s",
+                text[:80],
+                queue_wait_ms,
+                float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
+                provider_wait_ms,
+                total_tts_ms,
+                file_write_ms,
+                file_read_ms,
+                rvc_ms,
+                attn_used or "unknown",
+            )
+
+            payload = {
+                "audio_base64": base64.b64encode(full_wav).decode("utf-8"),
+                "wav_bytes": full_wav,
+                "pcm_bytes": pcm,
+                "volumes": volumes,
+                "duration_ms": duration_ms,
+                "sample_rate": sr,
+                "text": text,
+                "expression": expression,
+                "tts_metrics": {
+                    "synth_ms": float(metadata.get("synth_ms", synth_elapsed_ms) or synth_elapsed_ms),
+                    "provider_roundtrip_ms": provider_roundtrip_ms,
+                    "provider_wait_ms": provider_wait_ms,
+                    "total_ms": total_tts_ms,
+                    "file_write_ms": file_write_ms,
+                    "file_read_ms": file_read_ms,
+                    "rvc_ms": rvc_ms,
+                    "attn_implementation": attn_used,
+                },
+            }
+
+            await self._on_audio_ready(payload)
+        finally:
+            if cleanup_audio_path:
+                cleanup_audio_path.unlink(missing_ok=True)
 
     async def _apply_rvc(self, wav_bytes: bytes) -> tuple[bytes, bytes, int]:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as src_file:

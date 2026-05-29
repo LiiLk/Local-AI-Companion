@@ -95,6 +95,7 @@ class EdgeTTSProvider(BaseTTS):
         )
         
         # Define output path
+        should_delete_output = output_path is None
         if output_path is None:
             temp_file = tempfile.NamedTemporaryFile(
                 prefix="local_ai_companion_edge_tts_",
@@ -105,9 +106,15 @@ class EdgeTTSProvider(BaseTTS):
             output_path = Path(temp_file.name)
         
         # Generate and save audio
-        await communicate.save(str(output_path))
+        try:
+            await communicate.save(str(output_path))
+        except Exception:
+            if should_delete_output:
+                output_path.unlink(missing_ok=True)
+            raise
         
-        return TTSResult(audio_path=output_path)
+        metadata = {"delete_audio_path": True} if should_delete_output else None
+        return TTSResult(audio_path=output_path, metadata=metadata)
     
     async def synthesize_stream(
         self,

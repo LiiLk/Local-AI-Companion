@@ -484,6 +484,7 @@ class Live2DAssistant:
                 cfg_weight=chatterbox_config.get('cfg_weight', 0.5),
                 language=language,
                 prefer_full_gpu=chatterbox_config.get('prefer_full_gpu', True),
+                model_revision=chatterbox_config.get('model_revision'),
             )
             logger.info(f"TTS: Chatterbox (ref={ref_audio}, exag={exaggeration})")
 

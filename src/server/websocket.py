@@ -285,6 +285,7 @@ class ConversationState:
                 exaggeration=exaggeration,
                 language=language,
                 prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
+                model_revision=chatterbox_config.get("model_revision"),
             )
             chatterbox._load_model()  # Preload TTS so first response is fast
 

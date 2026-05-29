@@ -339,6 +339,7 @@ def create_pipeline_tts(
             cfg_weight=chatterbox_config.get("cfg_weight", 0.5),
             language=voice_config.get("chatterbox_language", "en"),
             prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
+            model_revision=chatterbox_config.get("model_revision"),
         )
         qwen3_provider = None
         degraded_reason = None
@@ -408,6 +409,7 @@ def create_pipeline_tts(
             cfg_weight=chatterbox_config.get("cfg_weight", 0.5),
             language=language,
             prefer_full_gpu=chatterbox_config.get("prefer_full_gpu", True),
+            model_revision=chatterbox_config.get("model_revision"),
         )
         _maybe_set_tts_language(tts, initial_language)
         return tts, f"Chatterbox (ref={ref_audio}, exag={exaggeration})"

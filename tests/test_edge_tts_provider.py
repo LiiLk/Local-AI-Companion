@@ -29,5 +29,6 @@ async def test_edge_tts_default_output_uses_secure_temp_file(monkeypatch):
         assert result.audio_path.name.startswith("local_ai_companion_edge_tts_")
         assert result.audio_path.suffix == ".mp3"
         assert result.audio_path.read_bytes() == b"mp3"
+        assert result.metadata == {"delete_audio_path": True}
     finally:
         result.audio_path.unlink(missing_ok=True)
