@@ -18,7 +18,7 @@ This note records the SEC-03 audit scope for the desktop Tauri scaffold.
 - Kept the Tauri capability set minimal:
   - `core:default`
   - `core:window:allow-start-dragging`
-- Added a desktop CSP instead of leaving CSP disabled.
+- Added a desktop CSP instead of leaving CSP disabled, while explicitly allowing Tauri's IPC endpoints (`ipc:` and `http://ipc.localhost`) plus the local assistant bridge.
 
 ## IPC Review
 
