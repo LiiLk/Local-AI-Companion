@@ -79,9 +79,12 @@ def resolve_websocket_allowed_origins(config: dict[str, Any]) -> list[str]:
 
 def is_websocket_origin_allowed(config: dict[str, Any], origin: str | None) -> bool:
     """Check whether a browser WebSocket Origin may connect."""
+    if origin is None or str(origin).strip() == "":
+        return True
+
     normalized_origin = _normalize_origin(origin)
     if normalized_origin is None:
-        return True
+        return False
 
     allowed_origins = resolve_websocket_allowed_origins(config)
     if "*" in allowed_origins:
@@ -117,17 +120,21 @@ def _normalize_origin(value: Any) -> str | None:
     text = str(value).strip().rstrip("/")
     if not text:
         return None
-    if text == "null":
+    if text in {"*", "null"}:
         return text
 
     try:
         parsed = urlsplit(text)
     except ValueError:
-        return text
+        return None
 
     if not parsed.scheme or not parsed.netloc or not parsed.hostname:
-        return text
+        return None
 
     host = parsed.hostname.lower()
-    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    netloc = f"{host}:{port}" if port else host
     return f"{parsed.scheme.lower()}://{netloc}"

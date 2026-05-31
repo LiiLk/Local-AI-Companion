@@ -11,6 +11,8 @@ Handles:
 import json
 import asyncio
 import base64
+import binascii
+import re
 import emoji
 import logging
 import tempfile
@@ -57,6 +59,7 @@ MAX_WEBSOCKET_TEXT_FRAME_CHARS = 1_000_000
 MAX_USER_TEXT_CHARS = 8_000
 MAX_WEBSOCKET_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_WEBSOCKET_AUDIO_SAMPLES = 48000 * 30
+_BASE64_PATTERN = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
 
 
 def load_config() -> dict:
@@ -69,15 +72,41 @@ def _config_for_websocket(websocket: WebSocket) -> dict:
     app = websocket.scope.get("app")
     app_state = getattr(app, "state", None)
     config = getattr(app_state, "config", None)
-    return config if isinstance(config, dict) else load_config()
+    if isinstance(config, dict):
+        return config
+
+    logger.warning("WebSocket app state config is unavailable; using default-safe settings")
+    return {}
+
+
+def _base64_payload(value: str) -> str:
+    payload = str(value).split(",", 1)[-1].strip()
+    return "".join(payload.split())
 
 
 def _estimated_base64_decoded_size(value: str) -> int:
-    payload = value.split(",", 1)[-1].strip()
+    payload = _base64_payload(value)
     if not payload:
         return 0
+    if len(payload) % 4 != 0 or not _BASE64_PATTERN.fullmatch(payload):
+        raise ValueError("invalid base64 payload")
     padding = len(payload) - len(payload.rstrip("="))
     return max((len(payload) * 3) // 4 - padding, 0)
+
+
+def _decode_base64_payload(value: str) -> bytes:
+    try:
+        return base64.b64decode(_base64_payload(value), validate=True)
+    except binascii.Error as exc:
+        raise ValueError("invalid base64 payload") from exc
+
+
+def _audio_sample_count(value: Any) -> int:
+    if isinstance(value, np.ndarray):
+        return int(value.size)
+    if isinstance(value, (list, tuple)):
+        return sum(_audio_sample_count(item) for item in value)
+    return 1
 
 
 @dataclass
@@ -1342,7 +1371,7 @@ class WebSocketManager:
         }
 
         try:
-            audio_bytes = base64.b64decode(audio_data)
+            audio_bytes = _decode_base64_payload(audio_data)
 
             with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
                 f.write(audio_bytes)
@@ -1404,7 +1433,16 @@ class WebSocketManager:
 
     async def handle_audio_message(self, client_id: str, audio_data: str):
         """Schedule an uploaded-audio turn, interrupting any active turn for this client."""
-        if _estimated_base64_decoded_size(audio_data) > MAX_WEBSOCKET_AUDIO_BYTES:
+        try:
+            decoded_size = _estimated_base64_decoded_size(audio_data)
+        except ValueError:
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": "Audio payload is not valid base64",
+            })
+            return
+
+        if decoded_size > MAX_WEBSOCKET_AUDIO_BYTES:
             await self.send_json(client_id, {
                 "type": "error",
                 "message": "Audio payload is too large",
@@ -1421,7 +1459,7 @@ class WebSocketManager:
         state = self._get_state(client_id)
         if not state:
             return
-        if len(audio_samples) > MAX_WEBSOCKET_AUDIO_SAMPLES:
+        if _audio_sample_count(audio_samples) > MAX_WEBSOCKET_AUDIO_SAMPLES:
             await self.send_json(client_id, {
                 "type": "error",
                 "message": "Audio stream payload is too large",
@@ -1968,7 +2006,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             elif msg_type == "audio_segment":
                 pcm16 = data.get("pcm16", "")
                 if pcm16:
-                    if _estimated_base64_decoded_size(pcm16) > MAX_WEBSOCKET_AUDIO_BYTES:
+                    try:
+                        decoded_size = _estimated_base64_decoded_size(pcm16)
+                    except ValueError:
+                        await manager.send_json(client_id, {
+                            "type": "error",
+                            "message": "Audio payload is not valid base64",
+                        })
+                        continue
+                    if decoded_size > MAX_WEBSOCKET_AUDIO_BYTES:
                         await manager.send_json(client_id, {
                             "type": "error",
                             "message": "Audio payload is too large",
@@ -1978,7 +2024,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     if state and state.vad:
                         state.vad.reset()
 
-                    audio_bytes = base64.b64decode(pcm16)
+                    audio_bytes = _decode_base64_payload(pcm16)
                     if state and state.mode == "omni":
                         await manager._schedule_turn(client_id, manager._handle_audio_omni(client_id, audio_bytes))
                     elif state and state.mode == "gemma-omni":

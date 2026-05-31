@@ -90,3 +90,24 @@ def test_websocket_origins_can_be_configured_separately_from_cors():
     assert resolve_websocket_allowed_origins(config) == ["http://localhost:3000"]
     assert is_websocket_origin_allowed(config, "http://localhost:3000")
     assert not is_websocket_origin_allowed(config, "http://127.0.0.1:8000")
+
+
+def test_websocket_origins_reject_malformed_origin_headers():
+    config = {"server": {"port": 8000}}
+
+    assert not is_websocket_origin_allowed(config, "localhost:8000")
+    assert not is_websocket_origin_allowed(config, "http://127.0.0.1:8000:bad")
+    assert not is_websocket_origin_allowed(config, "http://127.0.0.1:8000@evil.example")
+
+
+def test_websocket_origins_ignore_malformed_allowlist_entries():
+    config = {
+        "server": {
+            "websocket": {
+                "allow_origins": ["localhost:8000", "http://127.0.0.1:8000"],
+            }
+        }
+    }
+
+    assert is_websocket_origin_allowed(config, "http://127.0.0.1:8000")
+    assert not is_websocket_origin_allowed(config, "localhost:8000")
