@@ -145,6 +145,11 @@ tts:
     worker_script: ".\\scripts\\rvc_worker.py"
     model_path: "resources/voices/march7th/March-7th.pth"
     index_path: "resources/voices/march7th/March-7th.index"
+    # Optional SHA-256 pins for downloaded voice artifacts. RVC .pth files are
+    # PyTorch checkpoints, so only use models from trusted sources and pin hashes
+    # for public/distributed voice packs when possible.
+    model_sha256: null
+    index_sha256: null
     device: "cuda:0"
     f0_method: "rmvpe"
     f0_up_key: 0.0

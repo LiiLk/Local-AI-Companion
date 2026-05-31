@@ -6,7 +6,7 @@ Provides configuration and health check endpoints.
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from typing import Optional
+from pathlib import PurePath, PureWindowsPath
 
 router = APIRouter(tags=["API"])
 
@@ -24,6 +24,21 @@ class ConfigResponse(BaseModel):
     tts_provider: str
     tts_voice: str
     asr_model: str
+
+
+def public_voice_label(value: object, fallback: str) -> str:
+    """Return a UI-safe voice label without exposing local filesystem paths."""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    if "/" not in text and "\\" not in text and ":" not in text:
+        return text
+
+    if "\\" in text or ":" in text:
+        name = PureWindowsPath(text).name
+    else:
+        name = PurePath(text).name
+    return name or fallback
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -70,11 +85,15 @@ async def get_config(request: Request):
             llm_model = llm.get("model", "unknown")
         tts_provider = tts.get("provider", "kokoro")
         if tts_provider == "chatterbox":
-            tts_voice = config.get("character", {}).get("voice", {}).get("chatterbox_ref_audio", "chatterbox")
+            tts_voice = public_voice_label(
+                config.get("character", {}).get("voice", {}).get("chatterbox_ref_audio"),
+                "chatterbox",
+            )
         elif tts_provider == "qwen3":
-            tts_voice = (
+            tts_voice = public_voice_label(
                 config.get("character", {}).get("voice", {}).get("qwen_ref_audio")
-                or tts.get("qwen3", {}).get("ref_audio_path", "qwen3")
+                or tts.get("qwen3", {}).get("ref_audio_path"),
+                "qwen3",
             )
         else:
             tts_voice = tts.get("kokoro_voice", tts.get("voice", "ff_siwis"))

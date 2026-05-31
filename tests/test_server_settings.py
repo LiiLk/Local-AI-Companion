@@ -2,9 +2,11 @@ from src.server.settings import (
     DEFAULT_SERVER_HOST,
     DEFAULT_SERVER_PORT,
     default_cors_origins,
+    is_websocket_origin_allowed,
     resolve_cors_settings,
     resolve_server_host,
     resolve_server_port,
+    resolve_websocket_allowed_origins,
 )
 
 
@@ -58,3 +60,33 @@ def test_cors_wildcard_disables_credentials():
 
     assert settings["allow_origins"] == ["*"]
     assert settings["allow_credentials"] is False
+
+
+def test_websocket_origins_default_to_local_cors_policy():
+    config = {"server": {"port": 8765}}
+
+    assert resolve_websocket_allowed_origins(config) == default_cors_origins(8765)
+    assert is_websocket_origin_allowed(config, "http://127.0.0.1:8765")
+    assert is_websocket_origin_allowed(config, "http://localhost:8765/")
+    assert not is_websocket_origin_allowed(config, "https://evil.example")
+
+
+def test_websocket_origins_allow_non_browser_clients_without_origin():
+    config = {}
+
+    assert is_websocket_origin_allowed(config, None)
+    assert is_websocket_origin_allowed(config, "")
+
+
+def test_websocket_origins_can_be_configured_separately_from_cors():
+    config = {
+        "server": {
+            "port": 8000,
+            "cors": {"allow_origins": ["http://127.0.0.1:8000"]},
+            "websocket": {"allow_origins": ["http://localhost:3000"]},
+        }
+    }
+
+    assert resolve_websocket_allowed_origins(config) == ["http://localhost:3000"]
+    assert is_websocket_origin_allowed(config, "http://localhost:3000")
+    assert not is_websocket_origin_allowed(config, "http://127.0.0.1:8000")

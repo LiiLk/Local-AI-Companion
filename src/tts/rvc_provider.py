@@ -13,6 +13,7 @@ Recommended Windows setup for this project:
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import logging
 import math
@@ -40,6 +41,21 @@ DEFAULT_RVC_MODELS_DIR = PROJECT_ROOT / "resources" / "rvc"
 DEFAULT_VOICE_MODELS_DIR = PROJECT_ROOT / "resources" / "voices"
 _RVC_CWD_LOCK = threading.Lock()
 _TORCH_LOAD_LOCK = threading.Lock()
+
+
+def _normalize_sha256(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text or None
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _slugify_model_name(value: str | None) -> str | None:
@@ -181,9 +197,13 @@ class RVCConverter:
         f0_up_key: float = 0.0,
         output_freq: int | None = None,
         request_timeout_sec: float = 15.0,
+        model_sha256: str | None = None,
+        index_sha256: str | None = None,
     ):
         self.model_path = Path(model_path).resolve()
         requested_index_path = Path(index_path).resolve() if index_path else None
+        self.model_sha256 = _normalize_sha256(model_sha256)
+        self.index_sha256 = _normalize_sha256(index_sha256)
         self.device = device
         self.f0_method = f0_method
         self.index_rate = index_rate
@@ -392,9 +412,24 @@ class RVCConverter:
     def _ensure_model_files(self) -> None:
         if not self.model_path.exists():
             raise FileNotFoundError(f"RVC model not found: {self.model_path}")
+        self._verify_expected_sha256(self.model_path, self.model_sha256, "RVC model")
         require_index = self.index_rate > 0 or self.backend == "rvc_inferpy"
         if require_index and self.index_path and not self.index_path.exists():
             raise FileNotFoundError(f"RVC index not found: {self.index_path}")
+        if self.index_path and self.index_sha256:
+            self._verify_expected_sha256(self.index_path, self.index_sha256, "RVC index")
+
+    @staticmethod
+    def _verify_expected_sha256(path: Path, expected_sha256: str | None, label: str) -> None:
+        if not expected_sha256:
+            return
+
+        digest = _sha256_file(path)
+        if digest != expected_sha256:
+            raise RuntimeError(
+                f"{label} SHA-256 mismatch for {path.name}: expected "
+                f"{expected_sha256}, got {digest}. Refusing to load this local model file."
+            )
 
     def _ensure_voice_model_workspace(self) -> None:
         self._ensure_model_files()

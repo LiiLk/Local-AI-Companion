@@ -39,6 +39,7 @@ from src.assistant.conversation_memory import (
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
+from src.server.settings import is_websocket_origin_allowed
 from src.utils.emotion_detector import EmotionDetector, strip_emotion_markers
 from src.utils.language_detection import (
     detect_language as detect_text_language,
@@ -52,11 +53,31 @@ logger = logging.getLogger(__name__)
 
 websocket_router = APIRouter()
 
+MAX_WEBSOCKET_TEXT_FRAME_CHARS = 1_000_000
+MAX_USER_TEXT_CHARS = 8_000
+MAX_WEBSOCKET_AUDIO_BYTES = 8 * 1024 * 1024
+MAX_WEBSOCKET_AUDIO_SAMPLES = 48000 * 30
+
 
 def load_config() -> dict:
     """Load configuration from config.yaml"""
     config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
     return load_yaml_config(config_path)
+
+
+def _config_for_websocket(websocket: WebSocket) -> dict:
+    app = websocket.scope.get("app")
+    app_state = getattr(app, "state", None)
+    config = getattr(app_state, "config", None)
+    return config if isinstance(config, dict) else load_config()
+
+
+def _estimated_base64_decoded_size(value: str) -> int:
+    payload = value.split(",", 1)[-1].strip()
+    if not payload:
+        return 0
+    padding = len(payload) - len(payload.rstrip("="))
+    return max((len(payload) * 3) // 4 - padding, 0)
 
 
 @dataclass
@@ -1383,6 +1404,13 @@ class WebSocketManager:
 
     async def handle_audio_message(self, client_id: str, audio_data: str):
         """Schedule an uploaded-audio turn, interrupting any active turn for this client."""
+        if _estimated_base64_decoded_size(audio_data) > MAX_WEBSOCKET_AUDIO_BYTES:
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": "Audio payload is too large",
+            })
+            return
+
         await self._schedule_turn(
             client_id,
             self._handle_audio_message_turn(client_id, audio_data),
@@ -1392,6 +1420,12 @@ class WebSocketManager:
         """Handle streaming audio data with VAD."""
         state = self._get_state(client_id)
         if not state:
+            return
+        if len(audio_samples) > MAX_WEBSOCKET_AUDIO_SAMPLES:
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": "Audio stream payload is too large",
+            })
             return
 
         vad = state.get_vad()
@@ -1424,6 +1458,12 @@ class WebSocketManager:
     async def handle_audio_stream_bytes(self, client_id: str, audio_bytes: bytes):
         """Handle PCM16 streaming audio frames sent as binary WebSocket messages."""
         if not audio_bytes:
+            return
+        if len(audio_bytes) > MAX_WEBSOCKET_AUDIO_BYTES:
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": "Audio payload is too large",
+            })
             return
 
         audio_samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
@@ -1871,6 +1911,13 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
     - Client sends: {"type": "text|audio|audio_stream|clear|duplex_audio", ...}
     - Server sends: {"type": "text_start|text_chunk|text_end|audio_data|mode_info|error", ...}
     """
+    config = _config_for_websocket(websocket)
+    origin = websocket.headers.get("origin")
+    if not is_websocket_origin_allowed(config, origin):
+        logger.warning("Rejected WebSocket connection from disallowed Origin: %s", origin)
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(websocket, client_id)
 
     try:
@@ -1887,12 +1934,24 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             raw_text = message.get("text")
             if raw_text is None:
                 continue
+            if len(raw_text) > MAX_WEBSOCKET_TEXT_FRAME_CHARS:
+                await manager.send_json(client_id, {
+                    "type": "error",
+                    "message": "WebSocket text frame is too large",
+                })
+                continue
 
             data = json.loads(raw_text)
             msg_type = data.get("type", "text")
 
             if msg_type == "text":
                 content = data.get("content", "")
+                if len(content) > MAX_USER_TEXT_CHARS:
+                    await manager.send_json(client_id, {
+                        "type": "error",
+                        "message": "Text message is too large",
+                    })
+                    continue
                 if content.strip():
                     state = manager.states.get(client_id)
                     default_language = getattr(state, "current_language", "en") if state else "en"
@@ -1909,6 +1968,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             elif msg_type == "audio_segment":
                 pcm16 = data.get("pcm16", "")
                 if pcm16:
+                    if _estimated_base64_decoded_size(pcm16) > MAX_WEBSOCKET_AUDIO_BYTES:
+                        await manager.send_json(client_id, {
+                            "type": "error",
+                            "message": "Audio payload is too large",
+                        })
+                        continue
                     state = manager.states.get(client_id)
                     if state and state.vad:
                         state.vad.reset()

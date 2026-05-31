@@ -4,7 +4,12 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.assistant.app import CURRENT_DESKTOP_TURN_ID, Live2DAssistant, resolve_turn_timeout_sec
+from src.assistant.app import (
+    CURRENT_DESKTOP_TURN_ID,
+    DesktopBridgeServer,
+    Live2DAssistant,
+    resolve_turn_timeout_sec,
+)
 from src.assistant.conversation_pipeline import AudioPayload
 
 
@@ -81,6 +86,13 @@ class FakeAudioService:
     def set_processing(self, processing: bool):
         self.processing_calls.append(processing)
         self.state.value = "processing" if processing else "listening"
+
+
+def test_desktop_bridge_rejects_remote_and_null_origins():
+    assert DesktopBridgeServer._is_origin_allowed("http://127.0.0.1:8765")
+    assert DesktopBridgeServer._is_origin_allowed("tauri://localhost")
+    assert not DesktopBridgeServer._is_origin_allowed("https://evil.example")
+    assert not DesktopBridgeServer._is_origin_allowed("null")
 
 
 def _make_assistant() -> Live2DAssistant:
