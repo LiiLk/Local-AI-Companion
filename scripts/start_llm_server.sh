@@ -23,7 +23,10 @@ MMPROJ_FILE="$MODEL_DIR/mmproj-F16.gguf"
 LOG_FILE="/tmp/llama-server.log"
 
 # Server parameters
-HOST="0.0.0.0"
+# Local-first default: bind to loopback so the vision LLM is not exposed on the
+# network (llama.cpp has no auth). Override only when you knowingly need LAN
+# access, e.g. LLM_SERVER_HOST=0.0.0.0 ./scripts/start_llm_server.sh
+HOST="${LLM_SERVER_HOST:-127.0.0.1}"
 PORT=8080
 CTX_SIZE=8192
 GPU_LAYERS=99  # All layers on GPU

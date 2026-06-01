@@ -1,5 +1,6 @@
 """Tests for the local RVC wrapper."""
 
+import hashlib
 import json
 import time
 import sys
@@ -11,6 +12,10 @@ import soundfile as sf
 
 from src.tts import rvc_provider
 from src.tts.rvc_provider import RVCConverter
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 class FakeModernRVC:
@@ -240,6 +245,63 @@ def test_convert_file_with_worker_backend(tmp_path, monkeypatch):
     assert result == output_path
     assert output_path.read_bytes() == b"worker-output"
     converter.close()
+
+
+def test_worker_backend_accepts_matching_model_sha256(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    model_bytes = b"fake model"
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(model_bytes)
+    input_path.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", FakePopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+        model_sha256=_sha256_bytes(model_bytes),
+    )
+
+    assert converter.convert_file(input_path, output_path) == output_path
+    converter.close()
+
+
+def test_worker_backend_rejects_mismatched_model_sha256(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+    input_path.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", FakePopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+        model_sha256="0" * 64,
+    )
+
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        converter.convert_file(input_path, output_path)
+
+    assert converter._worker_process is None
 
 
 def test_worker_backend_times_out_and_resets_worker(tmp_path, monkeypatch):

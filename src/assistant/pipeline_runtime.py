@@ -487,6 +487,8 @@ def create_pipeline_rvc(config: dict) -> tuple[Any | None, str | None]:
             f0_up_key=rvc_config.get("f0_up_key", 0.0),
             output_freq=rvc_config.get("output_freq"),
             request_timeout_sec=rvc_config.get("request_timeout_sec", 15.0),
+            model_sha256=rvc_config.get("model_sha256"),
+            index_sha256=rvc_config.get("index_sha256"),
         )
         return rvc, str(rvc_config.get("model_path"))
     except Exception as exc:

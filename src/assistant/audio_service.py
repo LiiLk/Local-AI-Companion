@@ -21,16 +21,17 @@ from typing import Callable, Optional
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 try:
     import sounddevice as sd
     SOUNDDEVICE_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError) as exc:
+    sd = None
     SOUNDDEVICE_AVAILABLE = False
-    print("⚠️ sounddevice not installed. Run: pip install sounddevice")
+    logger.warning("sounddevice unavailable: %s", exc)
 
 from src.vad import SileroVAD
-
-logger = logging.getLogger(__name__)
 
 # Suppress input overflow warnings (common during model loading/inference)
 logging.getLogger("sounddevice").setLevel(logging.ERROR)

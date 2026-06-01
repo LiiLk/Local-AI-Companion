@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_SERVER_PORT = 8000
@@ -56,6 +57,47 @@ def resolve_cors_settings(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def resolve_websocket_allowed_origins(config: dict[str, Any]) -> list[str]:
+    """Return the explicit WebSocket Origin allowlist.
+
+    WebSocket handshakes are not protected by CORS middleware, so the backend
+    applies the same local-first origin policy before accepting browser clients.
+    Non-browser local clients usually omit the Origin header and are handled by
+    ``is_websocket_origin_allowed``.
+    """
+    server_config = get_server_config(config)
+    websocket_config = server_config.get("websocket", {}) or {}
+    if not isinstance(websocket_config, dict):
+        websocket_config = {}
+
+    configured_origins = websocket_config.get("allow_origins")
+    origins = _normalize_origins(configured_origins)
+    if origins is None:
+        origins = resolve_cors_settings(config)["allow_origins"]
+    return origins
+
+
+def is_websocket_origin_allowed(config: dict[str, Any], origin: str | None) -> bool:
+    """Check whether a browser WebSocket Origin may connect."""
+    if origin is None or str(origin).strip() == "":
+        return True
+
+    normalized_origin = _normalize_origin(origin)
+    if normalized_origin is None:
+        return False
+
+    allowed_origins = resolve_websocket_allowed_origins(config)
+    if "*" in allowed_origins:
+        return True
+
+    normalized_allowed = {
+        normalized
+        for value in allowed_origins
+        if (normalized := _normalize_origin(value)) is not None
+    }
+    return normalized_origin in normalized_allowed
+
+
 def _normalize_origins(value: Any) -> list[str] | None:
     if value is None:
         return None
@@ -70,3 +112,29 @@ def _normalize_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(part).strip() for part in value if str(part).strip()]
     return [str(value).strip()] if str(value).strip() else []
+
+
+def _normalize_origin(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().rstrip("/")
+    if not text:
+        return None
+    if text in {"*", "null"}:
+        return text
+
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return None
+
+    if not parsed.scheme or not parsed.netloc or not parsed.hostname:
+        return None
+
+    host = parsed.hostname.lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    netloc = f"{host}:{port}" if port else host
+    return f"{parsed.scheme.lower()}://{netloc}"

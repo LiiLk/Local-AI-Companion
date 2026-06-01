@@ -38,6 +38,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -166,6 +167,14 @@ class DesktopBridgeApi:
 class DesktopBridgeServer:
     """Tiny desktop-only websocket bridge for external desktop shells."""
 
+    _ALLOWED_ORIGIN_HOSTS = {
+        "127.0.0.1",
+        "localhost",
+        "tauri.localhost",
+        "ipc.localhost",
+    }
+    _ALLOWED_ORIGIN_SCHEMES = {"http", "https", "tauri"}
+
     def __init__(self, assistant: "Live2DAssistant", host: str = "127.0.0.1", port: int = 8765):
         self._assistant = assistant
         self._host = host
@@ -202,6 +211,12 @@ class DesktopBridgeServer:
         asyncio.run_coroutine_threadsafe(self._broadcast_event(event_name, args), loop)
 
     async def _handle_client(self, websocket) -> None:
+        origin = self._origin_from_websocket(websocket)
+        if not self._is_origin_allowed(origin):
+            logger.warning("Rejected desktop bridge connection from disallowed Origin: %s", origin)
+            await websocket.close(code=1008, reason="Forbidden origin")
+            return
+
         self._clients.add(websocket)
         try:
             await self._send_backend_ready(websocket)
@@ -298,6 +313,40 @@ class DesktopBridgeServer:
     @staticmethod
     def _with_backend(runtime: dict) -> dict:
         return {**runtime, "backend": "assistant-bridge"}
+
+    @staticmethod
+    def _origin_from_websocket(websocket) -> str | None:
+        headers = getattr(websocket, "request_headers", None)
+        if headers is not None:
+            return headers.get("Origin") or headers.get("origin")
+
+        request = getattr(websocket, "request", None)
+        request_headers = getattr(request, "headers", None)
+        if request_headers is not None:
+            return request_headers.get("Origin") or request_headers.get("origin")
+
+        return None
+
+    @classmethod
+    def _is_origin_allowed(cls, origin: str | None) -> bool:
+        if not origin:
+            return True
+
+        text = str(origin).strip()
+        if text == "null":
+            return False
+
+        try:
+            parsed = urlsplit(text)
+        except ValueError:
+            return False
+
+        scheme = parsed.scheme.lower()
+        if scheme not in cls._ALLOWED_ORIGIN_SCHEMES:
+            return False
+        if not parsed.hostname:
+            return False
+        return parsed.hostname.lower() in cls._ALLOWED_ORIGIN_HOSTS
 
 
 class Live2DAssistant:
