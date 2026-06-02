@@ -147,12 +147,12 @@ if (Test-Path (Join-Path $repoRoot ".venv-audit\Scripts\semgrep.exe")) {
     $semgrep = Join-Path $repoRoot ".venv-audit\Scripts\semgrep.exe"
     $semgrepReport = Join-Path $reportDir "semgrep.json"
     Invoke-Step "semgrep" $semgrepReport {
-        & $semgrep scan --metrics off --config p/python --config p/javascript --config p/owasp-top-ten --json --output $semgrepReport .
+        & $semgrep scan --error --metrics off --config p/python --config p/javascript --config p/owasp-top-ten --json --output $semgrepReport .
     }
 } elseif (Test-CommandAvailable "semgrep") {
     $semgrepReport = Join-Path $reportDir "semgrep.json"
     Invoke-Step "semgrep" $semgrepReport {
-        & semgrep scan --metrics off --config p/python --config p/javascript --config p/owasp-top-ten --json --output $semgrepReport .
+        & semgrep scan --error --metrics off --config p/python --config p/javascript --config p/owasp-top-ten --json --output $semgrepReport .
     }
 } else {
     Invoke-Skip "semgrep" "Install semgrep in .venv-audit or globally."

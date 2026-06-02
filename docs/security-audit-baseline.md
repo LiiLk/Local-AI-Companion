@@ -114,8 +114,12 @@ gitleaks detect --source . --report-format json --report-path reports/gitleaks.j
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $env:SEMGREP_SEND_METRICS = "off"
-.venv-audit\Scripts\semgrep.exe scan --metrics off --config p/python --config p/javascript --config p/owasp-top-ten --json --output reports/semgrep.json .
+.venv-audit\Scripts\semgrep.exe scan --error --metrics off --config p/python --config p/javascript --config p/owasp-top-ten --json --output reports/semgrep.json .
 ```
+
+`--error` makes Semgrep exit non-zero when it reports findings. Without it
+`semgrep scan` exits `0` even with findings, so the audit step would be recorded
+as "passed" while `reports/semgrep.json` still contains issues.
 
 The UTF-8 environment variables avoid Windows `charmap` encoding failures when
 Semgrep writes JSON containing replacement characters.
