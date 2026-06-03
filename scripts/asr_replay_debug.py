@@ -5,11 +5,13 @@ Deterministic A/B test for LIL-37: run the exact same captured audio through
 isolating the beam-size effect too.
 
 Usage (from repo root, runtime venv):
-    venv\\Scripts\\python.exe scripts\\asr_replay_debug.py [wav ...]
+    venv\\Scripts\\python.exe scripts\\asr_replay_debug.py [--language fr] [wav ...]
 
-Defaults to logs/asr_debug/*.wav. Language stays auto (matches runtime config).
+Defaults to logs/asr_debug/*.wav. Language defaults to auto-detect; pass
+--language to replay a forced-language capture under the same conditions.
 Loads one model at a time to keep VRAM bounded.
 """
+import argparse
 import gc
 import glob
 import os
@@ -26,13 +28,25 @@ from src.asr.whisper_provider import WhisperProvider
 
 # (model_size, [beam sizes to test])
 PLAN = [
-    ("small", [3, 5]),            # 3 = runtime config (reproduce); 5 = isolate beam
-    ("large-v3-turbo", [5]),      # candidate fix
+    ("small", [3, 5]),            # 3 = balanced profile (reproduce); 5 = isolate beam
+    ("large-v3-turbo", [5]),      # quality-local profile
 ]
 
 
 def main() -> None:
-    wavs = [str(w) for w in (sys.argv[1:] or sorted(glob.glob("logs/asr_debug/*.wav")))]
+    parser = argparse.ArgumentParser(
+        description="Replay captured ASR WAVs through Whisper profiles."
+    )
+    parser.add_argument("wavs", nargs="*", help="WAV files (default: logs/asr_debug/*.wav)")
+    parser.add_argument(
+        "--language",
+        default=None,
+        help="Force a language code (e.g. fr) to match a forced-language capture. "
+        "Default: auto-detect (matches asr.language: auto).",
+    )
+    args = parser.parse_args()
+
+    wavs = [str(w) for w in (args.wavs or sorted(glob.glob("logs/asr_debug/*.wav")))]
     if not wavs:
         print("No WAVs found in logs/asr_debug/.")
         return
@@ -50,7 +64,7 @@ def main() -> None:
             for beam in beams:
                 provider.beam_size = beam
                 try:
-                    res = provider.transcribe(wav, language=None)
+                    res = provider.transcribe(wav, language=args.language)
                     results[(wav, model, beam)] = res.text
                 except Exception as exc:  # noqa: BLE001
                     results[(wav, model, beam)] = f"ERROR: {exc}"
@@ -62,10 +76,11 @@ def main() -> None:
         except Exception:
             pass
 
+    lang_note = args.language or "auto"
     for wav in wavs:
         print("\n" + "=" * 84)
-        print(f"WAV: {Path(wav).name}")
-        print(f"  runtime capture (small, beam=3): {captured[wav]!r}")
+        print(f"WAV: {Path(wav).name}  (replay language={lang_note})")
+        print(f"  runtime capture (live config): {captured[wav]!r}")
         print("  --- replay ---")
         for model, beams in PLAN:
             for beam in beams:
