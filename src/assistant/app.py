@@ -509,7 +509,11 @@ class Live2DAssistant:
             voice_config = character_config.get('voice', {})
             ref_audio = voice_config.get('chatterbox_ref_audio')
             exaggeration = voice_config.get('chatterbox_exaggeration', 0.5)
-            language = voice_config.get('chatterbox_language', 'en')
+            # Align the TTS language with the configured reply language when set,
+            # so forced-language replies aren't synthesized with a mismatched hint
+            # (e.g. English text with a French Chatterbox hint).
+            reply_language = self.config.get('pipeline', {}).get('reply_language')
+            language = reply_language or voice_config.get('chatterbox_language', 'en')
 
             # Create Gemma provider
             self._gemma_model = GemmaProvider(

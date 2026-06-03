@@ -461,12 +461,14 @@ class ConversationPipeline:
             instruction = (
                 f"(System: The user is speaking {user_language_name}. "
                 f"Understand the request fully, but reply ONLY in {response_language_name}. "
-                f"Never answer in {user_language_name}. Do not switch languages.)"
+                f"Never answer in {user_language_name}, never switch languages, and never "
+                f"mention, explain, or apologize for this language note — just answer.)"
             )
         else:
             instruction = (
                 f"(System: The user is speaking {response_language_name}. "
-                f"Reply ONLY in {response_language_name}. Do not switch languages.)"
+                f"Reply ONLY in {response_language_name}, never switch languages, and never "
+                f"mention or explain this language note — just answer.)"
             )
 
         llm_messages[-1] = Message(role="user", content=f"{instruction}\n\n{last_user.content}")
