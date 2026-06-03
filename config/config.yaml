@@ -86,6 +86,13 @@ llm:
       max_completion_tokens: 512
       reasoning:
         effort: "high"
+      # Prefer the low-latency Alibaba Cloud Int. endpoint for deepseek-v4-flash
+      # (~0.58s latency, cheaper in/out). allow_fallbacks keeps the avatar
+      # responsive if Alibaba is momentarily unavailable. Confirm the provider
+      # actually used in OpenRouter Activity. Override locally via config.local.yaml.
+      provider:
+        order: ["alibaba"]
+        allow_fallbacks: true
 
 character:
   preset: "march7th"
