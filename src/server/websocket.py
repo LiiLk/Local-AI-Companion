@@ -59,6 +59,10 @@ MAX_WEBSOCKET_TEXT_FRAME_CHARS = 1_000_000
 MAX_USER_TEXT_CHARS = 8_000
 MAX_WEBSOCKET_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_WEBSOCKET_AUDIO_SAMPLES = 48000 * 30
+# Streaming VAD outputs PCM16 at 16 kHz, while the incoming sample cap is based
+# on 48 kHz client audio. Keep the accumulated pending speech window bounded to
+# the same 30-second policy after downsampling.
+MAX_PENDING_SPEECH_AUDIO_BYTES = (MAX_WEBSOCKET_AUDIO_SAMPLES // 3) * 2
 _BASE64_PATTERN = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
 
 
@@ -137,6 +141,9 @@ class ConversationState:
     pipeline_runtime: Optional[Any] = None
     response_task: Optional[asyncio.Task] = None
     response_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pending_speech_audio: bytearray = field(default_factory=bytearray)
+    pending_speech_commit_task: Optional[asyncio.Task] = None
+    pending_speech_end_epoch_ms: Optional[int] = None
 
     def __post_init__(self):
         self.config = load_config()
@@ -362,6 +369,11 @@ class ConversationState:
     async def cleanup(self):
         """Cleanup resources."""
         self.cancel_active_generation("cleanup")
+        if self.pending_speech_commit_task and not self.pending_speech_commit_task.done():
+            self.pending_speech_commit_task.cancel()
+        self.pending_speech_commit_task = None
+        self.pending_speech_audio.clear()
+        self.pending_speech_end_epoch_ms = None
         if self.response_task and not self.response_task.done():
             self.response_task.cancel()
             try:
@@ -531,12 +543,143 @@ class WebSocketManager:
             state.response_task = task
             return task
 
+    @staticmethod
+    def _speech_commit_delay_ms(state: ConversationState) -> int:
+        audio_config = state.config.get("audio", {}) if isinstance(state.config, dict) else {}
+        try:
+            return max(0, int(audio_config.get("speech_commit_delay_ms", 700)))
+        except (TypeError, ValueError):
+            return 700
+
+    @staticmethod
+    def _cancel_pending_speech_commit(state: ConversationState) -> None:
+        task = getattr(state, "pending_speech_commit_task", None)
+        if task and not task.done():
+            task.cancel()
+        state.pending_speech_commit_task = None
+
+    def _clear_pending_speech(self, state: ConversationState) -> None:
+        self._cancel_pending_speech_commit(state)
+        pending_audio = getattr(state, "pending_speech_audio", None)
+        if pending_audio is not None:
+            pending_audio.clear()
+        state.pending_speech_end_epoch_ms = None
+
+    def _buffer_pending_speech_segment(self, state: ConversationState, audio_bytes: bytes) -> None:
+        state.pending_speech_audio.extend(audio_bytes)
+        audio_ms = int(len(state.pending_speech_audio) / 32) if state.pending_speech_audio else 0
+        logger.info(
+            "Buffered %s bytes of WebSocket speech (~%s ms) awaiting end-of-turn commit",
+            len(state.pending_speech_audio),
+            audio_ms,
+        )
+
+    async def _buffer_pipeline_speech_segment(
+        self,
+        client_id: str,
+        state: ConversationState,
+        audio_bytes: bytes,
+    ) -> None:
+        if len(audio_bytes) > MAX_PENDING_SPEECH_AUDIO_BYTES:
+            self._clear_pending_speech(state)
+            await self.send_json(client_id, {
+                "type": "error",
+                "message": "Speech segment is too long",
+            })
+            return
+
+        if len(state.pending_speech_audio) + len(audio_bytes) > MAX_PENDING_SPEECH_AUDIO_BYTES:
+            logger.warning(
+                "Pending WebSocket speech buffer reached %s bytes; forcing ASR commit",
+                MAX_PENDING_SPEECH_AUDIO_BYTES,
+            )
+            was_recording = state.is_recording
+            state.is_recording = False
+            await self._commit_pending_speech(client_id, state)
+            state.is_recording = was_recording
+
+        self._buffer_pending_speech_segment(state, audio_bytes)
+
+    def _arm_pending_speech_commit(self, client_id: str, state: ConversationState) -> None:
+        self._cancel_pending_speech_commit(state)
+        delay_ms = self._speech_commit_delay_ms(state)
+        state.pending_speech_commit_task = asyncio.create_task(
+            self._commit_pending_speech_after_delay(client_id, state, delay_ms)
+        )
+
+    async def _commit_pending_speech_after_delay(
+        self,
+        client_id: str,
+        state: ConversationState,
+        delay_ms: int,
+    ) -> None:
+        try:
+            if delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000.0)
+            await self._commit_pending_speech(client_id, state)
+        except asyncio.CancelledError:
+            raise
+
+    async def _commit_pending_speech(self, client_id: str, state: ConversationState) -> None:
+        if state.pending_speech_commit_task is asyncio.current_task():
+            state.pending_speech_commit_task = None
+
+        if state.is_recording:
+            self._arm_pending_speech_commit(client_id, state)
+            return
+
+        if not state.pending_speech_audio:
+            state.pending_speech_end_epoch_ms = None
+            return
+
+        audio_bytes = bytes(state.pending_speech_audio)
+        speech_end_epoch_ms = state.pending_speech_end_epoch_ms
+        state.pending_speech_audio.clear()
+        state.pending_speech_end_epoch_ms = None
+
+        audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        logger.info(
+            "Committing %s bytes of WebSocket speech (~%s ms) to ASR after %s ms grace window",
+            len(audio_bytes),
+            audio_ms,
+            self._speech_commit_delay_ms(state),
+        )
+
+        task = await self._schedule_turn(
+            client_id,
+            self._transcribe_and_respond_turn(
+                client_id,
+                audio_bytes,
+                speech_end_epoch_ms=speech_end_epoch_ms,
+            ),
+        )
+        if task is None:
+            logger.warning(
+                "Dropped %s bytes of pending WebSocket speech before ASR scheduling",
+                len(audio_bytes),
+            )
+
+    async def _commit_pipeline_speech_now(
+        self,
+        client_id: str,
+        state: ConversationState,
+        audio_bytes: bytes | None = None,
+    ) -> None:
+        self._cancel_pending_speech_commit(state)
+        if audio_bytes:
+            await self._buffer_pipeline_speech_segment(client_id, state, audio_bytes)
+        state.is_recording = False
+        if state.pending_speech_audio:
+            state.pending_speech_end_epoch_ms = int(time.time() * 1000)
+        await self._commit_pending_speech(client_id, state)
+
     async def handle_interrupt(self, client_id: str) -> None:
         """Interrupt any active turn for a client and stop current playback."""
         state = self._get_state(client_id)
         if not state:
             return
 
+        self._clear_pending_speech(state)
         active_task = state.response_task
         if active_task and not active_task.done():
             self._cancel_state_generation(state, "interrupt")
@@ -1449,6 +1592,10 @@ class WebSocketManager:
             })
             return
 
+        state = self._get_state(client_id)
+        if state:
+            self._clear_pending_speech(state)
+
         await self._schedule_turn(
             client_id,
             self._handle_audio_message_turn(client_id, audio_data),
@@ -1472,10 +1619,15 @@ class WebSocketManager:
             for event in vad.process_audio(audio_samples):
                 if event == b"<|START|>":
                     state.is_recording = True
+                    if state.mode == "pipeline":
+                        self._cancel_pending_speech_commit(state)
                     await self.send_json(client_id, {"type": "vad_start"})
 
                 elif event == b"<|END|>":
                     state.is_recording = False
+                    if state.mode == "pipeline" and state.pending_speech_audio:
+                        state.pending_speech_end_epoch_ms = int(time.time() * 1000)
+                        self._arm_pending_speech_commit(client_id, state)
                     await self.send_json(client_id, {"type": "vad_end"})
 
                 elif len(event) > 100:
@@ -1484,7 +1636,7 @@ class WebSocketManager:
                     elif state.mode == "gemma-omni":
                         await self._schedule_turn(client_id, self._handle_audio_gemma(client_id, event))
                     else:
-                        await self._schedule_turn(client_id, self._transcribe_and_respond_turn(client_id, event))
+                        await self._buffer_pipeline_speech_segment(client_id, state, event)
 
         except Exception as e:
             logger.exception("VAD error")
@@ -1507,7 +1659,31 @@ class WebSocketManager:
         audio_samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
         await self.handle_audio_stream(client_id, audio_samples)
 
-    async def _transcribe_and_respond_turn(self, client_id: str, audio_bytes: bytes):
+    async def handle_mic_stop(self, client_id: str) -> None:
+        """Force-commit any active or pending microphone speech for a client."""
+        state = self._get_state(client_id)
+        if not state:
+            return
+
+        audio_bytes = state.vad.force_end() if state.vad else None
+        if state.mode == "omni":
+            if audio_bytes:
+                await self._schedule_turn(client_id, self._handle_audio_omni(client_id, audio_bytes))
+            return
+        if state.mode == "gemma-omni":
+            if audio_bytes:
+                await self._schedule_turn(client_id, self._handle_audio_gemma(client_id, audio_bytes))
+            return
+
+        if audio_bytes or state.pending_speech_audio:
+            await self._commit_pipeline_speech_now(client_id, state, audio_bytes)
+
+    async def _transcribe_and_respond_turn(
+        self,
+        client_id: str,
+        audio_bytes: bytes,
+        speech_end_epoch_ms: Optional[int] = None,
+    ):
         """Transcribe audio bytes and generate response. Pipeline mode only."""
         state = self._get_state(client_id)
         if not state:
@@ -1516,7 +1692,7 @@ class WebSocketManager:
         asr = state.get_asr()
         trace = {
             "turn_start_epoch_ms": int(time.time() * 1000),
-            "speech_end_epoch_ms": int(time.time() * 1000),
+            "speech_end_epoch_ms": speech_end_epoch_ms or int(time.time() * 1000),
         }
 
         try:
@@ -1575,6 +1751,8 @@ class WebSocketManager:
         state = self._get_state(client_id)
         if not state:
             return
+
+        self._clear_pending_speech(state)
 
         if state.memory_store:
             state.memory_store.clear()
@@ -2030,6 +2208,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     elif state and state.mode == "gemma-omni":
                         await manager._schedule_turn(client_id, manager._handle_audio_gemma(client_id, audio_bytes))
                     else:
+                        if state:
+                            manager._clear_pending_speech(state)
                         await manager._schedule_turn(client_id, manager._transcribe_and_respond_turn(client_id, audio_bytes))
 
             elif msg_type == "audio_stream":
@@ -2046,16 +2226,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                         await manager.handle_audio_stream(client_id, audio_samples)
 
             elif msg_type == "mic_stop":
-                state = manager.states.get(client_id)
-                if state and state.vad:
-                    audio_bytes = state.vad.force_end()
-                    if audio_bytes:
-                        if state.mode == "omni":
-                            await manager._schedule_turn(client_id, manager._handle_audio_omni(client_id, audio_bytes))
-                        elif state.mode == "gemma-omni":
-                            await manager._schedule_turn(client_id, manager._handle_audio_gemma(client_id, audio_bytes))
-                        else:
-                            await manager._schedule_turn(client_id, manager._transcribe_and_respond_turn(client_id, audio_bytes))
+                await manager.handle_mic_stop(client_id)
 
             elif msg_type == "interrupt":
                 await manager.handle_interrupt(client_id)
