@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.server import websocket as websocket_module
 from src.server.websocket import WebSocketManager
 
 
@@ -267,3 +268,315 @@ async def test_manual_pipeline_preload_runs_gpu_steps_sequentially():
         "models_ready",
     ]
     assert client_id not in manager._preloading
+
+
+@pytest.mark.asyncio
+async def test_pipeline_audio_stream_merges_segments_before_commit_window():
+    manager = WebSocketManager()
+    client_id = "client-vad-merge"
+    sent_messages: list[dict] = []
+    scheduled_audio: list[bytes] = []
+
+    class FakeVAD:
+        def __init__(self):
+            self.calls = 0
+
+        def process_audio(self, _samples):
+            self.calls += 1
+            if self.calls == 1:
+                return iter([b"<|START|>", b"A" * 3200, b"<|END|>"])
+            return iter([b"<|START|>", b"B" * 1600, b"<|END|>"])
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    async def fake_send_json(_client_id, data):
+        sent_messages.append(data)
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={"audio": {"speech_commit_delay_ms": 700}},
+        is_recording=False,
+        pending_speech_audio=bytearray(),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+        get_vad=lambda: vad,
+    )
+    vad = FakeVAD()
+    manager.states[client_id] = state
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager.handle_audio_stream(client_id, [0.1])
+    first_task = state.pending_speech_commit_task
+
+    assert first_task is not None
+    assert scheduled_audio == []
+    assert state.pending_speech_audio == bytearray(b"A" * 3200)
+
+    await manager.handle_audio_stream(client_id, [0.1])
+    await asyncio.sleep(0)
+
+    assert first_task.cancelled()
+    assert scheduled_audio == []
+    assert state.pending_speech_audio == bytearray(b"A" * 3200 + b"B" * 1600)
+
+    manager._cancel_pending_speech_commit(state)
+    await manager._commit_pending_speech(client_id, state)
+
+    assert scheduled_audio == [b"A" * 3200 + b"B" * 1600]
+    assert state.pending_speech_audio == bytearray()
+    assert [message["type"] for message in sent_messages] == [
+        "vad_start",
+        "vad_end",
+        "vad_start",
+        "vad_end",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_audio_stream_committed_pause_stays_separate_turns():
+    manager = WebSocketManager()
+    client_id = "client-vad-separate"
+    scheduled_audio: list[bytes] = []
+
+    class FakeVAD:
+        def __init__(self):
+            self.calls = 0
+
+        def process_audio(self, _samples):
+            self.calls += 1
+            if self.calls == 1:
+                return iter([b"<|START|>", b"A" * 3200, b"<|END|>"])
+            return iter([b"<|START|>", b"B" * 1600, b"<|END|>"])
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    async def fake_send_json(*_args, **_kwargs):
+        return None
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={"audio": {"speech_commit_delay_ms": 700}},
+        is_recording=False,
+        pending_speech_audio=bytearray(),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+        get_vad=lambda: vad,
+    )
+    vad = FakeVAD()
+    manager.states[client_id] = state
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager.handle_audio_stream(client_id, [0.1])
+    manager._cancel_pending_speech_commit(state)
+    await manager._commit_pending_speech(client_id, state)
+
+    await manager.handle_audio_stream(client_id, [0.1])
+    manager._cancel_pending_speech_commit(state)
+    await manager._commit_pending_speech(client_id, state)
+
+    assert scheduled_audio == [b"A" * 3200, b"B" * 1600]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_audio_stream_force_commits_when_pending_buffer_reaches_cap(monkeypatch):
+    monkeypatch.setattr(websocket_module, "MAX_PENDING_SPEECH_AUDIO_BYTES", 4000)
+
+    manager = WebSocketManager()
+    client_id = "client-vad-cap"
+    sent_messages: list[dict] = []
+    scheduled_audio: list[bytes] = []
+
+    class FakeVAD:
+        def __init__(self):
+            self.calls = 0
+
+        def process_audio(self, _samples):
+            self.calls += 1
+            if self.calls == 1:
+                return iter([b"<|START|>", b"A" * 3200, b"<|END|>"])
+            return iter([b"<|START|>", b"B" * 1600, b"<|END|>"])
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    async def fake_send_json(_client_id, data):
+        sent_messages.append(data)
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={"audio": {"speech_commit_delay_ms": 700}},
+        is_recording=False,
+        pending_speech_audio=bytearray(),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+        get_vad=lambda: vad,
+    )
+    vad = FakeVAD()
+    manager.states[client_id] = state
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager.handle_audio_stream(client_id, [0.1])
+    first_task = state.pending_speech_commit_task
+
+    assert first_task is not None
+    assert scheduled_audio == []
+    assert state.pending_speech_audio == bytearray(b"A" * 3200)
+
+    await manager.handle_audio_stream(client_id, [0.1])
+    await asyncio.sleep(0)
+
+    assert first_task.cancelled()
+    assert scheduled_audio == [b"A" * 3200]
+    assert state.pending_speech_audio == bytearray(b"B" * 1600)
+
+    manager._cancel_pending_speech_commit(state)
+    await manager._commit_pending_speech(client_id, state)
+
+    assert scheduled_audio == [b"A" * 3200, b"B" * 1600]
+    assert state.pending_speech_audio == bytearray()
+    assert [message["type"] for message in sent_messages] == [
+        "vad_start",
+        "vad_end",
+        "vad_start",
+        "vad_end",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_audio_stream_rejects_single_segment_over_pending_cap(monkeypatch):
+    monkeypatch.setattr(websocket_module, "MAX_PENDING_SPEECH_AUDIO_BYTES", 1000)
+
+    manager = WebSocketManager()
+    client_id = "client-vad-segment-too-long"
+    sent_messages: list[dict] = []
+    scheduled_audio: list[bytes] = []
+
+    class FakeVAD:
+        def process_audio(self, _samples):
+            return iter([b"<|START|>", b"A" * 1600, b"<|END|>"])
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    async def fake_send_json(_client_id, data):
+        sent_messages.append(data)
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={"audio": {"speech_commit_delay_ms": 700}},
+        is_recording=False,
+        pending_speech_audio=bytearray(),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+        get_vad=lambda: FakeVAD(),
+    )
+    manager.states[client_id] = state
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager.handle_audio_stream(client_id, [0.1])
+
+    assert scheduled_audio == []
+    assert state.pending_speech_audio == bytearray()
+    assert state.pending_speech_commit_task is None
+    assert {"type": "error", "message": "Speech segment is too long"} in sent_messages
+
+
+@pytest.mark.asyncio
+async def test_pipeline_audio_stream_force_commit_merges_pending_audio():
+    manager = WebSocketManager()
+    client_id = "client-vad-force"
+    scheduled_audio: list[bytes] = []
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={"audio": {"speech_commit_delay_ms": 700}},
+        is_recording=True,
+        pending_speech_audio=bytearray(b"A" * 3200),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+    )
+    manager.states[client_id] = state
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager._commit_pipeline_speech_now(client_id, state, b"B" * 1600)
+
+    assert scheduled_audio == [b"A" * 3200 + b"B" * 1600]
+    assert state.pending_speech_audio == bytearray()
+    assert state.is_recording is False
+
+
+@pytest.mark.asyncio
+async def test_handle_clear_clears_pending_pipeline_speech():
+    manager = WebSocketManager()
+    client_id = "client-clear-pending-speech"
+    sent_messages: list[dict] = []
+    pending_task = asyncio.create_task(asyncio.sleep(10))
+
+    async def fake_stop_client_audio(_client_id):
+        return None
+
+    async def fake_send_json(_client_id, data):
+        sent_messages.append(data)
+
+    state = SimpleNamespace(
+        config={"character": {"system_prompt": "System"}},
+        memory_store=None,
+        messages=[{"role": "system", "content": "System"}, {"role": "user", "content": "Hi"}],
+        response_task=None,
+        pending_speech_audio=bytearray(b"A" * 3200),
+        pending_speech_commit_task=pending_task,
+        pending_speech_end_epoch_ms=123,
+        omni_pipeline=None,
+        gemma_pipeline=None,
+    )
+    manager.states[client_id] = state
+    manager._stop_client_audio = fake_stop_client_audio  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    await manager.handle_clear(client_id)
+    await asyncio.sleep(0)
+
+    assert pending_task.cancelled()
+    assert state.pending_speech_audio == bytearray()
+    assert state.pending_speech_commit_task is None
+    assert state.pending_speech_end_epoch_ms is None
+    assert len(state.messages) == 1
+    assert state.messages[0].role == "system"
+    assert state.messages[0].content == "System"
+    assert sent_messages == [
+        {"type": "cleared", "message": "Conversation history cleared"},
+    ]
