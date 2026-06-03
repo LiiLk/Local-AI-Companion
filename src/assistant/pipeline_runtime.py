@@ -420,6 +420,36 @@ def create_pipeline_tts(
     return tts, f"Edge ({voice})"
 
 
+WHISPER_PROFILES = {
+    # Public default: broad GPU compatibility.
+    "balanced": {"model_size": "small", "beam_size": 3},
+    # Much better FR/EN; needs ~6GB VRAM.
+    "quality-local": {"model_size": "large-v3-turbo", "beam_size": 5},
+}
+DEFAULT_WHISPER_PROFILE = "balanced"
+
+
+def resolve_whisper_profile(asr_config: dict) -> dict:
+    """Resolve Whisper settings from the configured ASR profile.
+
+    Public default is ``balanced`` (small) for broad GPU compatibility. An
+    explicit ``asr.model_size`` / ``asr.beam_size`` still overrides the profile.
+    Unknown profile names fall back to the default.
+    """
+    name = asr_config.get("profile") or DEFAULT_WHISPER_PROFILE
+    if name not in WHISPER_PROFILES:
+        name = DEFAULT_WHISPER_PROFILE
+    profile = WHISPER_PROFILES[name]
+    return {
+        "profile": name,
+        "model_size": asr_config.get("model_size", profile["model_size"]),
+        "beam_size": asr_config.get("beam_size", profile["beam_size"]),
+        "compute_type": asr_config.get("compute_type", "float16"),
+        "device": asr_config.get("device", "cpu"),
+        "prompt": asr_config.get("prompt"),
+    }
+
+
 def create_pipeline_asr(config: dict) -> tuple[Any, str]:
     asr_config = config.get("asr", {})
     asr_provider = asr_config.get("provider", "whisper")
@@ -442,18 +472,15 @@ def create_pipeline_asr(config: dict) -> tuple[Any, str]:
 
     from src.asr import WhisperProvider
 
-    device = asr_config.get("device", "cpu")
-    model_size = asr_config.get("model_size", "base")
-    compute_type = asr_config.get("compute_type", "float16")
-    prompt = asr_config.get("prompt")
+    settings = resolve_whisper_profile(asr_config)
     asr = WhisperProvider(
-        model_size=model_size,
-        device=device,
-        compute_type=compute_type,
-        initial_prompt=prompt,
-        beam_size=asr_config.get("beam_size", 1),
+        model_size=settings["model_size"],
+        device=settings["device"],
+        compute_type=settings["compute_type"],
+        initial_prompt=settings["prompt"],
+        beam_size=settings["beam_size"],
     )
-    return asr, f"Whisper {model_size} on {device}"
+    return asr, f"Whisper {settings['model_size']} ({settings['profile']} profile) on {settings['device']}"
 
 
 def create_pipeline_rvc(config: dict) -> tuple[Any | None, str | None]:
