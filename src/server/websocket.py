@@ -645,7 +645,7 @@ class WebSocketManager:
             self._speech_commit_delay_ms(state),
         )
 
-        await self._schedule_turn(
+        task = await self._schedule_turn(
             client_id,
             self._transcribe_and_respond_turn(
                 client_id,
@@ -653,6 +653,11 @@ class WebSocketManager:
                 speech_end_epoch_ms=speech_end_epoch_ms,
             ),
         )
+        if task is None:
+            logger.warning(
+                "Dropped %s bytes of pending WebSocket speech before ASR scheduling",
+                len(audio_bytes),
+            )
 
     async def _commit_pipeline_speech_now(
         self,
@@ -1587,6 +1592,10 @@ class WebSocketManager:
             })
             return
 
+        state = self._get_state(client_id)
+        if state:
+            self._clear_pending_speech(state)
+
         await self._schedule_turn(
             client_id,
             self._handle_audio_message_turn(client_id, audio_data),
@@ -1649,6 +1658,25 @@ class WebSocketManager:
 
         audio_samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
         await self.handle_audio_stream(client_id, audio_samples)
+
+    async def handle_mic_stop(self, client_id: str) -> None:
+        """Force-commit any active or pending microphone speech for a client."""
+        state = self._get_state(client_id)
+        if not state:
+            return
+
+        audio_bytes = state.vad.force_end() if state.vad else None
+        if state.mode == "omni":
+            if audio_bytes:
+                await self._schedule_turn(client_id, self._handle_audio_omni(client_id, audio_bytes))
+            return
+        if state.mode == "gemma-omni":
+            if audio_bytes:
+                await self._schedule_turn(client_id, self._handle_audio_gemma(client_id, audio_bytes))
+            return
+
+        if audio_bytes or state.pending_speech_audio:
+            await self._commit_pipeline_speech_now(client_id, state, audio_bytes)
 
     async def _transcribe_and_respond_turn(
         self,
@@ -2198,16 +2226,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                         await manager.handle_audio_stream(client_id, audio_samples)
 
             elif msg_type == "mic_stop":
-                state = manager.states.get(client_id)
-                if state and state.vad:
-                    audio_bytes = state.vad.force_end()
-                    if audio_bytes:
-                        if state.mode == "omni":
-                            await manager._schedule_turn(client_id, manager._handle_audio_omni(client_id, audio_bytes))
-                        elif state.mode == "gemma-omni":
-                            await manager._schedule_turn(client_id, manager._handle_audio_gemma(client_id, audio_bytes))
-                        else:
-                            await manager._commit_pipeline_speech_now(client_id, state, audio_bytes)
+                await manager.handle_mic_stop(client_id)
 
             elif msg_type == "interrupt":
                 await manager.handle_interrupt(client_id)

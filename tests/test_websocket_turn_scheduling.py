@@ -540,6 +540,78 @@ async def test_pipeline_audio_stream_force_commit_merges_pending_audio():
 
 
 @pytest.mark.asyncio
+async def test_pipeline_mic_stop_commits_pending_audio_when_vad_force_end_is_empty():
+    manager = WebSocketManager()
+    client_id = "client-mic-stop-pending"
+    scheduled_audio: list[bytes] = []
+
+    class FakeVAD:
+        def force_end(self):
+            return None
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={"audio": {"speech_commit_delay_ms": 700}},
+        is_recording=False,
+        vad=FakeVAD(),
+        pending_speech_audio=bytearray(b"A" * 3200),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=123,
+    )
+    manager.states[client_id] = state
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager.handle_mic_stop(client_id)
+
+    assert scheduled_audio == [b"A" * 3200]
+    assert state.pending_speech_audio == bytearray()
+    assert state.pending_speech_end_epoch_ms is None
+
+
+@pytest.mark.asyncio
+async def test_audio_upload_clears_pending_pipeline_speech_before_scheduling_turn():
+    manager = WebSocketManager()
+    client_id = "client-audio-upload-clears-pending"
+    scheduled_turns = 0
+    pending_task = asyncio.create_task(asyncio.sleep(10))
+
+    async def fake_schedule(_client_id, turn_coro):
+        nonlocal scheduled_turns
+        scheduled_turns += 1
+        turn_coro.close()
+        return None
+
+    async def fake_send_json(*_args, **_kwargs):
+        return None
+
+    state = SimpleNamespace(
+        pending_speech_audio=bytearray(b"A" * 3200),
+        pending_speech_commit_task=pending_task,
+        pending_speech_end_epoch_ms=123,
+    )
+    manager.states[client_id] = state
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    await manager.handle_audio_message(client_id, "QUJD")
+    await asyncio.sleep(0)
+
+    assert scheduled_turns == 1
+    assert pending_task.cancelled()
+    assert state.pending_speech_audio == bytearray()
+    assert state.pending_speech_commit_task is None
+    assert state.pending_speech_end_epoch_ms is None
+
+
+@pytest.mark.asyncio
 async def test_handle_clear_clears_pending_pipeline_speech():
     manager = WebSocketManager()
     client_id = "client-clear-pending-speech"
