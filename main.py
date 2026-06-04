@@ -139,6 +139,8 @@ def create_asr(asr_config: dict) -> RealtimeWhisperProvider:
         model_size=settings["model_size"],
         device=settings["device"],
         compute_type=settings["compute_type"],
+        beam_size=settings["beam_size"],
+        initial_prompt=settings["prompt"],
     )
 
 

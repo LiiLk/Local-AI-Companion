@@ -38,3 +38,12 @@ def test_compute_type_and_device_passthrough():
     )
     assert settings["compute_type"] == "int8_float16"
     assert settings["device"] == "cuda"
+
+
+def test_create_asr_honors_profile_beam():
+    """The CLI/listen ASR path must honor the profile's beam size (Codex review)."""
+    from main import create_asr
+
+    asr = create_asr({"profile": "quality-local", "device": "cpu"})
+    assert asr.model_size == "large-v3-turbo"
+    assert asr.beam_size == 5

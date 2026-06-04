@@ -535,8 +535,16 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
         compute_type: str = "float16",
         sample_rate: int = 16000,
         silence_threshold: float = 0.5,  # seconds of silence to stop
+        initial_prompt: Optional[str] = None,
+        beam_size: int = WhisperProvider.DEFAULT_BEAM_SIZE,
     ):
-        super().__init__(model_size, device, compute_type)
+        super().__init__(
+            model_size,
+            device,
+            compute_type,
+            initial_prompt=initial_prompt,
+            beam_size=beam_size,
+        )
         
         self.sample_rate = sample_rate
         self.silence_threshold = silence_threshold
