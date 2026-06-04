@@ -162,10 +162,15 @@ asr:
   # - "whisper" : best default
   # - "qwen3"   : advanced local quality path
   provider: "whisper"
-  model_size: "small"
+  # Whisper profile. Public default "balanced" for broad GPU compatibility:
+  #   balanced      -> whisper small,          beam 3  (~2GB VRAM)
+  #   quality-local -> whisper large-v3-turbo, beam 5  (~6GB VRAM, much better FR/EN)
+  # Switch in config/config.local.yaml: `asr.profile: "quality-local"`.
+  # Tight VRAM on quality-local? also set `asr.compute_type: "int8_float16"`.
+  # Power users can still override asr.model_size / asr.beam_size directly.
+  profile: "balanced"
   language: "auto"
   prompt: null
-  beam_size: 3
   compute_type: "float16"
   device: "cuda"
 

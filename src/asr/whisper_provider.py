@@ -425,6 +425,8 @@ class WhisperProvider(BaseASR):
             )
             full_text = ""
 
+        self._save_debug_audio(transcribe_input, full_text)
+
         return ASRResult(
             text=full_text,
             language=info.language,
@@ -433,6 +435,37 @@ class WhisperProvider(BaseASR):
             segments=all_segments
         )
     
+    def _save_debug_audio(self, audio_input, text: str) -> None:
+        """Capture the exact ASR input + transcription when ASR_DEBUG_DIR is set.
+
+        No-op unless the env var is present, so there is zero impact in normal
+        runs. Lets us replay a real failing utterance through different
+        model/beam settings deterministically (same audio).
+        """
+        debug_dir = os.environ.get("ASR_DEBUG_DIR")
+        if not debug_dir:
+            return
+        try:
+            import time
+            import shutil
+
+            out = Path(debug_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            base = out / f"asr-{time.strftime('%Y%m%d-%H%M%S')}-{int(time.time() * 1000) % 1000:03d}"
+            wav_path = base.with_suffix(".wav")
+            if isinstance(audio_input, (str, Path)):
+                shutil.copyfile(str(audio_input), str(wav_path))
+            else:
+                import soundfile as sf
+                sf.write(str(wav_path), np.asarray(audio_input, dtype=np.float32), 16000)
+            base.with_suffix(".txt").write_text(text or "", encoding="utf-8")
+            logger.info(
+                "ASR debug capture: %s (model=%s, beam=%s) -> %r",
+                wav_path.name, self.model_size, self.beam_size, (text or "")[:160],
+            )
+        except Exception as exc:
+            logger.warning("ASR debug capture failed: %s", exc)
+
     async def transcribe_stream(
         self,
         audio_path: str | Path,
@@ -502,8 +535,16 @@ class RealtimeWhisperProvider(BaseRealtimeASR, WhisperProvider):
         compute_type: str = "float16",
         sample_rate: int = 16000,
         silence_threshold: float = 0.5,  # seconds of silence to stop
+        initial_prompt: Optional[str] = None,
+        beam_size: int = WhisperProvider.DEFAULT_BEAM_SIZE,
     ):
-        super().__init__(model_size, device, compute_type)
+        super().__init__(
+            model_size,
+            device,
+            compute_type,
+            initial_prompt=initial_prompt,
+            beam_size=beam_size,
+        )
         
         self.sample_rate = sample_rate
         self.silence_threshold = silence_threshold

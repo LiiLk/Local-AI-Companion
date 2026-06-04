@@ -28,6 +28,7 @@ from src.tts.base import BaseTTS
 from src.asr import RealtimeWhisperProvider
 from src.asr.base import BaseASR
 from src.utils.config_loader import load_yaml_config
+from src.assistant.pipeline_runtime import resolve_whisper_profile
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -133,12 +134,13 @@ def create_asr(asr_config: dict) -> RealtimeWhisperProvider:
     Returns:
         ASR provider instance
     """
-    model_size = asr_config.get("model_size", "base")
-    device = asr_config.get("device", "cpu")  # CPU by default (cuDNN issues)
-
+    settings = resolve_whisper_profile(asr_config)
     return RealtimeWhisperProvider(
-        model_size=model_size,
-        device=device
+        model_size=settings["model_size"],
+        device=settings["device"],
+        compute_type=settings["compute_type"],
+        beam_size=settings["beam_size"],
+        initial_prompt=settings["prompt"],
     )
 
 
@@ -496,7 +498,7 @@ async def run_omni_mode(config: dict, args):
     if listen_mode:
         asr_config = config.get("asr", {})
         asr = create_asr(asr_config)
-        print(f"ASR: Whisper {asr_config.get('model_size', 'base')} (for mic capture)")
+        print(f"ASR: Whisper {resolve_whisper_profile(asr_config)['model_size']} (for mic capture)")
 
     try:
         while True:
@@ -580,9 +582,9 @@ async def main():
                        help="TTS provider: kokoro (local), qwen3 (local voice clone), or edge (cloud)")
     parser.add_argument("--listen", "-l", action="store_true",
                        help="Enable voice listening (microphone)")
-    parser.add_argument("--asr-model", type=str, default="base",
-                       choices=["tiny", "base", "small", "medium", "large-v3"],
-                       help="Whisper model size for ASR")
+    parser.add_argument("--asr-model", type=str, default=None,
+                       choices=["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"],
+                       help="Override Whisper model for ASR (default: use the config asr.profile)")
     parser.add_argument("--mode", type=str, default=None,
                        choices=["omni", "pipeline"],
                        help="Override mode from config")
@@ -613,8 +615,9 @@ async def main():
     tts_config = config.get("tts", {})
     asr_config = config.get("asr", {})
 
-    # Override with CLI arguments
-    asr_config["model_size"] = args.asr_model
+    # Override the config profile only when --asr-model is explicitly passed
+    if args.asr_model:
+        asr_config["model_size"] = args.asr_model
 
     print("=" * 50)
     print(f"{character['name']} - Local AI Companion")
@@ -671,7 +674,7 @@ async def main():
 
     if listen_mode:
         asr = create_asr(asr_config)
-        print(f"ASR: Whisper {args.asr_model}")
+        print(f"ASR: Whisper {resolve_whisper_profile(asr_config)['model_size']}")
 
     print()
 
