@@ -210,20 +210,21 @@ class RVCConverter:
         self.index_path = requested_index_path
         self.protect = protect
         self.backend = backend
-        self.python_path = (
-            Path(python_path).resolve()
-            if python_path
-            else Path(sys.executable).resolve()
+        from src.utils.platform_compat import (
+            resolve_project_path,
+            resolve_python_executable,
+            resolve_worker_script,
         )
+
+        self.python_path = resolve_python_executable(python_path, project_root=PROJECT_ROOT)
         self.site_packages_dir = (
-            Path(site_packages_dir).resolve()
-            if site_packages_dir
-            else DEFAULT_RVC_SITE_PACKAGES.resolve()
+            resolve_project_path(site_packages_dir, project_root=PROJECT_ROOT)
+            or DEFAULT_RVC_SITE_PACKAGES.resolve()
         )
-        self.worker_script = (
-            Path(worker_script).resolve()
-            if worker_script
-            else DEFAULT_RVC_WORKER.resolve()
+        self.worker_script = resolve_worker_script(
+            worker_script,
+            DEFAULT_RVC_WORKER,
+            project_root=PROJECT_ROOT,
         )
         self.f0_up_key = f0_up_key
         self.output_freq = output_freq
@@ -251,6 +252,13 @@ class RVCConverter:
 
     @staticmethod
     def install_hint() -> str:
+        from src.utils.platform_compat import is_windows
+
+        if not is_windows():
+            return (
+                "RVC is optional. On WSL/Linux, install it with:\n"
+                "  bash scripts/install_rvc_wsl.sh"
+            )
         return (
             "RVC is optional. On Windows, install it with:\n"
             "  powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1 -Clean"
@@ -336,20 +344,21 @@ class RVCConverter:
         worker_script: str | Path | None = None,
     ) -> bool:
         """Check if at least one configured RVC backend is usable."""
-        python_path = (
-            Path(python_path).resolve()
-            if python_path
-            else Path(sys.executable).resolve()
+        from src.utils.platform_compat import (
+            resolve_project_path,
+            resolve_python_executable,
+            resolve_worker_script,
         )
+
+        python_path = resolve_python_executable(python_path, project_root=PROJECT_ROOT)
         site_packages_dir = (
-            Path(site_packages_dir).resolve()
-            if site_packages_dir
-            else DEFAULT_RVC_SITE_PACKAGES.resolve()
+            resolve_project_path(site_packages_dir, project_root=PROJECT_ROOT)
+            or DEFAULT_RVC_SITE_PACKAGES.resolve()
         )
-        worker_script = (
-            Path(worker_script).resolve()
-            if worker_script
-            else DEFAULT_RVC_WORKER.resolve()
+        worker_script = resolve_worker_script(
+            worker_script,
+            DEFAULT_RVC_WORKER,
+            project_root=PROJECT_ROOT,
         )
 
         if backend == "worker":
@@ -668,12 +677,9 @@ class RVCConverter:
 
         try:
             if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                from src.utils.platform_compat import kill_process_tree
+
+                kill_process_tree(process)
         except Exception:
             pass
         finally:
@@ -729,6 +735,7 @@ class RVCConverter:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=os.name != "nt",
             text=True,
             encoding="utf-8",
             bufsize=1,

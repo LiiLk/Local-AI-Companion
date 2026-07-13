@@ -122,18 +122,21 @@ class Qwen3TTSProvider(BaseTTS):
         self.dtype = dtype
         self.attn_implementation = attn_implementation
         self.backend = backend
-        self.python_path = (
-            Path(python_path).resolve() if python_path else Path(sys.executable).resolve()
+        from src.utils.platform_compat import (
+            resolve_project_path,
+            resolve_python_executable,
+            resolve_worker_script,
         )
+
+        self.python_path = resolve_python_executable(python_path, project_root=PROJECT_ROOT)
         self.site_packages_dir = (
-            Path(site_packages_dir).resolve()
-            if site_packages_dir
-            else DEFAULT_QWEN3_SITE_PACKAGES.resolve()
+            resolve_project_path(site_packages_dir, project_root=PROJECT_ROOT)
+            or DEFAULT_QWEN3_SITE_PACKAGES.resolve()
         )
-        self.worker_script = (
-            Path(worker_script).resolve()
-            if worker_script
-            else DEFAULT_QWEN3_WORKER.resolve()
+        self.worker_script = resolve_worker_script(
+            worker_script,
+            DEFAULT_QWEN3_WORKER,
+            project_root=PROJECT_ROOT,
         )
         self.request_timeout_sec = float(request_timeout_sec)
 
@@ -155,35 +158,12 @@ class Qwen3TTSProvider(BaseTTS):
 
     @staticmethod
     def _kill_process_tree(process: subprocess.Popen[str]) -> None:
-        if os.name == "nt":
-            pid = int(process.pid)
-            if pid <= 0:
-                return
-            system_root = Path(os.environ.get("SystemRoot", "C:/Windows"))
-            taskkill = system_root / "System32" / "taskkill.exe"
-            taskkill_exe = str(taskkill.resolve()) if taskkill.is_file() else "taskkill"
-            command = [taskkill_exe, "/PID", str(pid), "/T", "/F"]
-            try:
-                # Fixed taskkill command with validated PID and shell=False.
-                subprocess.run(  # nosec B603
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=10,
-                    check=False,
-                    shell=False,
-                )
-                return
-            except Exception:
-                logger.debug("Failed to terminate Qwen3-TTS worker process tree", exc_info=True)
+        from src.utils.platform_compat import kill_process_tree
 
         try:
-            process.kill()
-            process.wait(timeout=5)
+            kill_process_tree(process)
         except Exception:
-            logger.debug("Failed to kill Qwen3-TTS worker process", exc_info=True)
+            logger.debug("Failed to terminate Qwen3-TTS worker process tree", exc_info=True)
 
     @staticmethod
     def resolve_mode_for_model(
@@ -358,18 +338,21 @@ class Qwen3TTSProvider(BaseTTS):
         if backend == "inprocess":
             return importlib.util.find_spec("qwen_tts") is not None
 
-        python_path = (
-            Path(python_path).resolve() if python_path else Path(sys.executable).resolve()
+        from src.utils.platform_compat import (
+            resolve_project_path,
+            resolve_python_executable,
+            resolve_worker_script,
         )
+
+        python_path = resolve_python_executable(python_path, project_root=PROJECT_ROOT)
         site_packages_dir = (
-            Path(site_packages_dir).resolve()
-            if site_packages_dir
-            else DEFAULT_QWEN3_SITE_PACKAGES.resolve()
+            resolve_project_path(site_packages_dir, project_root=PROJECT_ROOT)
+            or DEFAULT_QWEN3_SITE_PACKAGES.resolve()
         )
-        worker_script = (
-            Path(worker_script).resolve()
-            if worker_script
-            else DEFAULT_QWEN3_WORKER.resolve()
+        worker_script = resolve_worker_script(
+            worker_script,
+            DEFAULT_QWEN3_WORKER,
+            project_root=PROJECT_ROOT,
         )
         return cls._worker_import_check(
             python_path=python_path,
@@ -434,6 +417,8 @@ class Qwen3TTSProvider(BaseTTS):
         if self._worker_process is not None:
             return
 
+        from src.utils.platform_compat import is_windows
+
         self._validate_worker_process_inputs(self.python_path, self.worker_script)
         # Validated local worker script, shell=False.
         process = subprocess.Popen(  # nosec B603
@@ -447,6 +432,7 @@ class Qwen3TTSProvider(BaseTTS):
             errors="replace",
             bufsize=1,
             shell=False,
+            start_new_session=not is_windows(),
         )
 
         self._worker_process = process

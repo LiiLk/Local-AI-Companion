@@ -24,6 +24,14 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 try:
+    # LIL-49: set PULSE_SERVER under WSL before opening PortAudio.
+    from src.utils.platform_compat import ensure_wsl_audio_env
+
+    ensure_wsl_audio_env()
+except Exception:
+    pass
+
+try:
     import sounddevice as sd
     SOUNDDEVICE_AVAILABLE = True
 except (ImportError, OSError) as exc:
@@ -89,6 +97,8 @@ class AudioService:
         self._stream: Optional[object] = None
         self._capture_thread: Optional[threading.Thread] = None
         self._stream_sample_rate = self.config.sample_rate
+        self._capture_ready = threading.Event()
+        self._capture_error: Optional[BaseException] = None
 
         # VAD
         from src.vad.silero_vad import VADConfig
@@ -143,8 +153,13 @@ class AudioService:
             if self.on_state_change:
                 self.on_state_change(new_state)
 
-    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
-        """Start audio capture."""
+    def start(
+        self,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        *,
+        startup_timeout_sec: float = 5.0,
+    ):
+        """Start audio capture and return only after the input stream is open."""
         if not SOUNDDEVICE_AVAILABLE:
             raise RuntimeError("sounddevice is not installed")
 
@@ -154,6 +169,8 @@ class AudioService:
 
         self._loop = loop
         self._running = True
+        self._capture_error = None
+        self._capture_ready.clear()
 
         # Start capture thread
         self._capture_thread = threading.Thread(
@@ -162,6 +179,17 @@ class AudioService:
             name="AudioCapture"
         )
         self._capture_thread.start()
+
+        if not self._capture_ready.wait(timeout=max(0.1, startup_timeout_sec)):
+            self._running = False
+            raise RuntimeError(
+                f"Timed out after {startup_timeout_sec:.1f}s while opening the audio input"
+            )
+        if self._capture_error is not None:
+            error = self._capture_error
+            self._capture_thread.join(timeout=0.2)
+            self._capture_thread = None
+            raise RuntimeError(str(error)) from error
 
         logger.info("🎤 AudioService started")
 
@@ -418,14 +446,17 @@ class AudioService:
 
         try:
             self._open_input_stream(audio_callback)
+            self._capture_ready.set()
 
             # Keep thread alive
             while self._running:
                 time.sleep(0.1)
 
         except Exception as exc:
-            logger.error(f"Audio capture error: {exc}")
+            self._capture_error = exc
             self._running = False
+            self._capture_ready.set()
+            logger.warning("Audio capture unavailable: %s", exc)
 
     def _call_callback(self, callback: Callable, *args):
         """Call callback, handling async if needed."""

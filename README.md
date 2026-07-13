@@ -21,7 +21,7 @@
 
 ## Current State
 
-`Local AI Companion` is a Windows-first AI assistant project built around one main goal: a responsive local voice companion with a Live2D shell and a maintainable backend.
+`Local AI Companion` is a **Windows-first** AI assistant (desktop avatar + voice), with **WSL2 support for development and backend runs** ([LIL-49](docs/lil-49-wsl-compatibility.md)). The product shell remains optimized for Windows 11; WSL is a first-class contributor/agent environment.
 
 The current stable path on `main` is:
 
@@ -196,15 +196,27 @@ Local-AI-Companion/
 
 ## Quick Start
 
+There are **two supported run paths** (same codebase, different launch targets):
+
+| Path | Best for | Launch |
+|------|----------|--------|
+| **A. Windows** | Polished Live2D desktop avatar + voice | `python run_assistant.py` |
+| **B. WSL hybrid** | Backend in WSL + **Windows-native pet shell** (transparent / topmost) | `python run_assistant.py` |
+| **C. WSL web/CLI** | Browser/CLI only | `bash scripts/setup_wsl.sh` then `bash scripts/run_wsl.sh` |
+
+Full WSL notes: [docs/lil-49-wsl-compatibility.md](docs/lil-49-wsl-compatibility.md) (LIL-49).
+
 ### 1. Prerequisites
 
-- Windows 11 is the primary target
 - Python 3.11 or 3.12
-- NVIDIA GPU recommended for the intended desktop experience
-- `ffplay` or `mpv` if you want local audio playback from the CLI path
-- [Ollama](https://ollama.com/) if you want the default local LLM path
+- NVIDIA GPU recommended (CUDA works under WSL2 via the **Windows** NVIDIA driver)
+- [Ollama](https://ollama.com/) for the default local LLM path (or OpenRouter)
+- `ffplay` or `mpv` optional for CLI audio playback
+- Windows 11 for path A; Ubuntu WSL2 for path B (`wsl --update` from PowerShell first)
 
-### 2. Clone and install Python dependencies
+### 2. Clone and install
+
+#### Option A — Windows (desktop avatar)
 
 ```powershell
 git clone https://github.com/LiiLk/Local-AI-Companion.git
@@ -216,17 +228,72 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+RVC voice conversion (March 7th path):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1
+```
+
+Then:
+
+```powershell
+python run_assistant.py
+```
+
+#### Option B — WSL2 (browser / CLI companion)
+
+```bash
+git clone https://github.com/LiiLk/Local-AI-Companion.git
+cd Local-AI-Companion
+
+# One-time WSL environment setup, including Kokoro -> RVC
+bash scripts/setup_wsl.sh --with-rvc
+
+source venv/bin/activate
+python run_assistant.py
+```
+
+`run_assistant.py` is the single desktop entry point on Windows and WSL. Under
+WSL it automatically starts the backend locally and the Windows-native pet
+shell. For the browser UI instead, run `bash scripts/run_wsl.sh web`, then open
+**http://localhost:8000/web/** in Windows Edge/Chrome.
+
+The RVC setup reuses trusted `March-7th.pth` and `March-7th.index` files from an
+existing Windows checkout when available. On a fresh machine, place those files
+under `resources/voices/march7th/` before running `--with-rvc`.
+
+Other WSL modes:
+
+```bash
+bash scripts/run_wsl.sh cli         # text chat
+bash scripts/run_wsl.sh cli-voice   # mic CLI
+bash scripts/run_wsl.sh bridge      # backend only for an external shell
+bash scripts/run_wsl.sh desktop     # experimental Qt avatar (not Windows parity)
+bash scripts/run_wsl.sh check       # CUDA / audio / paths
+```
+
+Do **not** install a Linux NVIDIA display driver inside WSL.
+
 ### 3. Configure local overrides
 
 ```powershell
 copy config\config.local.example.yaml config\config.local.yaml
 ```
 
+On WSL/Linux:
+
+```bash
+cp config/config.local.example.yaml config/config.local.yaml
+```
+
 Use `config/config.local.yaml` for:
 
-- secrets such as `OPENROUTER_API_KEY`
 - machine-specific paths
 - local experiments you do not want to commit
+
+Keep secrets out of YAML, including local ignored files. Set API keys through
+the process environment so config diagnostics and support logs cannot print
+them accidentally.
 
 ### 4. Set up the default LLM path
 
@@ -240,20 +307,18 @@ Make sure Ollama is running on `http://localhost:11434`.
 
 #### Option B: OpenRouter (optional)
 
-Set `OPENROUTER_API_KEY` in your environment or in `config/config.local.yaml`, then switch:
+Set `OPENROUTER_API_KEY` in your environment, then switch the provider in
+`config/config.local.yaml`:
 
 ```yaml
 llm:
   provider: "openrouter"
 ```
 
-### 5. Install the default voice conversion worker
+### 5. Voice conversion (RVC) — already covered above
 
-The stable voice path on `main` uses `Kokoro -> RVC`, so install the RVC worker once:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1
-```
+Windows: `scripts/install_rvc_windows.ps1`
+WSL: `bash scripts/setup_wsl.sh --with-rvc` or `bash scripts/install_rvc_wsl.sh`
 
 If you want a plain Kokoro path first, you can temporarily disable RVC:
 
@@ -265,33 +330,14 @@ tts:
 
 ### 6. Run the app
 
-#### Desktop companion
+| Goal | Windows | WSL |
+|------|---------|-----|
+| Live2D desktop companion | `python run_assistant.py` | experimental: `bash scripts/run_wsl.sh desktop` |
+| Browser UI | `python -m src.server` | **`bash scripts/run_wsl.sh`** (recommended on WSL) |
+| Bridge for external shell | `python run_assistant.py --bridge-server` | `bash scripts/run_wsl.sh bridge` |
+| CLI / voice CLI | `python main.py` / `--voice --listen` | `bash scripts/run_wsl.sh cli` / `cli-voice` |
 
-```powershell
-python run_assistant.py
-```
-
-#### Desktop backend only (bridge mode for Tauri / external shell)
-
-```powershell
-python run_assistant.py --bridge-server --bridge-port 8765
-```
-
-#### Browser / WebSocket server
-
-```powershell
-python -m src.server
-```
-
-Then open `http://localhost:8000`.
-
-#### CLI chatbot
-
-```powershell
-python main.py
-python main.py --voice
-python main.py --voice --listen
-```
+Browser UI: open `http://localhost:8000`.
 
 ---
 
@@ -428,7 +474,8 @@ For dependency security audits, see `docs/python-dependency-audit.md`.
 - The project is optimized for **single-GPU desktop usage**, so heavyweight providers should not all be enabled blindly.
 - The default stable ASR is still `whisper small`; higher-accuracy upgrades are planned but not the current default.
 - `Qwen3-TTS`, `Qwen3-ASR`, `Gemma`, and `MiniCPM-o` are not the baseline that the repository is currently simplified around.
-- Windows is the primary target; some advanced runtimes may behave differently on Linux/WSL.
+- Windows remains the primary polished desktop target; WSL2 supports the full local test path after `bash scripts/setup_wsl.sh`. The launcher selects deterministic software WebGL for Live2D under WSL, and WSLg/Pulse provides microphone capture.
+- Tauri shell polish and native desktop behavior remain Windows-oriented.
 
 ---
 

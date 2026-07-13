@@ -333,8 +333,9 @@ class DesktopBridgeServer:
             return True
 
         text = str(origin).strip()
-        if text == "null":
-            return False
+        # file:// pages and some WebView hosts send Origin: null
+        if text.lower() == "null":
+            return True
 
         try:
             parsed = urlsplit(text)
@@ -342,6 +343,8 @@ class DesktopBridgeServer:
             return False
 
         scheme = parsed.scheme.lower()
+        if scheme == "file":
+            return True
         if scheme not in cls._ALLOWED_ORIGIN_SCHEMES:
             return False
         if not parsed.hostname:
@@ -381,6 +384,7 @@ class Live2DAssistant:
         self._preload_runtime_lock = threading.Lock()
         self._bridge_server: Optional[DesktopBridgeServer] = None
         self._bridge_only = False
+        self._hybrid_ui_server = None  # HybridUiHandle (Windows pet) when hybrid UI
         self._active_response_future = None
         self._turn_timeout_sec = resolve_turn_timeout_sec(self.config)
         self._turn_counter = 0
@@ -650,14 +654,15 @@ class Live2DAssistant:
         return CURRENT_DESKTOP_TURN_ID.get() or self._active_turn_id
 
     def _dispatch_frontend_event(self, event_name: str, *args):
-        js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
-        self._evaluate_js(f"window.{event_name}?.({js_args})")
         window = self._window
         if window and hasattr(window, "dispatch_frontend_event"):
             try:
                 window.dispatch_frontend_event(event_name, *args)
             except Exception as exc:
                 logger.debug("Desktop shell event dispatch error (%s): %s", event_name, exc)
+        else:
+            js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
+            self._evaluate_js(f"window.{event_name}?.({js_args})")
         if self._bridge_server:
             self._bridge_server.emit_frontend_event_sync(event_name, *args)
 
@@ -1507,10 +1512,20 @@ class Live2DAssistant:
     
     # ==================== Main ====================
     
-    def start(self, bridge_only: bool = False, bridge_port: int = 8765, shell: str = "qt"):
-        """Start the assistant application."""
+    def start(
+        self,
+        bridge_only: bool = False,
+        bridge_port: int = 8765,
+        shell: str = "qt",
+        hybrid_windows_ui: bool = False,
+    ):
+        """Start the assistant application.
+
+        hybrid_windows_ui (WSL): run the pipeline + bridge in WSL, open the
+        Windows-native transparent pet shell (PyQt6) via WSL interop.
+        """
         logger.info("🚀 Starting Live2D Assistant...")
-        self._bridge_only = bridge_only
+        self._bridge_only = bridge_only or hybrid_windows_ui
         self._shutdown_requested.clear()
         self._running = True
         
@@ -1518,7 +1533,7 @@ class Live2DAssistant:
         self._create_components()
         
         # Setup hotkeys only for the legacy pywebview shell.
-        if not bridge_only:
+        if not self._bridge_only:
             self._setup_hotkeys()
         
         # Create event loop and run it in a background thread
@@ -1536,18 +1551,38 @@ class Live2DAssistant:
         self._mark_startup_step("event_loop_started")
         logger.info("✅ Event loop started in background thread")
 
-        if bridge_only:
+        if self._bridge_only:
             self._bridge_server = DesktopBridgeServer(self, port=bridge_port)
             asyncio.run_coroutine_threadsafe(self._bridge_server.start(), self._loop).result(timeout=5)
             self._mark_startup_step("bridge_server_started")
             logger.info("Bridge-only desktop backend enabled on port %s", bridge_port)
+            if hybrid_windows_ui:
+                try:
+                    from src.utils.wsl_hybrid_ui import start_hybrid_windows_ui
+
+                    self._hybrid_ui_server = start_hybrid_windows_ui(bridge_port=bridge_port)
+                    self._mark_startup_step("hybrid_windows_ui_started")
+                    logger.info(
+                        "Hybrid mode: backend in WSL, Windows pet shell should open on the host"
+                    )
+                except Exception as exc:
+                    logger.error("Hybrid Windows UI failed to start: %s", exc, exc_info=True)
+                    logger.error(
+                        "Manual fallback — Windows PowerShell:\n"
+                        "  venv\\Scripts\\python.exe scripts\\windows_pet_shell.py "
+                        "--bridge-url ws://127.0.0.1:%s",
+                        bridge_port,
+                    )
         
         # Pre-load models without blocking the window, then start audio capture
         self._start_background_preload()
 
         # Create and start window
-        if bridge_only:
-            logger.info("Running in bridge-only mode (no pywebview window)")
+        if self._bridge_only:
+            logger.info(
+                "Running in bridge-only mode (%s)",
+                "WSL backend + Windows UI" if hybrid_windows_ui else "no local window",
+            )
             try:
                 while self._running:
                     time.sleep(0.2)
@@ -1641,6 +1676,11 @@ class Live2DAssistant:
                 finally:
                     self._preload_runtime_lock.release()
         
+        if self._hybrid_ui_server is not None:
+            with contextlib.suppress(Exception):
+                self._hybrid_ui_server.stop()
+            self._hybrid_ui_server = None
+
         if self._bridge_server and self._loop:
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -1708,11 +1748,38 @@ def main():
         default='qt',
         help='Desktop shell to launch when not in bridge-server mode'
     )
+    parser.add_argument(
+        '--hybrid-windows-ui',
+        action='store_true',
+        help=(
+            'WSL: run backend/bridge here and launch the Windows-native '
+            'transparent pet shell (option A). Default on WSL unless '
+            'LOCAL_AI_FORCE_WSL_DESKTOP=1.'
+        ),
+    )
+    parser.add_argument(
+        '--force-wsl-desktop',
+        action='store_true',
+        help='WSL: force Qt/pywebview inside WSLg instead of hybrid Windows UI',
+    )
     
     args = parser.parse_args()
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    hybrid = bool(args.hybrid_windows_ui)
+    force_wsl_desktop = bool(args.force_wsl_desktop) or os.environ.get(
+        "LOCAL_AI_FORCE_WSL_DESKTOP", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    try:
+        from src.utils.platform_compat import is_wsl
+
+        # On WSL, default to hybrid: pipeline in Linux, avatar window on Windows.
+        if is_wsl() and not args.bridge_server and not force_wsl_desktop:
+            hybrid = True
+    except Exception:
+        pass
     
     # Handle Ctrl+C gracefully
     app = Live2DAssistant(config_path=args.config)
@@ -1723,7 +1790,12 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port, shell=args.desktop_shell)
+    app.start(
+        bridge_only=bool(args.bridge_server or hybrid),
+        bridge_port=args.bridge_port,
+        shell=args.desktop_shell,
+        hybrid_windows_ui=bool(hybrid),
+    )
 
 
 if __name__ == "__main__":

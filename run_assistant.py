@@ -24,5 +24,10 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 if __name__ == "__main__":
+    # LIL-49: configure WSLg audio/WebGL before sounddevice/Qt imports.
+    from src.utils.platform_compat import ensure_wsl_desktop_env
+
+    ensure_wsl_desktop_env()
     from src.assistant.app import main
+
     main()

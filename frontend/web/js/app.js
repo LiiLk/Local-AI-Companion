@@ -151,12 +151,14 @@ class App {
         try {
             // Create integration
             this.live2d = new Live2DIntegration();
-            
+
             // Initialize with config
+            // Prefer tauri-normalized pack when present; fall back to assets/models.
+            // Under WSL+Windows browser this uses native GPU WebGL (not Qt/WSLg).
             const success = await this.live2d.init({
                 canvasId: 'live2d-canvas',
-                modelPath: '/assets/models/march7th/',
-                modelName: 'march 7th.model3.json',
+                modelPath: '/live2d/runtime-assets/models/march7th_tauri/',
+                modelName: 'march7th.model3.json',
                 scale: 0.85,
                 position: { x: 0.5, y: -0.2 },
                 debug: false
@@ -640,6 +642,7 @@ class App {
     _stopAllPlayback() {
         this.audio.stopPlayback();
         this.streamingPlayer.stop();
+        this.live2d?.stopPlayback?.();
         this.isSpeaking = false;
         this._hideStatus();
     }

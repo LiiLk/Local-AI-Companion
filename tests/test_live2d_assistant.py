@@ -21,6 +21,15 @@ class FakeWindow:
         self.calls.append(code)
 
 
+class FakeDispatchWindow(FakeWindow):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def dispatch_frontend_event(self, event_name: str, *args):
+        self.events.append((event_name, args))
+
+
 class FakeFuture:
     def __init__(self, done: bool = False):
         self._done = done
@@ -88,11 +97,11 @@ class FakeAudioService:
         self.state.value = "processing" if processing else "listening"
 
 
-def test_desktop_bridge_rejects_remote_and_null_origins():
+def test_desktop_bridge_allows_local_file_origin_but_rejects_remote_origins():
     assert DesktopBridgeServer._is_origin_allowed("http://127.0.0.1:8765")
     assert DesktopBridgeServer._is_origin_allowed("tauri://localhost")
     assert not DesktopBridgeServer._is_origin_allowed("https://evil.example")
-    assert not DesktopBridgeServer._is_origin_allowed("null")
+    assert DesktopBridgeServer._is_origin_allowed("null")
 
 
 def _make_assistant() -> Live2DAssistant:
@@ -371,6 +380,18 @@ def test_dispatch_frontend_event_also_reaches_bridge_server():
 
     assert ("onMicStateChange", ("muted",)) in bridge.events
     assert any('window.onMicStateChange?.("muted")' in call for call in assistant._window.calls)
+
+
+def test_dispatch_frontend_event_uses_structured_shell_without_duplicate_js():
+    assistant = _make_assistant()
+    assistant._window = FakeDispatchWindow()
+
+    assistant._dispatch_frontend_event("onAudioReady", {"audio": "ZmFrZQ=="})
+
+    assert assistant._window.events == [
+        ("onAudioReady", ({"audio": "ZmFrZQ=="},)),
+    ]
+    assert assistant._window.calls == []
 
 
 def test_start_turn_cancels_previous_pipeline_without_waiting(monkeypatch):
