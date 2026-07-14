@@ -211,12 +211,12 @@ def _windows_python_has_pyqt(python: Path) -> bool:
         return False
 
 
-def sync_pet_shell_to_windows_checkout(win_checkout: Path) -> None:
-    """Copy hybrid shell sources from the active WSL tree into the Windows checkout."""
+def sync_pet_shell_to_runtime_cache(runtime_root: Path) -> None:
+    """Copy hybrid shell sources into an ignored per-run cache, never another checkout."""
     failures: list[str] = []
     for rel in _SYNC_REL_PATHS:
         src = PROJECT_ROOT / rel
-        dst = win_checkout / rel
+        dst = runtime_root / rel
         if not src.is_file():
             failures.append(f"missing source: {src}")
             continue
@@ -228,21 +228,18 @@ def sync_pet_shell_to_windows_checkout(win_checkout: Path) -> None:
 
     for rel in _SYNC_REL_DIRS:
         src = PROJECT_ROOT / rel
-        dst = win_checkout / rel
+        dst = runtime_root / rel
         if not src.is_dir():
             failures.append(f"missing source directory: {src}")
             continue
         try:
-            # Merge runtime assets into an existing Windows checkout instead of
-            # replacing the directory. Licensed/local model packs may only live
-            # in the Windows tree, while the WSL checkout may contain just SDK
-            # runtime files; deleting the destination would remove those assets.
+            # Merge runtime assets into the ignored runtime cache.
             shutil.copytree(src, dst, dirs_exist_ok=True)
         except Exception as exc:
             failures.append(f"{src} -> {dst}: {exc}")
 
     if failures:
-        raise RuntimeError("Windows pet shell sync failed: " + "; ".join(failures))
+        raise RuntimeError("Windows pet shell runtime-cache sync failed: " + "; ".join(failures))
 
 
 def launch_windows_pet_shell(
@@ -272,16 +269,13 @@ def launch_windows_pet_shell(
     if not script.is_file():
         raise FileNotFoundError(f"Missing {script}")
 
-    # Prefer a Windows-drive checkout so Windows Python loads sources from NTFS
-    # (more reliable than \\wsl$\). Fall back to wslpath of the WSL tree.
-    win_checkout = find_windows_checkout()
-    if win_checkout is not None:
-        sync_pet_shell_to_windows_checkout(win_checkout)
-        linux_root = win_checkout.resolve()
-        script_path = win_checkout / "scripts" / "windows_pet_shell.py"
-    else:
-        linux_root = PROJECT_ROOT.resolve()
-        script_path = script
+    # Runtime must not modify a separate Windows Git checkout.  Stage only the
+    # minimal shell files into an ignored cache under this active checkout and
+    # launch Windows Python from there (or via \\wsl$ when running in WSL).
+    runtime_root = (PROJECT_ROOT / ".runtime" / "windows-pet-shell").resolve()
+    sync_pet_shell_to_runtime_cache(runtime_root)
+    linux_root = runtime_root
+    script_path = runtime_root / "scripts" / "windows_pet_shell.py"
 
     # Windows Python needs Windows-style paths for argv / PYTHONPATH.
     # Popen cwd from WSL must stay a Linux path (/mnt/c/...), not C:\...
@@ -335,6 +329,7 @@ def launch_windows_pet_shell(
             tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
         except Exception:
             pass
+        log_fh.close()
         raise RuntimeError(
             f"Windows pet shell exited immediately (code={proc.returncode}). "
             f"See {log_path}. Tail:\n{tail}"
@@ -430,19 +425,32 @@ def _fallback_browser(*, bridge_port: int, error: Exception) -> HybridUiHandle:
     )
     edge = _which_windows("msedge.exe", "msedge")
     ps = _which_windows("powershell.exe")
+    browser_proc = None
     if edge:
-        subprocess.Popen([edge, f"--app={url}"], start_new_session=True)  # nosec B603
+        browser_proc = subprocess.Popen([edge, f"--app={url}"], start_new_session=True)  # nosec B603
     elif ps:
-        subprocess.Popen(  # nosec B603
+        browser_proc = subprocess.Popen(  # nosec B603
             [ps, "-NoProfile", "-Command", f"Start-Process '{url}'"],
             start_new_session=True,
         )
 
     class _Fallback:
-        process = None
+        process = browser_proc
 
         def stop(self) -> None:
+            if self.process is not None and self.process.poll() is None:
+                with contextlib.suppress(Exception):
+                    self.process.terminate()
+                with contextlib.suppress(Exception):
+                    self.process.wait(timeout=2)
+                if self.process.poll() is None:
+                    with contextlib.suppress(Exception):
+                        self.process.kill()
             with contextlib.suppress(Exception):
                 httpd.shutdown()
+            with contextlib.suppress(Exception):
+                httpd.server_close()
+            if thread.is_alive():
+                thread.join(timeout=2)
 
     return _Fallback()  # type: ignore[return-value]

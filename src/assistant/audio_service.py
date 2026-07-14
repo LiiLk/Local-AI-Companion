@@ -51,6 +51,7 @@ class MicState(Enum):
     LISTENING = "listening"
     MUTED = "muted"
     PROCESSING = "processing"  # Processing speech, ignoring new audio
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass
@@ -100,6 +101,8 @@ class AudioService:
         self._stream_sample_rate = self.config.sample_rate
         self._capture_ready = threading.Event()
         self._capture_error: Optional[BaseException] = None
+        self._capture_unavailable = False
+        self._cleanup_lock = threading.Lock()
 
         # VAD
         from src.vad.silero_vad import VADConfig
@@ -138,6 +141,8 @@ class AudioService:
         return self._state == MicState.LISTENING
 
     def _effective_state(self) -> MicState:
+        if getattr(self, "_capture_unavailable", False) and not self._muted_by_user:
+            return MicState.UNAVAILABLE
         if self._muted_by_user:
             return MicState.MUTED
         if self._processing_blocked:
@@ -171,6 +176,7 @@ class AudioService:
         self._loop = loop
         self._running = True
         self._capture_error = None
+        self._capture_unavailable = False
         self._capture_ready.clear()
 
         # Start capture thread
@@ -199,33 +205,32 @@ class AudioService:
     def stop(self):
         """Stop audio capture."""
         self._running = False
-
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-
-        if self._capture_thread:
-            self._capture_thread.join(timeout=2.0)
-            self._capture_thread = None
-
+        self._cleanup_capture_resources(join_thread=True)
         self._vad.reset()
         logger.info("🎤 AudioService stopped")
 
+    def _cleanup_capture_resources(self, *, join_thread: bool) -> None:
+        """Idempotently stop capture thread/stream from all cleanup paths."""
+        thread = self._capture_thread
+        if join_thread and thread and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+            if not getattr(thread, "is_alive", lambda: False)():
+                self._capture_thread = None
+
+        with getattr(self, "_cleanup_lock", threading.Lock()):
+            stream = self._stream
+            self._stream = None
+            if stream:
+                with contextlib.suppress(Exception):
+                    stream.stop()
+                with contextlib.suppress(Exception):
+                    stream.close()
+
     def _cleanup_capture_after_failed_start(self) -> None:
         """Release any stream that appears while start() is failing."""
-        thread = self._capture_thread
-        if thread:
-            thread.join(timeout=2.0)
-            self._capture_thread = None
-
-        stream = self._stream
-        if stream:
-            with contextlib.suppress(Exception):
-                stream.stop()
-            with contextlib.suppress(Exception):
-                stream.close()
-            self._stream = None
+        self._capture_unavailable = True
+        self._cleanup_capture_resources(join_thread=True)
+        self._set_state(self._effective_state())
 
     def toggle_mute(self) -> bool:
         """Toggle mute state. Returns True if now muted."""
@@ -245,6 +250,9 @@ class AudioService:
         """Unmute microphone."""
         if self._muted_by_user:
             self._muted_by_user = False
+            if self._capture_unavailable and not self._running:
+                with contextlib.suppress(Exception):
+                    self.start(self._loop)
             self._set_state(self._effective_state())
             self._vad.reset()
 
@@ -474,12 +482,8 @@ class AudioService:
             self._capture_ready.set()
             logger.warning("Audio capture unavailable: %s", exc)
         finally:
-            if not self._running and self._stream is not None:
-                with contextlib.suppress(Exception):
-                    self._stream.stop()
-                with contextlib.suppress(Exception):
-                    self._stream.close()
-                self._stream = None
+            if not self._running:
+                self._cleanup_capture_resources(join_thread=False)
 
     def _call_callback(self, callback: Callable, *args):
         """Call callback, handling async if needed."""

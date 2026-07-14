@@ -102,9 +102,12 @@ def resolve_project_path(
         return None
 
     root = (project_root or PROJECT_ROOT).resolve()
-    path = Path(text)
-    if not path.is_absolute():
-        path = root / path
+    if not is_windows() and _is_windows_drive_path(text):
+        path = _windows_drive_path_to_posix(text)
+    else:
+        path = Path(text)
+        if not path.is_absolute():
+            path = root / path
     path = path.resolve()
 
     if must_exist and not path.exists():

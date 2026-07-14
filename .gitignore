@@ -122,3 +122,6 @@ desktop/tauri/src-tauri/target/
 config/config.local.example.yaml
 config/*.local.yaml
 !config/config.local.example.yaml
+
+# Ignored runtime/cache files
+.runtime/

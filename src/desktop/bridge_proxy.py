@@ -14,6 +14,7 @@ import uuid
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+BRIDGE_MAX_MESSAGE_SIZE = 8 * 1024 * 1024
 
 try:
     import websocket  # websocket-client (optional)
@@ -45,7 +46,7 @@ class BridgeProxyAssistant:
             "mode": "pipeline",
             "mic_state": "loading",
             "backend_state": "warming_up",
-            "character_name": "March 7th",
+            "character_name": "Assistant",
             "backend": "assistant-bridge",
         }
         self._event_handler: Optional[Callable[[str, tuple], None]] = None
@@ -80,7 +81,7 @@ class BridgeProxyAssistant:
     def _open_socket(self):
         if ws_sync_connect is not None:
             return ws_sync_connect(
-                self.bridge_url, open_timeout=3, close_timeout=2, max_size=None
+                self.bridge_url, open_timeout=3, close_timeout=2, max_size=BRIDGE_MAX_MESSAGE_SIZE
             )
         if websocket is not None:
             return websocket.create_connection(self.bridge_url, timeout=3)

@@ -24,6 +24,8 @@ class ConfigResponse(BaseModel):
     tts_provider: str
     tts_voice: str
     asr_model: str
+    live2d_model_path: str | None = None
+    live2d_model_name: str | None = None
 
 
 def public_voice_label(value: object, fallback: str) -> str:
@@ -105,7 +107,9 @@ async def get_config(request: Request):
         llm_model=llm_model,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
-        asr_model=asr_model
+        asr_model=asr_model,
+        live2d_model_path=(config.get("live2d", {}).get("model", {}) or {}).get("path"),
+        live2d_model_name=(config.get("live2d", {}).get("model", {}) or {}).get("settings_file"),
     )
 
 

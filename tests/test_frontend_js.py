@@ -24,15 +24,17 @@ def test_frontend_node_suite():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_web_app_live2d_retries_legacy_model_path():
+def test_web_app_live2d_uses_server_configured_model():
     app_js = Path("frontend/web/js/app.js").read_text(encoding="utf-8")
 
-    assert "modelPath: '/live2d/runtime-assets/models/march7th_tauri/'" in app_js
-    assert "modelPath: '/assets/models/march7th/'" in app_js
-    assert "}) || await this.live2d.init({" in app_js
+    assert "serverConfig?.live2d_model_path" in app_js
+    assert "serverConfig?.live2d_model_name" in app_js
+    assert "march7th" not in app_js.lower()
 
 
-def test_bridge_proxy_uses_unbounded_websockets_receive_limit():
+def test_bridge_proxy_uses_bounded_websockets_receive_limit():
     bridge_proxy = Path("src/desktop/bridge_proxy.py").read_text(encoding="utf-8")
 
-    assert "max_size=None" in bridge_proxy
+    assert "BRIDGE_MAX_MESSAGE_SIZE = 8 * 1024 * 1024" in bridge_proxy
+    assert "max_size=BRIDGE_MAX_MESSAGE_SIZE" in bridge_proxy
+    assert "max_size=None" not in bridge_proxy

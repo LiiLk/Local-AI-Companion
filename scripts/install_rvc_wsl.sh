@@ -5,9 +5,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="$ROOT_DIR/venv/bin/python"
 INSTALL_DIR="$ROOT_DIR/.rvc-overlay"
-MODEL_DIR="$ROOT_DIR/resources/voices/march7th"
-MODEL_PATH="$MODEL_DIR/March-7th.pth"
-INDEX_PATH="$MODEL_DIR/March-7th.index"
 FAIRSEQ_COMMIT="44800430a728c2216fd1cf1e8daa672f50dfacba"
 
 usage() {
@@ -42,49 +39,7 @@ if [[ ! -f "$REQUIREMENTS" ]]; then
   exit 1
 fi
 
-copy_voice_assets_from_windows() {
-  local checkout candidate
-  local -a candidates=()
-
-  if [[ -n "${LOCAL_AI_WINDOWS_CHECKOUT:-}" ]]; then
-    checkout="$(PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON" -c 'from src.utils.wsl_hybrid_ui import windows_path_to_wsl; import os; print(windows_path_to_wsl(os.environ["LOCAL_AI_WINDOWS_CHECKOUT"]))')"
-    candidates+=("$checkout")
-  fi
-
-  shopt -s nullglob
-  candidates+=(
-    /mnt/c/Users/*/Documents/Local-AI-Companion
-    /mnt/c/Users/*/Local-AI-Companion
-  )
-  shopt -u nullglob
-
-  for checkout in "${candidates[@]}"; do
-    candidate="$checkout/resources/voices/march7th"
-    if [[ -f "$candidate/March-7th.pth" && -f "$candidate/March-7th.index" ]]; then
-      mkdir -p "$MODEL_DIR"
-      [[ -f "$MODEL_PATH" ]] || cp "$candidate/March-7th.pth" "$MODEL_PATH"
-      [[ -f "$INDEX_PATH" ]] || cp "$candidate/March-7th.index" "$INDEX_PATH"
-      return 0
-    fi
-  done
-  return 1
-}
-
-if [[ ! -f "$MODEL_PATH" || ! -f "$INDEX_PATH" ]]; then
-  echo "RVC voice assets are missing; checking existing Windows project copies..."
-  copy_voice_assets_from_windows || true
-fi
-
-if [[ ! -f "$MODEL_PATH" || ! -f "$INDEX_PATH" ]]; then
-  cat >&2 <<EOF
-March 7th RVC assets are required before installation:
-  $MODEL_PATH
-  $INDEX_PATH
-
-Copy your trusted model and index files to that directory, then rerun this command.
-EOF
-  exit 1
-fi
+echo "Installing RVC dependency overlay only. Voice model assets are resolved at runtime from config/characters/<preset>.yaml or explicit RVC config; FAISS index files remain optional when index_rate is 0."
 
 STAGING_DIR="${INSTALL_DIR}.staging"
 BACKUP_DIR="${INSTALL_DIR}.backup"

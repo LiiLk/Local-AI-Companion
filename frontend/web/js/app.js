@@ -17,6 +17,7 @@ class App {
         this._modelsPreloaded = false;
         this._live2dEnabled = false;
         this._mode = 'pipeline';  // 'pipeline' or 'omni', updated by server
+        this._serverConfigPromise = null;
 
         // Streaming audio player for omni mode
         this.streamingPlayer = new StreamingAudioPlayer();
@@ -131,7 +132,7 @@ class App {
 
         // Connect
         this.ws.connect();
-        this._loadServerConfig();
+        this._serverConfigPromise = this._loadServerConfig();
 
         // Listen for settings changes from UIController
         window.addEventListener('settings-changed', (e) => this._handleSettingsChange(e.detail));
@@ -152,22 +153,16 @@ class App {
             // Create integration
             this.live2d = new Live2DIntegration();
 
-            // Initialize with config
-            // Prefer tauri-normalized pack when present; fall back to assets/models.
-            // Under WSL+Windows browser this uses native GPU WebGL (not Qt/WSLg).
-            const baseConfig = {
+            const serverConfig = await (this._serverConfigPromise || this._loadServerConfig());
+            const live2dModelPath = serverConfig?.live2d_model_path || '/assets/models/default/';
+            const live2dModelName = serverConfig?.live2d_model_name || 'model.model3.json';
+            const success = await this.live2d.init({
                 canvasId: 'live2d-canvas',
-                modelName: 'march7th.model3.json',
+                modelPath: live2dModelPath,
+                modelName: live2dModelName,
                 scale: 0.85,
                 position: { x: 0.5, y: -0.2 },
                 debug: false
-            };
-            const success = await this.live2d.init({
-                ...baseConfig,
-                modelPath: '/live2d/runtime-assets/models/march7th_tauri/'
-            }) || await this.live2d.init({
-                ...baseConfig,
-                modelPath: '/assets/models/march7th/'
             });
 
             if (success) {
@@ -524,7 +519,7 @@ class App {
         try {
             const response = await fetch('/api/config');
             if (!response.ok) {
-                return;
+                return null;
             }
 
             const config = await response.json();
@@ -542,8 +537,10 @@ class App {
             if (this.elements.welcomeBody) {
                 this.elements.welcomeBody.textContent = `La session est connectée avec ${config.llm_model || 'le modèle courant'}. Tu peux parler ou écrire pour commencer.`;
             }
+            return config;
         } catch (error) {
             console.warn('[App] Failed to load server config:', error);
+            return null;
         }
     }
 

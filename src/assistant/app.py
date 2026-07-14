@@ -1011,8 +1011,6 @@ class Live2DAssistant:
                 backend_state = "degraded"
         character_name = self.config.get('character', {}).get('name', 'AI')
         character_slug = re.sub(r'[^a-z0-9]+', '', str(character_name).lower())
-        if 'march7' in character_slug:
-            character_slug = 'march7th'
         return {
             "mode": self.config.get('mode', 'pipeline'),
             "backend_state": backend_state,
@@ -1023,6 +1021,8 @@ class Live2DAssistant:
             "debug_visible": self._debug_visible,
             "character_name": character_name,
             "character_id": character_slug or "default",
+            "live2d_model_path": (self.config.get("live2d", {}).get("model", {}) or {}).get("path"),
+            "live2d_model_name": (self.config.get("live2d", {}).get("model", {}) or {}).get("settings_file"),
             "active_language": getattr(self._get_active_pipeline(), "_current_language_code", None),
             "active_llm_model": self._active_llm_model_name(),
             "active_tts_provider": self._active_tts_provider_name(),

@@ -9,7 +9,7 @@ import pytest
 from src.utils.wsl_hybrid_ui import (
     find_windows_checkout,
     find_windows_python,
-    sync_pet_shell_to_windows_checkout,
+    sync_pet_shell_to_runtime_cache,
     windows_path_to_wsl,
     wsl_path_to_windows,
 )
@@ -101,16 +101,16 @@ def test_sync_pet_shell_copies_files(tmp_path, monkeypatch):
     runtime_asset.parent.mkdir(parents=True, exist_ok=True)
     runtime_asset.write_text("// cubism core\n", encoding="utf-8")
 
-    win = tmp_path / "win_repo"
-    win.mkdir()
+    runtime = tmp_path / "runtime_cache"
+    runtime.mkdir()
     monkeypatch.setattr("src.utils.wsl_hybrid_ui.PROJECT_ROOT", src_root)
-    sync_pet_shell_to_windows_checkout(win)
-    assert (win / "scripts" / "windows_pet_shell.py").is_file()
-    assert (win / "src" / "desktop" / "bridge_proxy.py").is_file()
-    assert (win / "desktop" / "qt_avatar_shell.py").is_file()
-    assert (win / "frontend" / "live2d" / "index.html").is_file()
+    sync_pet_shell_to_runtime_cache(runtime)
+    assert (runtime / "scripts" / "windows_pet_shell.py").is_file()
+    assert (runtime / "src" / "desktop" / "bridge_proxy.py").is_file()
+    assert (runtime / "desktop" / "qt_avatar_shell.py").is_file()
+    assert (runtime / "frontend" / "live2d" / "index.html").is_file()
     assert (
-        win
+        runtime
         / "frontend"
         / "live2d"
         / "runtime-assets"
@@ -147,32 +147,32 @@ def test_sync_pet_shell_merges_runtime_assets_without_deleting_local_models(tmp_
     sdk_asset.parent.mkdir(parents=True, exist_ok=True)
     sdk_asset.write_text("// cubism core\n", encoding="utf-8")
 
-    win = tmp_path / "win_repo"
+    runtime = tmp_path / "runtime_cache"
     local_model = (
-        win
+        runtime
         / "frontend"
         / "live2d"
         / "runtime-assets"
         / "models"
-        / "march7th"
-        / "march7th.model3.json"
+        / "starling_custom"
+        / "starling_custom.model3.json"
     )
     local_model.parent.mkdir(parents=True, exist_ok=True)
     local_model.write_text("{}", encoding="utf-8")
     monkeypatch.setattr("src.utils.wsl_hybrid_ui.PROJECT_ROOT", src_root)
 
-    sync_pet_shell_to_windows_checkout(win)
+    sync_pet_shell_to_runtime_cache(runtime)
 
     assert sdk_asset.relative_to(src_root)
-    assert (win / sdk_asset.relative_to(src_root)).is_file()
+    assert (runtime / sdk_asset.relative_to(src_root)).is_file()
     assert local_model.is_file()
 
 def test_sync_pet_shell_fails_when_required_source_is_missing(tmp_path, monkeypatch):
     src_root = tmp_path / "incomplete_repo"
     src_root.mkdir()
-    win = tmp_path / "win_repo"
-    win.mkdir()
+    runtime = tmp_path / "runtime_cache"
+    runtime.mkdir()
     monkeypatch.setattr("src.utils.wsl_hybrid_ui.PROJECT_ROOT", src_root)
 
     with pytest.raises(RuntimeError, match="missing source"):
-        sync_pet_shell_to_windows_checkout(win)
+        sync_pet_shell_to_runtime_cache(runtime)

@@ -72,21 +72,6 @@ def main() -> int:
         log.error("Live2D HTML missing: %s (or pass --page-url)", html_path)
         return 1
 
-    model = (
-        PROJECT_ROOT
-        / "frontend"
-        / "live2d"
-        / "runtime-assets"
-        / "models"
-        / "march7th_tauri"
-        / "march7th.model3.json"
-    )
-    if not model.is_file() and not args.page_url:
-        log.warning(
-            "March 7th model pack not found at %s — avatar may not load",
-            model,
-        )
-
     log.info("Connecting to bridge %s ...", args.bridge_url)
     try:
         proxy = BridgeProxyAssistant(args.bridge_url)

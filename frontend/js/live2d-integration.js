@@ -52,8 +52,8 @@
       try {
         await global.Live2DManager.init({
           canvasId,
-          modelPath: config.modelPath || "/assets/models/march7th/",
-          modelName: config.modelName || "march 7th.model3.json",
+          modelPath: config.modelPath || "/assets/models/default/",
+          modelName: config.modelName || "model.model3.json",
           scale: config.scale ?? 0.85,
           position: config.position || { x: 0.5, y: -0.2 },
           debug: !!config.debug,
