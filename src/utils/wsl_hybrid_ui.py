@@ -39,6 +39,9 @@ _SYNC_REL_PATHS = (
     "frontend/live2d/desktop-bridge.js",
     "frontend/live2d/live2d.js",
 )
+_SYNC_REL_DIRS = (
+    "frontend/live2d/runtime-assets",
+)
 
 
 def _which_windows(*names: str) -> Optional[str]:
@@ -220,6 +223,19 @@ def sync_pet_shell_to_windows_checkout(win_checkout: Path) -> None:
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+        except Exception as exc:
+            failures.append(f"{src} -> {dst}: {exc}")
+
+    for rel in _SYNC_REL_DIRS:
+        src = PROJECT_ROOT / rel
+        dst = win_checkout / rel
+        if not src.is_dir():
+            failures.append(f"missing source directory: {src}")
+            continue
+        try:
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
         except Exception as exc:
             failures.append(f"{src} -> {dst}: {exc}")
 

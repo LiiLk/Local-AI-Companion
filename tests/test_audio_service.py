@@ -133,6 +133,50 @@ def test_audio_service_start_surfaces_capture_failure(monkeypatch):
     assert service._capture_thread is None
 
 
+def test_audio_service_start_timeout_closes_late_stream(monkeypatch):
+    class FakeStream:
+        def __init__(self):
+            self.stopped = False
+            self.closed = False
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    class FakeThread:
+        def __init__(self, target, daemon, name):
+            self.target = target
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout):
+            service._stream = late_stream
+
+    service = make_audio_service_state()
+    service.config = SimpleNamespace(start_muted=False)
+    service._running = False
+    service._loop = None
+    service._stream = None
+    service._capture_thread = None
+    service._capture_loop = lambda: None
+    late_stream = FakeStream()
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+    monkeypatch.setattr("src.assistant.audio_service.threading.Thread", FakeThread)
+
+    with pytest.raises(RuntimeError, match="Timed out"):
+        service.start(startup_timeout_sec=0.01)
+
+    assert service._running is False
+    assert service._capture_thread is None
+    assert service._stream is None
+    assert late_stream.stopped is True
+    assert late_stream.closed is True
+
+
 def test_audio_service_resample_uses_soxr_when_available(monkeypatch):
     calls = []
 

@@ -333,9 +333,11 @@ class DesktopBridgeServer:
             return True
 
         text = str(origin).strip()
-        # file:// pages and some WebView hosts send Origin: null
+        # Opaque browser origins (sandboxed iframes, data: URLs, some file pages)
+        # must not bypass the local-host allowlist. Native/WebView clients that do
+        # not send an Origin header are still accepted above.
         if text.lower() == "null":
-            return True
+            return False
 
         try:
             parsed = urlsplit(text)

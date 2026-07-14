@@ -12,6 +12,7 @@ Features:
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
@@ -182,13 +183,13 @@ class AudioService:
 
         if not self._capture_ready.wait(timeout=max(0.1, startup_timeout_sec)):
             self._running = False
+            self._cleanup_capture_after_failed_start()
             raise RuntimeError(
                 f"Timed out after {startup_timeout_sec:.1f}s while opening the audio input"
             )
         if self._capture_error is not None:
             error = self._capture_error
-            self._capture_thread.join(timeout=0.2)
-            self._capture_thread = None
+            self._cleanup_capture_after_failed_start()
             raise RuntimeError(str(error)) from error
 
         logger.info("🎤 AudioService started")
@@ -210,6 +211,21 @@ class AudioService:
 
         self._vad.reset()
         logger.info("🎤 AudioService stopped")
+
+    def _cleanup_capture_after_failed_start(self) -> None:
+        """Release any stream that appears while start() is failing."""
+        thread = self._capture_thread
+        if thread:
+            thread.join(timeout=2.0)
+            self._capture_thread = None
+
+        stream = self._stream
+        if stream:
+            with contextlib.suppress(Exception):
+                stream.stop()
+            with contextlib.suppress(Exception):
+                stream.close()
+            self._stream = None
 
     def toggle_mute(self) -> bool:
         """Toggle mute state. Returns True if now muted."""
@@ -457,6 +473,13 @@ class AudioService:
             self._running = False
             self._capture_ready.set()
             logger.warning("Audio capture unavailable: %s", exc)
+        finally:
+            if not self._running and self._stream is not None:
+                with contextlib.suppress(Exception):
+                    self._stream.stop()
+                with contextlib.suppress(Exception):
+                    self._stream.close()
+                self._stream = None
 
     def _call_callback(self, callback: Callable, *args):
         """Call callback, handling async if needed."""

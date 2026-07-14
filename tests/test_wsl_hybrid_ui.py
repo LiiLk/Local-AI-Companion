@@ -89,6 +89,18 @@ def test_sync_pet_shell_copies_files(tmp_path, monkeypatch):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {rel}\n", encoding="utf-8")
 
+    runtime_asset = (
+        src_root
+        / "frontend"
+        / "live2d"
+        / "runtime-assets"
+        / "live2d_sdk_web"
+        / "Core"
+        / "live2dcubismcore.min.js"
+    )
+    runtime_asset.parent.mkdir(parents=True, exist_ok=True)
+    runtime_asset.write_text("// cubism core\n", encoding="utf-8")
+
     win = tmp_path / "win_repo"
     win.mkdir()
     monkeypatch.setattr("src.utils.wsl_hybrid_ui.PROJECT_ROOT", src_root)
@@ -97,6 +109,15 @@ def test_sync_pet_shell_copies_files(tmp_path, monkeypatch):
     assert (win / "src" / "desktop" / "bridge_proxy.py").is_file()
     assert (win / "desktop" / "qt_avatar_shell.py").is_file()
     assert (win / "frontend" / "live2d" / "index.html").is_file()
+    assert (
+        win
+        / "frontend"
+        / "live2d"
+        / "runtime-assets"
+        / "live2d_sdk_web"
+        / "Core"
+        / "live2dcubismcore.min.js"
+    ).is_file()
 
 
 def test_sync_pet_shell_fails_when_required_source_is_missing(tmp_path, monkeypatch):

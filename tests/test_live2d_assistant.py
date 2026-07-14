@@ -101,7 +101,7 @@ def test_desktop_bridge_allows_local_file_origin_but_rejects_remote_origins():
     assert DesktopBridgeServer._is_origin_allowed("http://127.0.0.1:8765")
     assert DesktopBridgeServer._is_origin_allowed("tauri://localhost")
     assert not DesktopBridgeServer._is_origin_allowed("https://evil.example")
-    assert DesktopBridgeServer._is_origin_allowed("null")
+    assert not DesktopBridgeServer._is_origin_allowed("null")
 
 
 def _make_assistant() -> Live2DAssistant:

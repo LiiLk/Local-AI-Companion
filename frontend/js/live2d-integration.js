@@ -19,6 +19,7 @@
       this._playing = false;
       this._audioQueue = [];
       this._playbackGeneration = 0;
+      this._playbackToken = 0;
       this._sequenceActive = false;
     }
 
@@ -103,6 +104,7 @@
 
       const message = this._audioQueue.shift();
       const generation = this._playbackGeneration;
+      const playbackToken = ++this._playbackToken;
       this._playing = true;
 
       const expression = message?.expression;
@@ -125,8 +127,7 @@
         }
 
         const audioBuffer = await this._audioContext.decodeAudioData(arrayBuffer.slice(0));
-        if (generation !== this._playbackGeneration) {
-          this._playing = false;
+        if (generation !== this._playbackGeneration || playbackToken !== this._playbackToken) {
           return;
         }
 
@@ -141,7 +142,7 @@
 
         const data = new Uint8Array(analyser.frequencyBinCount);
         const tick = () => {
-          if (!this._playing || generation !== this._playbackGeneration) return;
+          if (!this._playing || generation !== this._playbackGeneration || playbackToken !== this._playbackToken) return;
           analyser.getByteFrequencyData(data);
           let sum = 0;
           for (let i = 0; i < Math.min(22, data.length); i++) sum += data[i];
@@ -153,7 +154,7 @@
         requestAnimationFrame(tick);
 
         source.onended = () => {
-          if (generation !== this._playbackGeneration) return;
+          if (generation !== this._playbackGeneration || playbackToken !== this._playbackToken) return;
           this._playing = false;
           this._currentSource = null;
           global.Live2DManager?.setLipSync?.(0);
@@ -171,6 +172,9 @@
         source.start(0);
       } catch (err) {
         console.error("[Live2DIntegration] audio playback failed:", err);
+        if (generation !== this._playbackGeneration || playbackToken !== this._playbackToken) {
+          return;
+        }
         this._playing = false;
         global.Live2DManager?.setLipSync?.(0);
         if (this._audioQueue.length > 0) {
