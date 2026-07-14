@@ -79,7 +79,9 @@ class BridgeProxyAssistant:
 
     def _open_socket(self):
         if ws_sync_connect is not None:
-            return ws_sync_connect(self.bridge_url, open_timeout=3, close_timeout=2)
+            return ws_sync_connect(
+                self.bridge_url, open_timeout=3, close_timeout=2, max_size=None
+            )
         if websocket is not None:
             return websocket.create_connection(self.bridge_url, timeout=3)
         raise RuntimeError(

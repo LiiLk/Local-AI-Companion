@@ -243,3 +243,23 @@ def test_kill_process_tree_uses_taskkill_on_windows(monkeypatch):
 
     assert commands[0][-4:] == ["/PID", str(process.pid), "/T", "/F"]
     assert process.wait_calls == [5.0]
+
+
+def test_resolve_python_converts_absolute_windows_drive_before_join(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform_compat, "is_windows", lambda: False)
+    linux_python = _executable(
+        Path("/tmp") / "codex-mnt-c" / "Users" / "Ada" / "Local-AI-Companion" / "venv" / "bin" / "python"
+    )
+    monkeypatch.setattr(
+        platform_compat,
+        "_windows_drive_path_to_posix",
+        lambda text: linux_python.parents[2] / "venv" / "Scripts" / "python.exe",
+    )
+
+    resolved = platform_compat.resolve_python_executable(
+        r"C:\Users\Ada\Local-AI-Companion\venv\Scripts\python.exe",
+        project_root=tmp_path,
+    )
+
+    assert resolved == linux_python.absolute()
+    assert not str(resolved).startswith(str(tmp_path))

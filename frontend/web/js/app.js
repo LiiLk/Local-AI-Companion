@@ -155,15 +155,21 @@ class App {
             // Initialize with config
             // Prefer tauri-normalized pack when present; fall back to assets/models.
             // Under WSL+Windows browser this uses native GPU WebGL (not Qt/WSLg).
-            const success = await this.live2d.init({
+            const baseConfig = {
                 canvasId: 'live2d-canvas',
-                modelPath: '/live2d/runtime-assets/models/march7th_tauri/',
                 modelName: 'march7th.model3.json',
                 scale: 0.85,
                 position: { x: 0.5, y: -0.2 },
                 debug: false
+            };
+            const success = await this.live2d.init({
+                ...baseConfig,
+                modelPath: '/live2d/runtime-assets/models/march7th_tauri/'
+            }) || await this.live2d.init({
+                ...baseConfig,
+                modelPath: '/assets/models/march7th/'
             });
-            
+
             if (success) {
                 this._live2dEnabled = true;
 

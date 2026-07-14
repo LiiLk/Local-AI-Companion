@@ -233,9 +233,11 @@ def sync_pet_shell_to_windows_checkout(win_checkout: Path) -> None:
             failures.append(f"missing source directory: {src}")
             continue
         try:
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst)
+            # Merge runtime assets into an existing Windows checkout instead of
+            # replacing the directory. Licensed/local model packs may only live
+            # in the Windows tree, while the WSL checkout may contain just SDK
+            # runtime files; deleting the destination would remove those assets.
+            shutil.copytree(src, dst, dirs_exist_ok=True)
         except Exception as exc:
             failures.append(f"{src} -> {dst}: {exc}")
 

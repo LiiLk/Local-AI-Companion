@@ -120,6 +120,53 @@ def test_sync_pet_shell_copies_files(tmp_path, monkeypatch):
     ).is_file()
 
 
+
+def test_sync_pet_shell_merges_runtime_assets_without_deleting_local_models(tmp_path, monkeypatch):
+    src_root = tmp_path / "wsl_repo"
+    for rel in (
+        "scripts/windows_pet_shell.py",
+        "src/desktop/bridge_proxy.py",
+        "desktop/qt_avatar_shell.py",
+        "frontend/live2d/index.html",
+        "frontend/live2d/desktop-bridge.js",
+        "frontend/live2d/live2d.js",
+    ):
+        path = src_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {rel}\n", encoding="utf-8")
+
+    sdk_asset = (
+        src_root
+        / "frontend"
+        / "live2d"
+        / "runtime-assets"
+        / "live2d_sdk_web"
+        / "Core"
+        / "live2dcubismcore.min.js"
+    )
+    sdk_asset.parent.mkdir(parents=True, exist_ok=True)
+    sdk_asset.write_text("// cubism core\n", encoding="utf-8")
+
+    win = tmp_path / "win_repo"
+    local_model = (
+        win
+        / "frontend"
+        / "live2d"
+        / "runtime-assets"
+        / "models"
+        / "march7th"
+        / "march7th.model3.json"
+    )
+    local_model.parent.mkdir(parents=True, exist_ok=True)
+    local_model.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("src.utils.wsl_hybrid_ui.PROJECT_ROOT", src_root)
+
+    sync_pet_shell_to_windows_checkout(win)
+
+    assert sdk_asset.relative_to(src_root)
+    assert (win / sdk_asset.relative_to(src_root)).is_file()
+    assert local_model.is_file()
+
 def test_sync_pet_shell_fails_when_required_source_is_missing(tmp_path, monkeypatch):
     src_root = tmp_path / "incomplete_repo"
     src_root.mkdir()

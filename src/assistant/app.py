@@ -1369,11 +1369,30 @@ class Live2DAssistant:
                 runtime_error=None,
             )
             if self.audio_service and self._loop and not self.audio_service._running:
-                self.audio_service.start(self._loop)
-                self._mark_startup_step("audio_capture_started")
-                logger.info("✅ Audio capture enabled after model preload")
+                try:
+                    self.audio_service.start(self._loop)
+                    self._mark_startup_step("audio_capture_started")
+                    logger.info("✅ Audio capture enabled after model preload")
+                except RuntimeError as exc:
+                    if not self.audio_service.is_muted:
+                        raise
+                    logger.warning(
+                        "Audio capture unavailable while starting muted; continuing without microphone: %s",
+                        exc,
+                    )
+                    degraded_reason = self._collect_degraded_reason()
+                    audio_reason = f"Microphone unavailable: {exc}"
+                    degraded_reason = (
+                        f"{degraded_reason} | {audio_reason}" if degraded_reason else audio_reason
+                    )
+                    self._set_backend_health(
+                        state="degraded",
+                        degraded_reason=degraded_reason,
+                        runtime_error=None,
+                    )
+                    self._mark_startup_step("audio_capture_unavailable")
             self._dispatch_frontend_event("onBackendReady", self.get_runtime_state())
-            self._finish_startup_profile("degraded" if degraded_reason else "ready")
+            self._finish_startup_profile("degraded" if self._collect_degraded_reason() else "ready")
 
         except Exception as e:
             self._set_backend_health(state="error", runtime_error=str(e))

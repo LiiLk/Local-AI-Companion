@@ -78,6 +78,16 @@ def normalize_path_string(value: str | Path) -> str:
     return text
 
 
+def _is_windows_drive_path(text: str) -> bool:
+    return len(text) >= 3 and text[0].isalpha() and text[1:3] == ":/"
+
+
+def _windows_drive_path_to_posix(text: str) -> Path:
+    drive = text[0].lower()
+    rest = text[3:].lstrip("/")
+    return Path("/mnt") / drive / rest
+
+
 def resolve_project_path(
     value: str | Path | None,
     *,
@@ -151,9 +161,12 @@ def resolve_python_executable(
         return Path(sys.executable).absolute()
 
     text = normalize_path_string(configured)
-    path = Path(text)
-    if not path.is_absolute():
-        path = root / path
+    if not is_windows() and _is_windows_drive_path(text):
+        path = _windows_drive_path_to_posix(text)
+    else:
+        path = Path(text)
+        if not path.is_absolute():
+            path = root / path
 
     mapped_candidates = (
         _posix_venv_python_to_windows(path)
