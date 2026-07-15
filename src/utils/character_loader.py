@@ -7,13 +7,67 @@ Allows easy switching between different AI personalities (March 7th, Juri, Clipp
 
 import yaml
 import logging
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # Project root (go up from src/utils/)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
+def resolve_live2d_model_config(config: dict) -> tuple[str | None, str | None]:
+    """Return the configured project-relative Live2D directory and settings file."""
+    model = config.get("live2d", {}).get("model", {}) or {}
+    model_path = str(model.get("path") or "").strip().replace("\\", "/")
+    model_name = str(model.get("settings_file") or "").strip().replace("\\", "/")
+    if not model_path or not model_name:
+        return None, None
+    if (
+        "://" in model_path
+        or Path(model_path).is_absolute()
+        or PureWindowsPath(model_path).is_absolute()
+    ):
+        logger.warning("Live2D model path must be relative to the project: %s", model_path)
+        return None, None
+    if (
+        "://" in model_name
+        or Path(model_name).is_absolute()
+        or PureWindowsPath(model_name).is_absolute()
+    ):
+        logger.warning(
+            "Live2D settings file must be relative to its model directory: %s",
+            model_name,
+        )
+        return None, None
+    parts = Path(model_path).parts
+    if ".." in parts or ".." in Path(model_name).parts:
+        logger.warning("Live2D model path cannot escape the project: %s", model_path)
+        return None, None
+    model_path = model_path.strip("/") + "/"
+    if not model_path.startswith(("assets/", "frontend/")):
+        logger.warning(
+            "Live2D model path must be under assets/ or frontend/: %s",
+            model_path,
+        )
+        return None, None
+    return model_path, model_name
+
+
+def resolve_live2d_web_model(config: dict) -> tuple[str | None, str | None]:
+    """Resolve the canonical model directory for the FastAPI static mounts."""
+    model_path, model_name = resolve_live2d_model_config(config)
+    if model_path is None:
+        return None, None
+    return f"/{model_path}", model_name
+
+
+def resolve_live2d_desktop_model(config: dict) -> tuple[str | None, str | None]:
+    """Resolve the canonical model directory from frontend/live2d/index.html."""
+    model_path, model_name = resolve_live2d_model_config(config)
+    if model_path is None:
+        return None, None
+    return f"../../{model_path}", model_name
 
 
 def get_available_characters() -> list[str]:

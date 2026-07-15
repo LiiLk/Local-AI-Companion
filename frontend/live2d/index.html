@@ -782,7 +782,6 @@
 
         const LIVE2D_CORE_SRC = './runtime-assets/live2d_sdk_web/Core/live2dcubismcore.min.js';
         const LIVE2D_MANAGER_SRC = './live2d.js';
-        const DEFAULT_MODEL_PATH = './runtime-assets/models/default/';
         const COMPACT_CROP = {
             boxWidth: 368,
             boxHeight: 488,
@@ -1354,11 +1353,16 @@
                 await loadScript(LIVE2D_CORE_SRC);
                 await loadScript(LIVE2D_MANAGER_SRC);
 
+                const modelPath = state.runtime?.live2d_model_path;
+                const modelName = state.runtime?.live2d_model_name;
+                if (!modelPath || !modelName) {
+                    throw new Error('No Live2D model configured');
+                }
                 const matrix = computeLayoutMatrix(state.layout);
                 await Live2DManager.init({
                     canvasId: 'live2d-canvas',
-                    modelPath: state.runtime?.live2d_model_path || DEFAULT_MODEL_PATH,
-                    modelName: state.runtime?.live2d_model_name || 'model.model3.json',
+                    modelPath,
+                    modelName,
                     scale: matrix.scale,
                     position: { x: matrix.translateX, y: matrix.translateY },
                     debug: true,
@@ -1544,9 +1548,9 @@
                 }
                 setStatus('Loading', 'Initializing desktop avatar shell', 'warn');
                 applySidePanels();
+                await refreshRuntime();
                 await setLayout('compact');
                 await warmupAudioRuntime(backendKind);
-                await refreshRuntime();
             } catch (error) {
                 console.error('Desktop shell init failed', error);
                 setStatus('Error', error.message, 'danger');

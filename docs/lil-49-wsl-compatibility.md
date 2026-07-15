@@ -89,14 +89,14 @@ Decision: real desktop-incrusted pets need a **native Windows** transparent wind
 
 | Artifact | Change |
 |----------|--------|
-| `src/utils/wsl_hybrid_ui.py` | **New.** Find Windows Python/checkout, sync shell sources to NTFS checkout, launch pet via WSL→Windows interop, Edge app-mode fallback, log to `logs/windows_pet_shell.log` |
+| `src/utils/wsl_hybrid_ui.py` | **New.** Find Windows Python, stage the selected shell/model in ignored `.runtime/`, launch it through WSL interop, and own its cleanup |
 | `scripts/windows_pet_shell.py` | **New.** Windows-only entry: Qt transparent pet + `BridgeProxyAssistant` |
 | `src/desktop/bridge_proxy.py` | **New.** WebSocket client duck-typing `Live2DAssistant` for the Qt shell (commands + frontend events) |
 | `desktop/qt_avatar_shell.py` | Optional `page_url` for remote/static page load |
 | `src/assistant/app.py` | On WSL: default `hybrid_windows_ui=True` (bridge + launch Windows pet). Flags: `--hybrid-windows-ui`, `--force-wsl-desktop`, `LOCAL_AI_FORCE_WSL_DESKTOP=1` |
 | `run_assistant.py` | Single Windows/WSL desktop entry point; WSL automatically selects the hybrid shell |
 | `tests/test_wsl_hybrid_ui.py` | **New.** Path conversion, env overrides, file sync unit tests |
-| Bridge origins | `DesktopBridgeServer` already allows empty / `null` / `file://` origins (pet + proxy clients) |
+| Bridge origins | Clients without an `Origin` header are accepted; browser `null`/`file:` origins are rejected, while localhost HTTP and the native app schemes remain allowed |
 
 #### Launch bugfix (2026-07-10)
 
@@ -199,13 +199,15 @@ RVC / Qwen3-TTS / Qwen3-ASR worker subprocess
 
 ---
 
-## Two product paths (same repo)
+## One desktop command
 
-| Path | Audience | What you get | How |
-|------|----------|--------------|-----|
-| **Windows** | End-user desktop companion | Polished Live2D + mic + HUD | `python run_assistant.py` |
-| **WSL hybrid (A)** | WSL users who want the pet **incrusted on Windows** | Backend in WSL + **Windows Qt pet shell** (transparent / topmost / click-through) | `python run_assistant.py` (auto-detected) |
-| **WSL web/CLI** | Headless / agents | Server or CLI only | `bash scripts/run_wsl.sh` |
+| Environment | What you get | Command |
+|-------------|--------------|---------|
+| **Windows** | Local backend + native Live2D shell | `python run_assistant.py` |
+| **WSL hybrid** | Backend in WSL + Windows-native Live2D shell | `python run_assistant.py` |
+
+`scripts/run_wsl.sh` exposes optional browser, CLI, diagnostic, and bridge-only
+tools. It is not a second desktop launcher.
 
 ### Hybrid option A: backend WSL + **Windows desktop pet** (recommended under WSL)
 
@@ -232,8 +234,10 @@ Requirements on **Windows**:
   (your `C:\Users\…\Documents\Local-AI-Companion\venv` is used when present)
 - Optional override: `LOCAL_AI_WINDOWS_PYTHON=C:\path\to\python.exe`
 
-If the Qt pet cannot start, the launcher falls back to Edge app-mode (not
-desktop-incrusted) and logs the install hint.
+If the Qt pet cannot start, the launcher logs a local browser URL and keeps its
+small fallback HTTP server under the assistant lifecycle. The server exposes
+only the staged `.runtime/windows-pet-shell` files, not the repository root, and
+does not spawn an unowned browser process.
 
 Force Qt inside WSLg (not recommended):
 
@@ -310,10 +314,10 @@ The launcher uses `./venv` directly, so activation is not required. The RVC
 installer reuses the main environment's Torch/CUDA runtime instead of
 downloading a duplicate GPU stack.
 
-### 3. One-command run (recommended) — avatar on the PC
+### 3. Optional browser run
 
 ```bash
-bash scripts/run_wsl.sh
+bash scripts/run_wsl.sh web
 ```
 
 This starts the FastAPI/WebSocket stack on **http://127.0.0.1:8000**.
@@ -324,15 +328,16 @@ Then on **Windows**, open Edge/Chrome:
 http://localhost:8000/web/
 ```
 
-That is the simple “avatar as if on the PC” path under WSL:
+This optional path keeps the interface in a Windows browser:
 
 - Live2D renders with **native Windows GPU WebGL** (not Qt/WSLg software GL)
 - Microphone uses the **browser** (`getUserMedia`) on Windows
 - ASR / LLM / TTS stay in the **WSL backend** (CUDA OK)
 
-Requirements: Live2D model files under
-`frontend/live2d/runtime-assets/models/march7th_tauri/` (or configure web UI
-fallback under `assets/models/march7th/`).
+Put each character model under a project-relative directory such as
+`assets/models/my-character/`, then set `live2d.model_path` and
+`live2d.settings_file` in its character preset. The same canonical configuration
+is resolved for the web and desktop shells.
 
 Other modes:
 
@@ -369,8 +374,7 @@ bash scripts/run_wsl.sh desktop
 Host-only WSL fixes: software WebGL, `QT_SCALE_FACTOR=1`, zoom 1.0.
 EGL/DRM console noise under WSLg is expected. For the polished mascot, use Windows.
 
-Live2D assets (not always in git):
-`frontend/live2d/runtime-assets/models/march7th_tauri/march7th.model3.json`
+Live2D character assets are local project data and may be excluded from git.
 
 ### Microphone under WSL
 

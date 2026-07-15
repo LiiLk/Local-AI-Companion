@@ -40,8 +40,6 @@ except (ImportError, OSError) as exc:
     SOUNDDEVICE_AVAILABLE = False
     logger.warning("sounddevice unavailable: %s", exc)
 
-from src.vad import SileroVAD
-
 # Suppress input overflow warnings (common during model loading/inference)
 logging.getLogger("sounddevice").setLevel(logging.ERROR)
 
@@ -105,7 +103,7 @@ class AudioService:
         self._cleanup_lock = threading.Lock()
 
         # VAD
-        from src.vad.silero_vad import VADConfig
+        from src.vad.silero_vad import SileroVAD, VADConfig
         vad_config = VADConfig(
             sample_rate=self.config.sample_rate,
             prob_threshold=self.config.vad_prob_threshold,
@@ -217,7 +215,7 @@ class AudioService:
             if not getattr(thread, "is_alive", lambda: False)():
                 self._capture_thread = None
 
-        with getattr(self, "_cleanup_lock", threading.Lock()):
+        with self._cleanup_lock:
             stream = self._stream
             self._stream = None
             if stream:
@@ -234,9 +232,10 @@ class AudioService:
 
     def toggle_mute(self) -> bool:
         """Toggle mute state. Returns True if now muted."""
-        self._muted_by_user = not self._muted_by_user
-        self._set_state(self._effective_state())
-        self._vad.reset()
+        if self._muted_by_user:
+            self.unmute()
+        else:
+            self.mute()
         return self._muted_by_user
 
     def mute(self):
@@ -251,8 +250,11 @@ class AudioService:
         if self._muted_by_user:
             self._muted_by_user = False
             if self._capture_unavailable and not self._running:
-                with contextlib.suppress(Exception):
+                try:
                     self.start(self._loop)
+                except Exception as exc:
+                    self._capture_unavailable = True
+                    logger.warning("Microphone is still unavailable: %s", exc)
             self._set_state(self._effective_state())
             self._vad.reset()
 

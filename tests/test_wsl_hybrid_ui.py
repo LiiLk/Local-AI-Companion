@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.utils.wsl_hybrid_ui import (
+    HybridUiHandle,
     find_windows_checkout,
     find_windows_python,
     sync_pet_shell_to_runtime_cache,
@@ -166,6 +167,57 @@ def test_sync_pet_shell_merges_runtime_assets_without_deleting_local_models(tmp_
     assert sdk_asset.relative_to(src_root)
     assert (runtime / sdk_asset.relative_to(src_root)).is_file()
     assert local_model.is_file()
+
+
+def test_sync_pet_shell_stages_only_configured_model(tmp_path, monkeypatch):
+    src_root = tmp_path / "wsl_repo"
+    for rel in (
+        "scripts/windows_pet_shell.py",
+        "src/desktop/bridge_proxy.py",
+        "desktop/qt_avatar_shell.py",
+        "frontend/live2d/index.html",
+        "frontend/live2d/desktop-bridge.js",
+        "frontend/live2d/live2d.js",
+    ):
+        path = src_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("test", encoding="utf-8")
+    core = src_root / "frontend/live2d/runtime-assets/live2d_sdk_web/Core/core.js"
+    core.parent.mkdir(parents=True)
+    core.write_text("test", encoding="utf-8")
+    selected = src_root / "assets/models/starling/starling.model3.json"
+    selected.parent.mkdir(parents=True)
+    selected.write_text("{}", encoding="utf-8")
+    other = src_root / "assets/models/other/other.model3.json"
+    other.parent.mkdir(parents=True)
+    other.write_text("{}", encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    monkeypatch.setattr("src.utils.wsl_hybrid_ui.PROJECT_ROOT", src_root)
+
+    sync_pet_shell_to_runtime_cache(runtime, model_path="assets/models/starling")
+
+    assert (runtime / selected.relative_to(src_root)).is_file()
+    assert not (runtime / other.relative_to(src_root)).exists()
+
+
+def test_hybrid_handle_stops_process_tree_and_closes_log(monkeypatch):
+    class FakeLog:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    process = type("Process", (), {"_pet_log_fh": FakeLog()})()
+    stopped = []
+    monkeypatch.setattr(
+        "src.utils.wsl_hybrid_ui.kill_process_tree",
+        lambda proc, timeout: stopped.append((proc, timeout)),
+    )
+
+    HybridUiHandle(process).stop()
+
+    assert stopped == [(process, 3)]
+    assert process._pet_log_fh.closed is True
 
 def test_sync_pet_shell_fails_when_required_source_is_missing(tmp_path, monkeypatch):
     src_root = tmp_path / "incomplete_repo"

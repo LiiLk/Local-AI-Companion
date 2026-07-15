@@ -29,7 +29,18 @@ def test_web_app_live2d_uses_server_configured_model():
 
     assert "serverConfig?.live2d_model_path" in app_js
     assert "serverConfig?.live2d_model_name" in app_js
+    assert "/assets/models/default/" not in app_js
     assert "march7th" not in app_js.lower()
+
+
+def test_desktop_fetches_runtime_before_initializing_avatar():
+    desktop_html = Path("frontend/live2d/index.html").read_text(encoding="utf-8")
+    startup = desktop_html.index("document.addEventListener('DOMContentLoaded'")
+    refresh = desktop_html.index("await refreshRuntime();", startup)
+    layout = desktop_html.index("await setLayout('compact');", startup)
+
+    assert refresh < layout
+    assert "models/default" not in desktop_html
 
 
 def test_bridge_proxy_uses_bounded_websockets_receive_limit():

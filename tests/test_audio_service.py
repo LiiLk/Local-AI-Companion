@@ -28,6 +28,12 @@ def make_audio_service_state(
     service._vad = DummyVAD()
     service._capture_ready = threading.Event()
     service._capture_error = None
+    service._capture_unavailable = False
+    service._cleanup_lock = threading.Lock()
+    service._running = False
+    service._loop = None
+    service._stream = None
+    service._capture_thread = None
     service.on_state_change = None
     return service
 
@@ -50,6 +56,32 @@ def test_audio_service_unmute_while_processing_returns_to_processing_state():
     assert muted is False
     assert service.state == MicState.PROCESSING
     assert service._vad.reset_calls == 1
+
+
+def test_audio_service_toggle_unmute_retries_unavailable_capture():
+    service = make_audio_service_state(muted_by_user=True)
+    service._capture_unavailable = True
+    starts = []
+
+    def restart(loop):
+        starts.append(loop)
+        service._running = True
+        service._capture_unavailable = False
+
+    service.start = restart
+
+    assert service.toggle_mute() is False
+    assert starts == [None]
+    assert service.state == MicState.LISTENING
+
+
+def test_audio_service_failed_unmute_stays_unavailable():
+    service = make_audio_service_state(muted_by_user=True)
+    service._capture_unavailable = True
+    service.start = lambda loop: (_ for _ in ()).throw(RuntimeError("no microphone"))
+
+    assert service.toggle_mute() is False
+    assert service.state == MicState.UNAVAILABLE
 
 
 def test_audio_service_processing_release_preserves_user_mute():

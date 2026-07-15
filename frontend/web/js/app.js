@@ -154,8 +154,12 @@ class App {
             this.live2d = new Live2DIntegration();
 
             const serverConfig = await (this._serverConfigPromise || this._loadServerConfig());
-            const live2dModelPath = serverConfig?.live2d_model_path || '/assets/models/default/';
-            const live2dModelName = serverConfig?.live2d_model_name || 'model.model3.json';
+            const live2dModelPath = serverConfig?.live2d_model_path;
+            const live2dModelName = serverConfig?.live2d_model_name;
+            if (!live2dModelPath || !live2dModelName) {
+                console.warn('[App] No Live2D model configured');
+                return;
+            }
             const success = await this.live2d.init({
                 canvasId: 'live2d-canvas',
                 modelPath: live2dModelPath,

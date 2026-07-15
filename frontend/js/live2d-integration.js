@@ -50,10 +50,13 @@
       window.addEventListener("resize", resize);
 
       try {
+        if (!config.modelPath || !config.modelName) {
+          throw new Error("Live2D modelPath and modelName are required");
+        }
         await global.Live2DManager.init({
           canvasId,
-          modelPath: config.modelPath || "/assets/models/default/",
-          modelName: config.modelName || "model.model3.json",
+          modelPath: config.modelPath,
+          modelName: config.modelName,
           scale: config.scale ?? 0.85,
           position: config.position || { x: 0.5, y: -0.2 },
           debug: !!config.debug,

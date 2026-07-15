@@ -196,13 +196,15 @@ Local-AI-Companion/
 
 ## Quick Start
 
-There are **two supported run paths** (same codebase, different launch targets):
+The desktop assistant has one canonical command on both supported environments:
 
-| Path | Best for | Launch |
-|------|----------|--------|
-| **A. Windows** | Polished Live2D desktop avatar + voice | `python run_assistant.py` |
-| **B. WSL hybrid** | Backend in WSL + **Windows-native pet shell** (transparent / topmost) | `python run_assistant.py` |
-| **C. WSL web/CLI** | Browser/CLI only | `bash scripts/setup_wsl.sh` then `bash scripts/run_wsl.sh` |
+| Environment | Desktop behavior | Launch |
+|-------------|------------------|--------|
+| **Windows** | Local backend + native Live2D shell | `python run_assistant.py` |
+| **WSL** | Backend in WSL + Windows-native Live2D shell | `python run_assistant.py` |
+
+Browser, CLI, diagnostics, and bridge-only modes are optional tools exposed by
+`scripts/run_wsl.sh`; they are not alternate desktop entry points.
 
 Full WSL notes: [docs/lil-49-wsl-compatibility.md](docs/lil-49-wsl-compatibility.md) (LIL-49).
 
@@ -212,7 +214,7 @@ Full WSL notes: [docs/lil-49-wsl-compatibility.md](docs/lil-49-wsl-compatibility
 - NVIDIA GPU recommended (CUDA works under WSL2 via the **Windows** NVIDIA driver)
 - [Ollama](https://ollama.com/) for the default local LLM path (or OpenRouter)
 - `ffplay` or `mpv` optional for CLI audio playback
-- Windows 11 for path A; Ubuntu WSL2 for path B (`wsl --update` from PowerShell first)
+- Windows 11 for the native shell; Ubuntu WSL2 for the hybrid backend (`wsl --update` from PowerShell first)
 
 ### 2. Clone and install
 
@@ -228,7 +230,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-RVC voice conversion (March 7th path):
+Optional RVC voice conversion:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/install_rvc_windows.ps1
@@ -240,7 +242,7 @@ Then:
 python run_assistant.py
 ```
 
-#### Option B — WSL2 (browser / CLI companion)
+#### Option B — WSL2 hybrid desktop
 
 ```bash
 git clone https://github.com/LiiLk/Local-AI-Companion.git
@@ -258,9 +260,9 @@ WSL it automatically starts the backend locally and the Windows-native pet
 shell. For the browser UI instead, run `bash scripts/run_wsl.sh web`, then open
 **http://localhost:8000/web/** in Windows Edge/Chrome.
 
-The RVC setup reuses trusted `March-7th.pth` and `March-7th.index` files from an
-existing Windows checkout when available. On a fresh machine, place those files
-under `resources/voices/march7th/` before running `--with-rvc`.
+The RVC setup installs dependencies only. Configure your own trusted model in
+the active character preset or `config.local.yaml`; the FAISS index is optional
+when the configured `index_rate` is `0`.
 
 Other WSL modes:
 
@@ -332,12 +334,17 @@ tts:
 
 | Goal | Windows | WSL |
 |------|---------|-----|
-| Live2D desktop companion | `python run_assistant.py` | experimental: `bash scripts/run_wsl.sh desktop` |
-| Browser UI | `python -m src.server` | **`bash scripts/run_wsl.sh`** (recommended on WSL) |
+| Live2D desktop companion | `python run_assistant.py` | `python run_assistant.py` |
+| Browser UI | `python -m src.server` | `bash scripts/run_wsl.sh web` |
 | Bridge for external shell | `python run_assistant.py --bridge-server` | `bash scripts/run_wsl.sh bridge` |
 | CLI / voice CLI | `python main.py` / `--voice --listen` | `bash scripts/run_wsl.sh cli` / `cli-voice` |
 
 Browser UI: open `http://localhost:8000`.
+
+Live2D character presets use a project-relative model directory, for example
+`assets/models/my-character/`, plus its `.model3.json` filename. The same
+configuration is resolved for the browser and desktop shell; generic runtime
+code does not select a character model.
 
 ---
 

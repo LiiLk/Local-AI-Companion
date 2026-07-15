@@ -14,7 +14,7 @@
     response_active: false,
     playback_active: false,
     debug_visible: false,
-    character_name: "March 7th",
+    character_name: "Assistant",
     backend: "assistant-bridge",
   };
 

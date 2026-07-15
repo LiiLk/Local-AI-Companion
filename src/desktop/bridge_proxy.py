@@ -6,6 +6,7 @@ Protocol: same JSON messages as DesktopBridgeServer / desktop-bridge.js (Tauri p
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -102,6 +103,8 @@ class BridgeProxyAssistant:
                     raise
                 if raw is None:
                     break
+                if len(raw) > BRIDGE_MAX_MESSAGE_SIZE:
+                    raise ValueError("Bridge message exceeds the configured receive limit")
                 try:
                     message = json.loads(raw)
                 except json.JSONDecodeError:
@@ -167,8 +170,13 @@ class BridgeProxyAssistant:
             "request_id": request_id,
             **payload,
         }
-        with self._lock:
-            self._ws.send(json.dumps(message, ensure_ascii=False))
+        try:
+            with self._lock:
+                self._ws.send(json.dumps(message, ensure_ascii=False))
+        except Exception:
+            with self._lock:
+                self._pending.pop(request_id, None)
+            raise
         if not event.wait(timeout):
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -202,15 +210,12 @@ class BridgeProxyAssistant:
 
     def close(self) -> None:
         self._closed.set()
-        with contextlib_suppress_all():
+        with contextlib.suppress(Exception):
             if self._ws is not None:
                 self._ws.close()
         self._ws = None
-
-
-class contextlib_suppress_all:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return True
+        reader = self._reader
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=2.0)
+            if not reader.is_alive():
+                self._reader = None

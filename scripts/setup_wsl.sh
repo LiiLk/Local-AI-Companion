@@ -91,13 +91,6 @@ fi
 echo "[4/4] Running platform diagnostics..."
 "$PYTHON" "$ROOT_DIR/scripts/check_platform.py"
 
-LIVE2D_MODEL="$ROOT_DIR/frontend/live2d/runtime-assets/models/march7th_tauri/march7th.model3.json"
-if [[ ! -f "$LIVE2D_MODEL" ]]; then
-  echo "WARNING: the March 7th Live2D runtime pack is missing." >&2
-  echo "Expected licensed model entrypoint: $LIVE2D_MODEL" >&2
-  echo "The backend and microphone can run, but the avatar cannot load without this pack." >&2
-fi
-
 if command -v pactl >/dev/null 2>&1; then
   if ! pactl info >/dev/null 2>&1; then
     echo "WARNING: WSLg PulseAudio is not reachable in this session." >&2

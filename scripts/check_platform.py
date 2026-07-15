@@ -25,7 +25,10 @@ from src.utils.platform_compat import (
     probe_wsl_environment,
     resolve_python_executable,
     resolve_worker_script,
+    resolve_project_path,
 )
+from src.utils.character_loader import resolve_character_config, resolve_live2d_model_config
+from src.utils.config_loader import load_yaml_config
 
 
 def main() -> int:
@@ -37,6 +40,7 @@ def main() -> int:
     cuda = probe_cuda()
     audio = probe_audio_devices()
     wsl = probe_wsl_environment()
+    config = resolve_character_config(load_yaml_config(PROJECT_ROOT / "config" / "config.yaml"))
 
     legacy_win_python = ".\\venv\\Scripts\\python.exe"
     resolved_python = resolve_python_executable(legacy_win_python, project_root=PROJECT_ROOT)
@@ -45,17 +49,16 @@ def main() -> int:
         PROJECT_ROOT / "scripts" / "rvc_worker.py",
         project_root=PROJECT_ROOT,
     )
+    live2d_path, live2d_name = resolve_live2d_model_config(config)
+    live2d_dir = resolve_project_path(live2d_path, project_root=PROJECT_ROOT)
     live2d_model = (
-        PROJECT_ROOT
-        / "frontend"
-        / "live2d"
-        / "runtime-assets"
-        / "models"
-        / "march7th_tauri"
-        / "march7th.model3.json"
+        live2d_dir / live2d_name
+        if live2d_dir is not None and live2d_name
+        else None
     )
-    rvc_model = PROJECT_ROOT / "resources" / "voices" / "march7th" / "March-7th.pth"
-    rvc_index = PROJECT_ROOT / "resources" / "voices" / "march7th" / "March-7th.index"
+    rvc_config = config.get("tts", {}).get("rvc", {}) or {}
+    rvc_model = resolve_project_path(rvc_config.get("model_path"), project_root=PROJECT_ROOT)
+    rvc_index = resolve_project_path(rvc_config.get("index_path"), project_root=PROJECT_ROOT)
     rvc_overlay = PROJECT_ROOT / ".rvc-overlay"
 
     report = {
@@ -67,10 +70,10 @@ def main() -> int:
         "resolve_legacy_windows_python": str(resolved_python),
         "resolve_legacy_worker_script": str(worker),
         "worker_script_exists": worker.is_file(),
-        "live2d_model": str(live2d_model),
-        "live2d_model_exists": live2d_model.is_file(),
-        "rvc_model_exists": rvc_model.is_file(),
-        "rvc_index_exists": rvc_index.is_file(),
+        "live2d_model": str(live2d_model) if live2d_model else None,
+        "live2d_model_exists": bool(live2d_model and live2d_model.is_file()),
+        "rvc_model_exists": bool(rvc_model and rvc_model.is_file()),
+        "rvc_index_exists": bool(rvc_index and rvc_index.is_file()),
         "rvc_overlay_exists": rvc_overlay.is_dir(),
         "cuda": cuda,
         "audio": audio,

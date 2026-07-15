@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from src.utils.platform_compat import PROJECT_ROOT, is_wsl
+from src.utils.platform_compat import PROJECT_ROOT, is_wsl, kill_process_tree
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ _SYNC_REL_PATHS = (
     "frontend/live2d/live2d.js",
 )
 _SYNC_REL_DIRS = (
-    "frontend/live2d/runtime-assets",
+    "frontend/live2d/runtime-assets/live2d_sdk_web",
 )
 
 
@@ -211,7 +211,26 @@ def _windows_python_has_pyqt(python: Path) -> bool:
         return False
 
 
-def sync_pet_shell_to_runtime_cache(runtime_root: Path) -> None:
+def _copy_file_if_changed(src: str, dst: str) -> str:
+    """Avoid rewriting unchanged runtime-cache files on every launch."""
+    source = Path(src)
+    destination = Path(dst)
+    if destination.is_file():
+        source_stat = source.stat()
+        destination_stat = destination.stat()
+        if (
+            source_stat.st_size == destination_stat.st_size
+            and source_stat.st_mtime_ns == destination_stat.st_mtime_ns
+        ):
+            return str(destination)
+    return shutil.copy2(source, destination)
+
+
+def sync_pet_shell_to_runtime_cache(
+    runtime_root: Path,
+    *,
+    model_path: str | Path | None = None,
+) -> None:
     """Copy hybrid shell sources into an ignored per-run cache, never another checkout."""
     failures: list[str] = []
     for rel in _SYNC_REL_PATHS:
@@ -222,7 +241,7 @@ def sync_pet_shell_to_runtime_cache(runtime_root: Path) -> None:
             continue
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            _copy_file_if_changed(str(src), str(dst))
         except Exception as exc:
             failures.append(f"{src} -> {dst}: {exc}")
 
@@ -234,9 +253,39 @@ def sync_pet_shell_to_runtime_cache(runtime_root: Path) -> None:
             continue
         try:
             # Merge runtime assets into the ignored runtime cache.
-            shutil.copytree(src, dst, dirs_exist_ok=True)
+            shutil.copytree(
+                src,
+                dst,
+                dirs_exist_ok=True,
+                copy_function=_copy_file_if_changed,
+            )
         except Exception as exc:
             failures.append(f"{src} -> {dst}: {exc}")
+
+    if model_path:
+        configured = Path(str(model_path).replace("\\", "/"))
+        if configured.is_absolute() or re.match(r"^[A-Za-z]:/", configured.as_posix()):
+            failures.append("Live2D model path must be relative to the project")
+        else:
+            src = (PROJECT_ROOT / configured).resolve()
+            try:
+                rel = src.relative_to(PROJECT_ROOT.resolve())
+            except ValueError:
+                failures.append(f"Live2D model path escapes the project: {model_path}")
+            else:
+                dst = runtime_root / rel
+                if not src.is_dir():
+                    failures.append(f"missing Live2D model directory: {src}")
+                else:
+                    try:
+                        shutil.copytree(
+                            src,
+                            dst,
+                            dirs_exist_ok=True,
+                            copy_function=_copy_file_if_changed,
+                        )
+                    except Exception as exc:
+                        failures.append(f"{src} -> {dst}: {exc}")
 
     if failures:
         raise RuntimeError("Windows pet shell runtime-cache sync failed: " + "; ".join(failures))
@@ -247,6 +296,7 @@ def launch_windows_pet_shell(
     bridge_port: int = DEFAULT_BRIDGE_PORT,
     bridge_url: str | None = None,
     page_url: str | None = None,
+    model_path: str | Path | None = None,
 ) -> subprocess.Popen[Any]:
     """
     Start scripts/windows_pet_shell.py with Windows Python (native pet overlay).
@@ -273,7 +323,7 @@ def launch_windows_pet_shell(
     # minimal shell files into an ignored cache under this active checkout and
     # launch Windows Python from there (or via \\wsl$ when running in WSL).
     runtime_root = (PROJECT_ROOT / ".runtime" / "windows-pet-shell").resolve()
-    sync_pet_shell_to_runtime_cache(runtime_root)
+    sync_pet_shell_to_runtime_cache(runtime_root, model_path=model_path)
     linux_root = runtime_root
     script_path = runtime_root / "scripts" / "windows_pet_shell.py"
 
@@ -345,35 +395,28 @@ class HybridUiHandle:
         self.process = process
 
     def stop(self) -> None:
-        if self.process.poll() is None:
-            with contextlib.suppress(Exception):
-                self.process.terminate()
-            try:
-                self.process.wait(timeout=3)
-            except Exception:
+        try:
+            kill_process_tree(self.process, timeout=3)
+        finally:
+            log_fh = getattr(self.process, "_pet_log_fh", None)
+            if log_fh is not None:
                 with contextlib.suppress(Exception):
-                    self.process.kill()
-        log_fh = getattr(self.process, "_pet_log_fh", None)
-        if log_fh is not None:
-            with contextlib.suppress(Exception):
-                log_fh.close()
+                    log_fh.close()
 
 
 def start_hybrid_windows_ui(
     *,
     bridge_port: int = DEFAULT_BRIDGE_PORT,
-    ui_port: int | None = None,  # unused (kept for API compat)
-    live2d_dir: Path | None = None,  # unused
+    model_path: str | Path | None = None,
 ) -> HybridUiHandle:
     """
     After the WSL bridge is listening, start the Windows-native pet shell.
 
-    Falls back to opening Edge app-mode only if Windows Python/PyQt is missing.
+    Falls back to a lifecycle-owned local HTTP page if Windows Python/PyQt is missing.
     """
-    del ui_port, live2d_dir
     time.sleep(0.2)
     try:
-        proc = launch_windows_pet_shell(bridge_port=bridge_port)
+        proc = launch_windows_pet_shell(bridge_port=bridge_port, model_path=model_path)
         logger.info(
             "Hybrid pet: Windows Qt shell launched (pid=%s). "
             "Backend remains in WSL on port %s.",
@@ -383,14 +426,23 @@ def start_hybrid_windows_ui(
         return HybridUiHandle(proc)
     except Exception as exc:
         logger.warning(
-            "Windows pet shell launch failed (%s); falling back to browser app mode",
+            "Windows pet shell launch failed (%s); falling back to a local web page",
             exc,
         )
-        return _fallback_browser(bridge_port=bridge_port, error=exc)
+        return _fallback_browser(
+            bridge_port=bridge_port,
+            error=exc,
+            model_path=model_path,
+        )
 
 
-def _fallback_browser(*, bridge_port: int, error: Exception) -> HybridUiHandle:
-    """Last resort: Edge/Chrome app window (not true desktop-pet transparency)."""
+def _fallback_browser(
+    *,
+    bridge_port: int,
+    error: Exception,
+    model_path: str | Path | None,
+) -> HybridUiHandle:
+    """Serve the staged pet files locally when the native shell is unavailable."""
     from functools import partial
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
     import socket
@@ -410,42 +462,27 @@ def _fallback_browser(*, bridge_port: int, error: Exception) -> HybridUiHandle:
             port = p
             break
 
-    directory = (PROJECT_ROOT / "frontend" / "live2d").resolve()
-    handler = partial(SimpleHTTPRequestHandler, directory=str(directory))
+    runtime_root = (PROJECT_ROOT / ".runtime" / "windows-pet-shell").resolve()
+    sync_pet_shell_to_runtime_cache(runtime_root, model_path=model_path)
+    handler = partial(SimpleHTTPRequestHandler, directory=str(runtime_root))
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    httpd.daemon_threads = True
     thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="live2d-static-fallback")
     thread.start()
-    url = f"http://127.0.0.1:{port}/index.html?backendPort={int(bridge_port)}"
+    url = (
+        f"http://127.0.0.1:{port}/frontend/live2d/index.html"
+        f"?backendPort={int(bridge_port)}"
+    )
     logger.error(
-        "Could not start Windows Qt pet shell: %s. "
-        "Opening browser fallback (not desktop-incrusted): %s. "
-        "Install PyQt6 on Windows Python and set LOCAL_AI_WINDOWS_PYTHON.",
+        "Could not start Windows Qt pet shell: %s. Open this fallback URL: %s",
         error,
         url,
     )
-    edge = _which_windows("msedge.exe", "msedge")
-    ps = _which_windows("powershell.exe")
-    browser_proc = None
-    if edge:
-        browser_proc = subprocess.Popen([edge, f"--app={url}"], start_new_session=True)  # nosec B603
-    elif ps:
-        browser_proc = subprocess.Popen(  # nosec B603
-            [ps, "-NoProfile", "-Command", f"Start-Process '{url}'"],
-            start_new_session=True,
-        )
 
     class _Fallback:
-        process = browser_proc
+        process = None
 
         def stop(self) -> None:
-            if self.process is not None and self.process.poll() is None:
-                with contextlib.suppress(Exception):
-                    self.process.terminate()
-                with contextlib.suppress(Exception):
-                    self.process.wait(timeout=2)
-                if self.process.poll() is None:
-                    with contextlib.suppress(Exception):
-                        self.process.kill()
             with contextlib.suppress(Exception):
                 httpd.shutdown()
             with contextlib.suppress(Exception):

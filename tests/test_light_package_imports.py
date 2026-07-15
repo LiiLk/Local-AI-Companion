@@ -36,6 +36,38 @@ print(json.dumps({
     }
 
 
+def test_audio_service_import_defers_vad_model():
+    loaded = _run_import_probe(
+        """
+import json
+import sys
+import src.assistant.audio_service
+print(json.dumps({
+    "vad": "src.vad" in sys.modules,
+    "torch": "torch" in sys.modules,
+}))
+"""
+    )
+
+    assert loaded == {"vad": False, "torch": False}
+
+
+def test_desktop_package_import_defers_optional_tray_stack():
+    loaded = _run_import_probe(
+        """
+import json
+import sys
+import src.desktop
+print(json.dumps({
+    "desktop_app": "src.desktop.app" in sys.modules,
+    "pystray": "pystray" in sys.modules,
+}))
+"""
+    )
+
+    assert loaded == {"desktop_app": False, "pystray": False}
+
+
 def test_tts_package_import_does_not_load_optional_providers():
     loaded = _run_import_probe(
         """

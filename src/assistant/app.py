@@ -51,7 +51,11 @@ from src.assistant.conversation_pipeline import ConversationPipeline, Conversati
 from src.assistant.pipeline_runtime import (
     create_pipeline_runtime,
 )
-from src.utils.character_loader import resolve_character_config
+from src.utils.character_loader import (
+    resolve_character_config,
+    resolve_live2d_desktop_model,
+    resolve_live2d_model_config,
+)
 from src.utils.config_loader import load_yaml_config
 from src.utils.logging_setup import (
     configure_root_logging,
@@ -345,8 +349,6 @@ class DesktopBridgeServer:
             return False
 
         scheme = parsed.scheme.lower()
-        if scheme == "file":
-            return True
         if scheme not in cls._ALLOWED_ORIGIN_SCHEMES:
             return False
         if not parsed.hostname:
@@ -404,6 +406,7 @@ class Live2DAssistant:
         self._debug_visible = False
         self._backend_state = "warming_up"
         self._degraded_reason: Optional[str] = None
+        self._microphone_degraded_reason: Optional[str] = None
         self._runtime_error: Optional[str] = None
         self._js_api = DesktopBridgeApi(self)
         self._conversation_logger = CONVERSATION_LOGGER
@@ -830,10 +833,19 @@ class Live2DAssistant:
 
         return llm.__class__.__name__
 
+    def _collect_extra_degraded_reason(self) -> Optional[str]:
+        extra_reasons = [
+            reason
+            for reason in (self._degraded_reason, self._microphone_degraded_reason)
+            if reason
+        ]
+        return " | ".join(dict.fromkeys(extra_reasons)) or None
+
     def _collect_degraded_reason(self) -> Optional[str]:
+        extra_reason = self._collect_extra_degraded_reason()
         pipeline_runtime = getattr(self, "_pipeline_runtime", None)
         if pipeline_runtime is not None:
-            return pipeline_runtime.collect_degraded_reason(extra_reason=self._degraded_reason)
+            return pipeline_runtime.collect_degraded_reason(extra_reason=extra_reason)
 
         parts: list[str] = []
         pipeline = self._get_active_pipeline()
@@ -848,8 +860,8 @@ class Live2DAssistant:
         if tts_reason:
             parts.append(str(tts_reason))
 
-        if self._degraded_reason:
-            parts.append(self._degraded_reason)
+        if extra_reason:
+            parts.append(extra_reason)
 
         unique_parts: list[str] = []
         for part in parts:
@@ -983,6 +995,10 @@ class Live2DAssistant:
         if not self.audio_service:
             return {"status": "error", "message": "Audio service unavailable"}
         self.audio_service.toggle_mute()
+        if not getattr(self.audio_service, "_capture_unavailable", False):
+            self._microphone_degraded_reason = None
+            if self._backend_state != "warming_up" and not self._runtime_error:
+                self._backend_state = "degraded" if self._collect_degraded_reason() else "ready"
         return {"status": "ok", **self.get_runtime_state()}
 
     def toggle_debug(self) -> dict:
@@ -998,7 +1014,7 @@ class Live2DAssistant:
             backend_status = pipeline_runtime.resolve_backend_status(
                 requested_state=self._backend_state,
                 runtime_error=self._runtime_error,
-                extra_degraded_reason=self._degraded_reason,
+                extra_degraded_reason=self._collect_extra_degraded_reason(),
             )
             degraded_reason = backend_status.degraded_reason
             backend_state = backend_status.state
@@ -1011,6 +1027,7 @@ class Live2DAssistant:
                 backend_state = "degraded"
         character_name = self.config.get('character', {}).get('name', 'AI')
         character_slug = re.sub(r'[^a-z0-9]+', '', str(character_name).lower())
+        live2d_model_path, live2d_model_name = resolve_live2d_desktop_model(self.config)
         return {
             "mode": self.config.get('mode', 'pipeline'),
             "backend_state": backend_state,
@@ -1021,8 +1038,8 @@ class Live2DAssistant:
             "debug_visible": self._debug_visible,
             "character_name": character_name,
             "character_id": character_slug or "default",
-            "live2d_model_path": (self.config.get("live2d", {}).get("model", {}) or {}).get("path"),
-            "live2d_model_name": (self.config.get("live2d", {}).get("model", {}) or {}).get("settings_file"),
+            "live2d_model_path": live2d_model_path,
+            "live2d_model_name": live2d_model_name,
             "active_language": getattr(self._get_active_pipeline(), "_current_language_code", None),
             "active_llm_model": self._active_llm_model_name(),
             "active_tts_provider": self._active_tts_provider_name(),
@@ -1365,7 +1382,7 @@ class Live2DAssistant:
             degraded_reason = self._collect_degraded_reason()
             self._set_backend_health(
                 state="degraded" if degraded_reason else "ready",
-                degraded_reason=degraded_reason,
+                degraded_reason=None,
                 runtime_error=None,
             )
             if self.audio_service and self._loop and not self.audio_service._running:
@@ -1380,14 +1397,9 @@ class Live2DAssistant:
                         "Audio capture unavailable while starting muted; continuing without microphone: %s",
                         exc,
                     )
-                    degraded_reason = self._collect_degraded_reason()
-                    audio_reason = f"Microphone unavailable: {exc}"
-                    degraded_reason = (
-                        f"{degraded_reason} | {audio_reason}" if degraded_reason else audio_reason
-                    )
+                    self._microphone_degraded_reason = f"Microphone unavailable: {exc}"
                     self._set_backend_health(
                         state="degraded",
-                        degraded_reason=degraded_reason,
                         runtime_error=None,
                     )
                     self._mark_startup_step("audio_capture_unavailable")
@@ -1581,10 +1593,14 @@ class Live2DAssistant:
                 try:
                     from src.utils.wsl_hybrid_ui import start_hybrid_windows_ui
 
-                    self._hybrid_ui_server = start_hybrid_windows_ui(bridge_port=bridge_port)
+                    model_path, _ = resolve_live2d_model_config(self.config)
+                    self._hybrid_ui_server = start_hybrid_windows_ui(
+                        bridge_port=bridge_port,
+                        model_path=model_path,
+                    )
                     self._mark_startup_step("hybrid_windows_ui_started")
                     logger.info(
-                        "Hybrid mode: backend in WSL, Windows pet shell should open on the host"
+                        "Hybrid mode: backend in WSL, host UI initialized"
                     )
                 except Exception as exc:
                     logger.error("Hybrid Windows UI failed to start: %s", exc, exc_info=True)
