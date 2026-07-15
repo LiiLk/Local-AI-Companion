@@ -162,8 +162,9 @@ class AudioService:
         loop: Optional[asyncio.AbstractEventLoop] = None,
         *,
         startup_timeout_sec: float = 5.0,
+        wait_until_ready: bool = True,
     ):
-        """Start audio capture and return only after the input stream is open."""
+        """Start audio capture, optionally waiting for the input stream to open."""
         if not SOUNDDEVICE_AVAILABLE:
             raise RuntimeError("sounddevice is not installed")
 
@@ -176,8 +177,9 @@ class AudioService:
         self._loop = loop
         self._running = True
         self._capture_error = None
-        self._capture_unavailable = False
+        self._capture_unavailable = True
         self._capture_ready.clear()
+        self._set_state(self._effective_state())
 
         # Start capture thread
         self._capture_thread = threading.Thread(
@@ -186,6 +188,9 @@ class AudioService:
             name="AudioCapture"
         )
         self._capture_thread.start()
+
+        if not wait_until_ready:
+            return
 
         if not self._capture_ready.wait(timeout=max(0.1, startup_timeout_sec)):
             self._running = False
@@ -253,7 +258,7 @@ class AudioService:
             self._muted_by_user = False
             if not self._running:
                 try:
-                    self.start(self._loop)
+                    self.start(self._loop, wait_until_ready=False)
                 except Exception as exc:
                     self._capture_unavailable = True
                     logger.warning("Microphone is still unavailable: %s", exc)
@@ -474,6 +479,10 @@ class AudioService:
 
         try:
             self._open_input_stream(audio_callback)
+            if not self._running:
+                return
+            self._capture_unavailable = False
+            self._set_state(self._effective_state())
             self._capture_ready.set()
 
             # Keep thread alive
@@ -483,6 +492,8 @@ class AudioService:
         except Exception as exc:
             self._capture_error = exc
             self._running = False
+            self._capture_unavailable = True
+            self._set_state(self._effective_state())
             self._capture_ready.set()
             logger.warning("Audio capture unavailable: %s", exc)
         finally:

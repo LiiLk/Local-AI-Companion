@@ -995,10 +995,6 @@ class Live2DAssistant:
         if not self.audio_service:
             return {"status": "error", "message": "Audio service unavailable"}
         self.audio_service.toggle_mute()
-        if not getattr(self.audio_service, "_capture_unavailable", False):
-            self._microphone_degraded_reason = None
-            if self._backend_state != "warming_up" and not self._runtime_error:
-                self._backend_state = "degraded" if self._collect_degraded_reason() else "ready"
         return {"status": "ok", **self.get_runtime_state()}
 
     def toggle_debug(self) -> dict:
@@ -1199,6 +1195,12 @@ class Live2DAssistant:
     
     def _on_mic_state_change(self, state: MicState):
         """Called when mic state changes."""
+        if state == MicState.LISTENING and self._microphone_degraded_reason:
+            self._microphone_degraded_reason = None
+            if self._backend_state != "warming_up" and not self._runtime_error:
+                self._backend_state = (
+                    "degraded" if self._collect_degraded_reason() else "ready"
+                )
         self._dispatch_frontend_event("onMicStateChange", state.value)
     
     async def _on_transcription(self, text: str):

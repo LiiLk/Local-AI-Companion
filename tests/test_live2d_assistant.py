@@ -10,6 +10,7 @@ from src.assistant.app import (
     Live2DAssistant,
     resolve_turn_timeout_sec,
 )
+from src.assistant.audio_service import MicState
 from src.assistant.conversation_pipeline import AudioPayload
 
 
@@ -452,12 +453,13 @@ def test_get_runtime_state_exposes_backend_health_fields():
     assert runtime["runtime_error"] is None
 
 
-def test_toggle_mute_clears_microphone_degradation_after_capture_recovers():
+def test_listening_state_clears_microphone_degradation_after_capture_recovers():
     assistant = _make_assistant()
     assistant._backend_state = "degraded"
     assistant._microphone_degraded_reason = "Microphone unavailable: no input device"
 
-    runtime = assistant.toggle_mute()
+    assistant._on_mic_state_change(MicState.LISTENING)
+    runtime = assistant.get_runtime_state()
 
     assert runtime["backend_state"] == "ready"
     assert runtime["degraded_reason"] is None
