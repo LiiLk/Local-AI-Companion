@@ -75,6 +75,21 @@ def test_audio_service_toggle_unmute_retries_unavailable_capture():
     assert service.state == MicState.LISTENING
 
 
+def test_audio_service_unmute_retries_when_capture_never_started():
+    service = make_audio_service_state(muted_by_user=True)
+    starts = []
+
+    def restart(loop):
+        starts.append(loop)
+        service._running = True
+
+    service.start = restart
+
+    assert service.toggle_mute() is False
+    assert starts == [None]
+    assert service.state == MicState.LISTENING
+
+
 def test_audio_service_failed_unmute_stays_unavailable():
     service = make_audio_service_state(muted_by_user=True)
     service._capture_unavailable = True

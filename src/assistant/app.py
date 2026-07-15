@@ -1622,6 +1622,14 @@ class Live2DAssistant:
             )
             try:
                 while self._running:
+                    process = getattr(self._hybrid_ui_server, "process", None)
+                    if (
+                        hybrid_windows_ui
+                        and process is not None
+                        and process.poll() is not None
+                    ):
+                        logger.info("Hybrid Windows UI exited; stopping the WSL backend")
+                        break
                     time.sleep(0.2)
             except KeyboardInterrupt:
                 pass

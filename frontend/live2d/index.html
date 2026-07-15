@@ -1811,6 +1811,10 @@
             getMotions: () => Live2DManager.getMotionGroups(),
         };
 
+        window.onExpressionChange = (expression) => {
+            window.Live2DAPI.setExpression(expression);
+        };
+
         window.__desktopBridgeSetLayoutMode = (layout) => {
             const normalized = normalizeLayout(layout);
             const applyLayout = normalized === 'expanded' ? applyExpandedMode : applyCompactMode;

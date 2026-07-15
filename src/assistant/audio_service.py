@@ -251,7 +251,7 @@ class AudioService:
         """Unmute microphone."""
         if self._muted_by_user:
             self._muted_by_user = False
-            if self._capture_unavailable and not self._running:
+            if not self._running:
                 try:
                     self.start(self._loop)
                 except Exception as exc:

@@ -46,6 +46,20 @@ def test_live2d_model_paths_are_resolved_for_each_frontend():
     )
 
 
+def test_live2d_model_paths_accept_inline_preset_shape():
+    config = {
+        "live2d": {
+            "model_path": "assets/models/starling/",
+            "settings_file": "starling.model3.json",
+        }
+    }
+
+    assert resolve_live2d_web_model(config) == (
+        "/assets/models/starling/",
+        "starling.model3.json",
+    )
+
+
 def test_live2d_model_paths_reject_absolute_and_parent_paths():
     absolute = {
         "live2d": {"model": {"path": "/tmp/model", "settings_file": "a.json"}}

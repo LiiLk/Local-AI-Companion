@@ -18,9 +18,14 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 def resolve_live2d_model_config(config: dict) -> tuple[str | None, str | None]:
     """Return the configured project-relative Live2D directory and settings file."""
-    model = config.get("live2d", {}).get("model", {}) or {}
-    model_path = str(model.get("path") or "").strip().replace("\\", "/")
-    model_name = str(model.get("settings_file") or "").strip().replace("\\", "/")
+    live2d = config.get("live2d", {}) or {}
+    model = live2d.get("model", {}) or {}
+    model_path = str(model.get("path") or live2d.get("model_path") or "").strip()
+    model_name = str(
+        model.get("settings_file") or live2d.get("settings_file") or ""
+    ).strip()
+    model_path = model_path.replace("\\", "/")
+    model_name = model_name.replace("\\", "/")
     if not model_path or not model_name:
         return None, None
     if (

@@ -28,6 +28,22 @@ def test_rpc_removes_waiter_when_send_fails():
     assert proxy._pending == {}
 
 
+def test_reader_preserves_disconnect_error_for_pending_rpc():
+    class DisconnectedSocket:
+        def recv(self):
+            return None
+
+    proxy = make_proxy()
+    proxy._ws = DisconnectedSocket()
+    event = threading.Event()
+    proxy._pending["request"] = {"event": event, "result": None, "error": None}
+
+    proxy._read_loop()
+
+    assert event.is_set()
+    assert proxy._pending["request"]["error"] == "bridge disconnected"
+
+
 def test_close_closes_socket_and_joins_reader():
     class Socket:
         closed = False

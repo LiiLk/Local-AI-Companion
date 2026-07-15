@@ -41,6 +41,8 @@ def test_desktop_fetches_runtime_before_initializing_avatar():
 
     assert refresh < layout
     assert "models/default" not in desktop_html
+    assert "window.onExpressionChange" in desktop_html
+    assert "window.Live2DAPI.setExpression(expression)" in desktop_html
 
 
 def test_bridge_proxy_uses_bounded_websockets_receive_limit():

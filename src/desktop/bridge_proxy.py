@@ -119,7 +119,6 @@ class BridgeProxyAssistant:
                 for waiter in self._pending.values():
                     waiter["error"] = "bridge disconnected"
                     waiter["event"].set()
-                self._pending.clear()
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         mtype = message.get("type")

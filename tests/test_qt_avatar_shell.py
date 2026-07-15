@@ -4,9 +4,7 @@ import json
 
 import pytest
 
-pytest.importorskip("PyQt6")
-
-from desktop.qt_avatar_shell import QtAvatarShell
+QtAvatarShell = pytest.importorskip("desktop.qt_avatar_shell").QtAvatarShell
 
 
 class FakeQtShell:
