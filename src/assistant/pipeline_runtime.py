@@ -470,6 +470,27 @@ def create_pipeline_asr(config: dict) -> tuple[Any, str]:
         )
         return asr, f"Qwen3-ASR ({qwen3_config.get('model_id', 'Qwen/Qwen3-ASR-0.6B')})"
 
+    if asr_provider == "parakeet":
+        from src.asr.parakeet_provider import DEFAULT_MODEL_NAME, ParakeetASRProvider
+
+        if not ParakeetASRProvider.is_available():
+            raise ImportError(
+                "asr.provider is 'parakeet' but onnx-asr is not installed. "
+                "Install with: pip install -r requirements-optional-parakeet.txt "
+                "(or switch asr.provider back to 'whisper')."
+            )
+
+        parakeet_config = asr_config.get("parakeet", {})
+        model_name = parakeet_config.get("model_name", DEFAULT_MODEL_NAME)
+        quantization = parakeet_config.get("quantization", "int8")
+        asr = ParakeetASRProvider(
+            model_name=model_name,
+            quantization=quantization,
+            providers=parakeet_config.get("providers"),
+            sample_rate=int(parakeet_config.get("sample_rate", 16000)),
+        )
+        return asr, f"Parakeet ({model_name}, {quantization}) [opt-in]"
+
     from src.asr import WhisperProvider
 
     settings = resolve_whisper_profile(asr_config)
