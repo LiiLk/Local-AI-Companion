@@ -1,0 +1,13 @@
+# Copy this file to config.local.yaml for machine-specific, non-secret
+# overrides. config.local.yaml is ignored by Git.
+#
+# Keep API keys out of YAML. The application reads OPENROUTER_API_KEY from the
+# process environment when llm.openrouter.api_key remains null in config.yaml.
+
+# Example: use OpenRouter while keeping the key in the environment.
+# llm:
+#   provider: "openrouter"
+
+# Example: use the higher-quality local Whisper profile when VRAM permits.
+# asr:
+#   profile: "quality-local"

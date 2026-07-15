@@ -1,7 +1,9 @@
 import sys
+import threading
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from src.assistant.audio_service import AudioService, MicState
 
@@ -24,6 +26,14 @@ def make_audio_service_state(
     service._processing_blocked = processing_blocked
     service._state = service._effective_state()
     service._vad = DummyVAD()
+    service._capture_ready = threading.Event()
+    service._capture_error = None
+    service._capture_unavailable = False
+    service._cleanup_lock = threading.Lock()
+    service._running = False
+    service._loop = None
+    service._stream = None
+    service._capture_thread = None
     service.on_state_change = None
     return service
 
@@ -46,6 +56,50 @@ def test_audio_service_unmute_while_processing_returns_to_processing_state():
     assert muted is False
     assert service.state == MicState.PROCESSING
     assert service._vad.reset_calls == 1
+
+
+def test_audio_service_toggle_unmute_retries_unavailable_capture():
+    service = make_audio_service_state(muted_by_user=True)
+    service._capture_unavailable = True
+    starts = []
+
+    def restart(loop, *, wait_until_ready):
+        starts.append((loop, wait_until_ready))
+        service._running = True
+        service._capture_unavailable = False
+
+    service.start = restart
+
+    assert service.toggle_mute() is False
+    assert starts == [(None, False)]
+    assert service.state == MicState.LISTENING
+
+
+def test_audio_service_unmute_retries_when_capture_never_started():
+    service = make_audio_service_state(muted_by_user=True)
+    starts = []
+
+    def restart(loop, *, wait_until_ready):
+        starts.append((loop, wait_until_ready))
+        service._running = True
+        service._capture_unavailable = True
+
+    service.start = restart
+
+    assert service.toggle_mute() is False
+    assert starts == [(None, False)]
+    assert service.state == MicState.UNAVAILABLE
+
+
+def test_audio_service_failed_unmute_stays_unavailable():
+    service = make_audio_service_state(muted_by_user=True)
+    service._capture_unavailable = True
+    service.start = lambda loop, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("no microphone")
+    )
+
+    assert service.toggle_mute() is False
+    assert service.state == MicState.UNAVAILABLE
 
 
 def test_audio_service_processing_release_preserves_user_mute():
@@ -76,6 +130,7 @@ def test_audio_service_start_preserves_pre_start_user_mute(monkeypatch):
 
         def start(self):
             self.started = True
+            self.target()
 
     service = make_audio_service_state(muted_by_user=True)
     service.config = SimpleNamespace(start_muted=False)
@@ -83,7 +138,7 @@ def test_audio_service_start_preserves_pre_start_user_mute(monkeypatch):
     service._loop = None
     service._stream = None
     service._capture_thread = None
-    service._capture_loop = lambda: None
+    service._capture_loop = lambda: service._capture_ready.set()
     monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
     monkeypatch.setattr("src.assistant.audio_service.threading.Thread", FakeThread)
 
@@ -92,6 +147,120 @@ def test_audio_service_start_preserves_pre_start_user_mute(monkeypatch):
     assert service.state == MicState.MUTED
     assert service._muted_by_user is True
     assert service._capture_thread.started is True
+
+
+def test_audio_service_start_can_return_before_capture_is_ready(monkeypatch):
+    class FakeThread:
+        def __init__(self, target, daemon, name):
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+    service = make_audio_service_state()
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+    monkeypatch.setattr("src.assistant.audio_service.threading.Thread", FakeThread)
+
+    service.start(wait_until_ready=False)
+
+    assert service._capture_thread.started is True
+    assert service._running is True
+    assert service._capture_unavailable is True
+    assert service.state == MicState.UNAVAILABLE
+
+
+def test_audio_service_start_surfaces_capture_failure(monkeypatch):
+    class FakeThread:
+        def __init__(self, target, daemon, name):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+        def join(self, timeout):
+            return None
+
+    service = make_audio_service_state()
+    service.config = SimpleNamespace(start_muted=False)
+    service._running = False
+    service._loop = None
+    service._stream = None
+    service._capture_thread = None
+
+    def fail_capture():
+        service._capture_error = RuntimeError("no microphone")
+        service._running = False
+        service._capture_ready.set()
+
+    service._capture_loop = fail_capture
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+    monkeypatch.setattr("src.assistant.audio_service.threading.Thread", FakeThread)
+
+    with pytest.raises(RuntimeError, match="no microphone"):
+        service.start()
+
+    assert service._running is False
+    assert service._capture_thread is None
+
+
+def test_audio_service_start_rejects_retry_while_previous_thread_is_alive(monkeypatch):
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    service = make_audio_service_state()
+    service._capture_thread = AliveThread()
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.start()
+
+    assert service._capture_thread is not None
+    assert service._running is False
+
+
+def test_audio_service_start_timeout_closes_late_stream(monkeypatch):
+    class FakeStream:
+        def __init__(self):
+            self.stopped = False
+            self.closed = False
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            self.closed = True
+
+    class FakeThread:
+        def __init__(self, target, daemon, name):
+            self.target = target
+            self.started = False
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout):
+            service._stream = late_stream
+
+    service = make_audio_service_state()
+    service.config = SimpleNamespace(start_muted=False)
+    service._running = False
+    service._loop = None
+    service._stream = None
+    service._capture_thread = None
+    service._capture_loop = lambda: None
+    late_stream = FakeStream()
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+    monkeypatch.setattr("src.assistant.audio_service.threading.Thread", FakeThread)
+
+    with pytest.raises(RuntimeError, match="Timed out"):
+        service.start(startup_timeout_sec=0.01)
+
+    assert service._running is False
+    assert service._capture_thread is None
+    assert service._stream is None
+    assert late_stream.stopped is True
+    assert late_stream.closed is True
 
 
 def test_audio_service_resample_uses_soxr_when_available(monkeypatch):

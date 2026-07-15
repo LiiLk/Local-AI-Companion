@@ -12,6 +12,7 @@ Features:
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
@@ -24,14 +25,20 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 try:
+    # LIL-49: set PULSE_SERVER under WSL before opening PortAudio.
+    from src.utils.platform_compat import ensure_wsl_audio_env
+
+    ensure_wsl_audio_env()
+except Exception:
+    pass
+
+try:
     import sounddevice as sd
     SOUNDDEVICE_AVAILABLE = True
 except (ImportError, OSError) as exc:
     sd = None
     SOUNDDEVICE_AVAILABLE = False
     logger.warning("sounddevice unavailable: %s", exc)
-
-from src.vad import SileroVAD
 
 # Suppress input overflow warnings (common during model loading/inference)
 logging.getLogger("sounddevice").setLevel(logging.ERROR)
@@ -42,6 +49,7 @@ class MicState(Enum):
     LISTENING = "listening"
     MUTED = "muted"
     PROCESSING = "processing"  # Processing speech, ignoring new audio
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass
@@ -89,9 +97,13 @@ class AudioService:
         self._stream: Optional[object] = None
         self._capture_thread: Optional[threading.Thread] = None
         self._stream_sample_rate = self.config.sample_rate
+        self._capture_ready = threading.Event()
+        self._capture_error: Optional[BaseException] = None
+        self._capture_unavailable = False
+        self._cleanup_lock = threading.Lock()
 
         # VAD
-        from src.vad.silero_vad import VADConfig
+        from src.vad.silero_vad import SileroVAD, VADConfig
         vad_config = VADConfig(
             sample_rate=self.config.sample_rate,
             prob_threshold=self.config.vad_prob_threshold,
@@ -127,6 +139,8 @@ class AudioService:
         return self._state == MicState.LISTENING
 
     def _effective_state(self) -> MicState:
+        if getattr(self, "_capture_unavailable", False) and not self._muted_by_user:
+            return MicState.UNAVAILABLE
         if self._muted_by_user:
             return MicState.MUTED
         if self._processing_blocked:
@@ -143,17 +157,29 @@ class AudioService:
             if self.on_state_change:
                 self.on_state_change(new_state)
 
-    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
-        """Start audio capture."""
+    def start(
+        self,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        *,
+        startup_timeout_sec: float = 5.0,
+        wait_until_ready: bool = True,
+    ):
+        """Start audio capture, optionally waiting for the input stream to open."""
         if not SOUNDDEVICE_AVAILABLE:
             raise RuntimeError("sounddevice is not installed")
 
         if self._running:
             logger.warning("AudioService already running")
             return
+        if self._capture_thread and self._capture_thread.is_alive():
+            raise RuntimeError("Previous audio capture attempt is still stopping")
 
         self._loop = loop
         self._running = True
+        self._capture_error = None
+        self._capture_unavailable = True
+        self._capture_ready.clear()
+        self._set_state(self._effective_state())
 
         # Start capture thread
         self._capture_thread = threading.Thread(
@@ -163,6 +189,20 @@ class AudioService:
         )
         self._capture_thread.start()
 
+        if not wait_until_ready:
+            return
+
+        if not self._capture_ready.wait(timeout=max(0.1, startup_timeout_sec)):
+            self._running = False
+            self._cleanup_capture_after_failed_start()
+            raise RuntimeError(
+                f"Timed out after {startup_timeout_sec:.1f}s while opening the audio input"
+            )
+        if self._capture_error is not None:
+            error = self._capture_error
+            self._cleanup_capture_after_failed_start()
+            raise RuntimeError(str(error)) from error
+
         logger.info("🎤 AudioService started")
 
         self._set_state(self._effective_state())
@@ -170,24 +210,39 @@ class AudioService:
     def stop(self):
         """Stop audio capture."""
         self._running = False
-
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-
-        if self._capture_thread:
-            self._capture_thread.join(timeout=2.0)
-            self._capture_thread = None
-
+        self._cleanup_capture_resources(join_thread=True)
         self._vad.reset()
         logger.info("🎤 AudioService stopped")
 
+    def _cleanup_capture_resources(self, *, join_thread: bool) -> None:
+        """Idempotently stop capture thread/stream from all cleanup paths."""
+        thread = self._capture_thread
+        if join_thread and thread and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+            if not getattr(thread, "is_alive", lambda: False)():
+                self._capture_thread = None
+
+        with self._cleanup_lock:
+            stream = self._stream
+            self._stream = None
+            if stream:
+                with contextlib.suppress(Exception):
+                    stream.stop()
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+    def _cleanup_capture_after_failed_start(self) -> None:
+        """Release any stream that appears while start() is failing."""
+        self._capture_unavailable = True
+        self._cleanup_capture_resources(join_thread=True)
+        self._set_state(self._effective_state())
+
     def toggle_mute(self) -> bool:
         """Toggle mute state. Returns True if now muted."""
-        self._muted_by_user = not self._muted_by_user
-        self._set_state(self._effective_state())
-        self._vad.reset()
+        if self._muted_by_user:
+            self.unmute()
+        else:
+            self.mute()
         return self._muted_by_user
 
     def mute(self):
@@ -201,6 +256,12 @@ class AudioService:
         """Unmute microphone."""
         if self._muted_by_user:
             self._muted_by_user = False
+            if not self._running:
+                try:
+                    self.start(self._loop, wait_until_ready=False)
+                except Exception as exc:
+                    self._capture_unavailable = True
+                    logger.warning("Microphone is still unavailable: %s", exc)
             self._set_state(self._effective_state())
             self._vad.reset()
 
@@ -418,14 +479,26 @@ class AudioService:
 
         try:
             self._open_input_stream(audio_callback)
+            if not self._running:
+                return
+            self._capture_unavailable = False
+            self._set_state(self._effective_state())
+            self._capture_ready.set()
 
             # Keep thread alive
             while self._running:
                 time.sleep(0.1)
 
         except Exception as exc:
-            logger.error(f"Audio capture error: {exc}")
+            self._capture_error = exc
             self._running = False
+            self._capture_unavailable = True
+            self._set_state(self._effective_state())
+            self._capture_ready.set()
+            logger.warning("Audio capture unavailable: %s", exc)
+        finally:
+            if not self._running:
+                self._cleanup_capture_resources(join_thread=False)
 
     def _call_callback(self, callback: Callable, *args):
         """Call callback, handling async if needed."""

@@ -65,6 +65,10 @@ llm:
     preload_timeout_sec: 120
     turn_timeout_sec: 210
     options:
+      # Keep enough VRAM available for Whisper + Kokoro on a 12 GB GPU.
+      # Ollama may otherwise inherit a host-wide 65k context and reserve
+      # several extra gigabytes even though companion prompts are bounded.
+      num_ctx: 4096
       temperature: 0.6
       top_p: 0.9
       top_k: 40
@@ -120,9 +124,11 @@ tts:
     dtype: "bfloat16"
     attn_implementation: "sdpa"
     backend: "worker"
-    python_path: ".\\.venv-qwen3-tts\\Scripts\\python.exe"
+    # Dedicated provider environment. On WSL/Linux, the resolver maps
+    # Scripts/python.exe to bin/python without falling back to the main venv.
+    python_path: ".venv-qwen3-tts/Scripts/python.exe"
     site_packages_dir: null
-    worker_script: ".\\scripts\\qwen3_tts_worker.py"
+    worker_script: "scripts/qwen3_tts_worker.py"
     request_timeout_sec: 20
 
   routed:
@@ -140,9 +146,11 @@ tts:
   rvc:
     enabled: true
     backend: "worker"
-    python_path: ".\\venv\\Scripts\\python.exe"
-    site_packages_dir: ".\\.rvc-overlay"
-    worker_script: ".\\scripts\\rvc_worker.py"
+    # The stable RVC overlay shares the main runtime interpreter. This Windows
+    # venv path is mapped to venv/bin/python under WSL/Linux.
+    python_path: "venv/Scripts/python.exe"
+    site_packages_dir: ".rvc-overlay"
+    worker_script: "scripts/rvc_worker.py"
     model_path: "resources/voices/march7th/March-7th.pth"
     index_path: "resources/voices/march7th/March-7th.index"
     # Optional SHA-256 pins for downloaded voice artifacts. RVC .pth files are
@@ -180,9 +188,9 @@ asr:
     dtype: "bfloat16"
     max_new_tokens: 256
     backend: "worker"
-    python_path: ".\\.venv-qwen3-asr-worker\\Scripts\\python.exe"
+    python_path: ".venv-qwen3-asr-worker/Scripts/python.exe"
     site_packages_dir: null
-    worker_script: ".\\scripts\\qwen3_asr_worker.py"
+    worker_script: "scripts/qwen3_asr_worker.py"
 
 # Advanced local multimodal paths.
 # Leave these alone unless you explicitly switch mode or llm.provider.

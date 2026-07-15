@@ -10,6 +10,7 @@ from src.assistant.app import (
     Live2DAssistant,
     resolve_turn_timeout_sec,
 )
+from src.assistant.audio_service import MicState
 from src.assistant.conversation_pipeline import AudioPayload
 
 
@@ -19,6 +20,15 @@ class FakeWindow:
 
     def evaluate_js(self, code: str):
         self.calls.append(code)
+
+
+class FakeDispatchWindow(FakeWindow):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def dispatch_frontend_event(self, event_name: str, *args):
+        self.events.append((event_name, args))
 
 
 class FakeFuture:
@@ -82,17 +92,23 @@ class FakeAudioService:
     def __init__(self):
         self.state = SimpleNamespace(value="listening")
         self.processing_calls = []
+        self._capture_unavailable = False
 
     def set_processing(self, processing: bool):
         self.processing_calls.append(processing)
         self.state.value = "processing" if processing else "listening"
 
+    def toggle_mute(self):
+        self.state.value = "listening"
 
-def test_desktop_bridge_rejects_remote_and_null_origins():
+
+def test_desktop_bridge_rejects_opaque_and_file_origins():
+    assert DesktopBridgeServer._is_origin_allowed(None)
     assert DesktopBridgeServer._is_origin_allowed("http://127.0.0.1:8765")
     assert DesktopBridgeServer._is_origin_allowed("tauri://localhost")
     assert not DesktopBridgeServer._is_origin_allowed("https://evil.example")
     assert not DesktopBridgeServer._is_origin_allowed("null")
+    assert not DesktopBridgeServer._is_origin_allowed("file:///tmp/companion.html")
 
 
 def _make_assistant() -> Live2DAssistant:
@@ -115,11 +131,12 @@ def _make_assistant() -> Live2DAssistant:
     assistant._turn_counter = 0
     assistant._backend_state = "ready"
     assistant._degraded_reason = None
+    assistant._microphone_degraded_reason = None
     assistant._runtime_error = None
     assistant.audio_service = FakeAudioService()
-    assistant.config = {"mode": "pipeline", "character": {"name": "March 7th"}, "audio": {}}
+    assistant.config = {"mode": "pipeline", "character": {"name": "Starling"}, "audio": {}}
     assistant.pipeline = SimpleNamespace(
-        llm=SimpleNamespace(model="qwen3.5:4b", degraded_reason=None),
+        llm=SimpleNamespace(model="test-llm", degraded_reason=None),
         tts=SimpleNamespace(active_provider_name="qwen3", degraded_reason=None),
         process_speech=None,
         _current_language_code="en",
@@ -373,6 +390,18 @@ def test_dispatch_frontend_event_also_reaches_bridge_server():
     assert any('window.onMicStateChange?.("muted")' in call for call in assistant._window.calls)
 
 
+def test_dispatch_frontend_event_uses_structured_shell_without_duplicate_js():
+    assistant = _make_assistant()
+    assistant._window = FakeDispatchWindow()
+
+    assistant._dispatch_frontend_event("onAudioReady", {"audio": "ZmFrZQ=="})
+
+    assert assistant._window.events == [
+        ("onAudioReady", ({"audio": "ZmFrZQ=="},)),
+    ]
+    assert assistant._window.calls == []
+
+
 def test_start_turn_cancels_previous_pipeline_without_waiting(monkeypatch):
     assistant = _make_assistant()
     assistant._loop = object()
@@ -418,10 +447,23 @@ def test_get_runtime_state_exposes_backend_health_fields():
 
     assert runtime["backend_state"] == "ready"
     assert runtime["active_language"] == "en"
-    assert runtime["active_llm_model"] == "qwen3.5:4b"
+    assert runtime["active_llm_model"] == "test-llm"
     assert runtime["active_tts_provider"] == "qwen3"
     assert runtime["degraded_reason"] is None
     assert runtime["runtime_error"] is None
+
+
+def test_listening_state_clears_microphone_degradation_after_capture_recovers():
+    assistant = _make_assistant()
+    assistant._backend_state = "degraded"
+    assistant._microphone_degraded_reason = "Microphone unavailable: no input device"
+
+    assistant._on_mic_state_change(MicState.LISTENING)
+    runtime = assistant.get_runtime_state()
+
+    assert runtime["backend_state"] == "ready"
+    assert runtime["degraded_reason"] is None
+    assert assistant._microphone_degraded_reason is None
 
 
 def test_submit_text_returns_warming_up_until_backend_ready():

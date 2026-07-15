@@ -637,7 +637,7 @@
 
                     <div class="settings-card">
                         <label>Character</label>
-                        <strong id="settings-character">March 7th</strong>
+                        <strong id="settings-character">Assistant</strong>
                         <span id="settings-summary">Desktop avatar shell</span>
                     </div>
 
@@ -690,7 +690,7 @@
                     <div id="status-dot"></div>
                     <div id="status-copy">
                         <div id="status-text">Loading</div>
-                        <div id="status-meta">March 7th desktop overlay</div>
+                        <div id="status-meta">Desktop overlay</div>
                     </div>
                 </div>
 
@@ -724,7 +724,7 @@
                     </button>
 
                     <div id="dock-copy">
-                        <strong id="assistant-name">March 7th</strong>
+                        <strong id="assistant-name">Assistant</strong>
                         <span id="dock-caption">Portrait companion shell</span>
                     </div>
 
@@ -782,7 +782,6 @@
 
         const LIVE2D_CORE_SRC = './runtime-assets/live2d_sdk_web/Core/live2dcubismcore.min.js';
         const LIVE2D_MANAGER_SRC = './live2d.js';
-        const MARCH7TH_MODEL_PATH = './runtime-assets/models/march7th_tauri/';
         const COMPACT_CROP = {
             boxWidth: 368,
             boxHeight: 488,
@@ -1354,11 +1353,16 @@
                 await loadScript(LIVE2D_CORE_SRC);
                 await loadScript(LIVE2D_MANAGER_SRC);
 
+                const modelPath = state.runtime?.live2d_model_path;
+                const modelName = state.runtime?.live2d_model_name;
+                if (!modelPath || !modelName) {
+                    throw new Error('No Live2D model configured');
+                }
                 const matrix = computeLayoutMatrix(state.layout);
                 await Live2DManager.init({
                     canvasId: 'live2d-canvas',
-                    modelPath: MARCH7TH_MODEL_PATH,
-                    modelName: 'march7th.model3.json',
+                    modelPath,
+                    modelName,
                     scale: matrix.scale,
                     position: { x: matrix.translateX, y: matrix.translateY },
                     debug: true,
@@ -1544,9 +1548,9 @@
                 }
                 setStatus('Loading', 'Initializing desktop avatar shell', 'warn');
                 applySidePanels();
+                await refreshRuntime();
                 await setLayout('compact');
                 await warmupAudioRuntime(backendKind);
-                await refreshRuntime();
             } catch (error) {
                 console.error('Desktop shell init failed', error);
                 setStatus('Error', error.message, 'danger');
@@ -1805,6 +1809,10 @@
             },
             getExpressions: () => Live2DManager.getExpressionNames(),
             getMotions: () => Live2DManager.getMotionGroups(),
+        };
+
+        window.onExpressionChange = (expression) => {
+            window.Live2DAPI.setExpression(expression);
         };
 
         window.__desktopBridgeSetLayoutMode = (layout) => {

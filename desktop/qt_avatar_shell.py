@@ -669,11 +669,13 @@ class QtAvatarShell(QWidget):
         x: int | None = None,
         y: int | None = None,
         always_on_top: bool = True,
+        page_url: str | None = None,
     ):
         self._app = QApplication.instance() or QApplication(sys.argv)
         super().__init__(None)
         self._assistant = assistant
         self._html_path = html_path
+        self._page_url = page_url
         self._loaded_callback: Optional[Callable[[], None]] = None
         self._ui_settings = QSettings("LocalAICompanion", "DesktopShell")
         self._drag_origin: Optional[QPoint] = None
@@ -734,7 +736,10 @@ class QtAvatarShell(QWidget):
         self._hud_state_timer.setInterval(850)
         self._hud_state_timer.timeout.connect(self._refresh_hud_runtime_state)
 
-        self._view.setUrl(QUrl.fromLocalFile(str(self._html_path.resolve())))
+        if self._page_url:
+            self._view.setUrl(QUrl(str(self._page_url)))
+        else:
+            self._view.setUrl(QUrl.fromLocalFile(str(self._html_path.resolve())))
 
     def run(self, on_loaded: Callable[[], None]) -> int:
         self._loaded_callback = on_loaded
@@ -821,30 +826,33 @@ class QtAvatarShell(QWidget):
         if event_name == "onTranscription":
             text = str(args[0]) if args else ""
             turn_id = _as_turn_id(args[1] if len(args) > 1 else None)
-            if turn_id is not None and turn_id in self._logged_user_turn_ids:
-                return
-            if turn_id is not None:
-                self._logged_user_turn_ids.add(turn_id)
-            self._hud.append_chat_message("YOU", text)
-            self._sync_hud_geometry()
-            return
+            if turn_id is None or turn_id not in self._logged_user_turn_ids:
+                if turn_id is not None:
+                    self._logged_user_turn_ids.add(turn_id)
+                self._hud.append_chat_message("YOU", text)
+                self._sync_hud_geometry()
 
         if event_name == "onResponseEnd":
             text = str(args[0]) if args else ""
             turn_id = _as_turn_id(args[1] if len(args) > 1 else None)
-            if turn_id is not None and turn_id in self._logged_assistant_turn_ids:
-                return
-            if turn_id is not None:
-                self._logged_assistant_turn_ids.add(turn_id)
-            self._hud.append_chat_message("AI", text)
-            self._sync_hud_geometry()
-            return
+            if turn_id is None or turn_id not in self._logged_assistant_turn_ids:
+                if turn_id is not None:
+                    self._logged_assistant_turn_ids.add(turn_id)
+                self._hud.append_chat_message("AI", text)
+                self._sync_hud_geometry()
 
         if event_name == "onError":
             message = str(args[0]) if args else ""
             if message:
                 self._hud.append_chat_message("SYS", f"Error: {message}")
                 self._sync_hud_geometry()
+
+        # Remote/hybrid shells receive backend events only through this method.
+        # Forward the structured event into the page so onAudioReady and the
+        # other Live2D callbacks behave exactly like the in-process path.
+        event_json = json.dumps(str(event_name or ""), ensure_ascii=False)
+        args_json = json.dumps(args, ensure_ascii=False)
+        self._run_javascript(f"window[{event_json}]?.(...{args_json})")
 
     @pyqtSlot()
     def _close_internal(self) -> None:

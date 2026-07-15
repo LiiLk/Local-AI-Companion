@@ -51,7 +51,11 @@ from src.assistant.conversation_pipeline import ConversationPipeline, Conversati
 from src.assistant.pipeline_runtime import (
     create_pipeline_runtime,
 )
-from src.utils.character_loader import resolve_character_config
+from src.utils.character_loader import (
+    resolve_character_config,
+    resolve_live2d_desktop_model,
+    resolve_live2d_model_config,
+)
 from src.utils.config_loader import load_yaml_config
 from src.utils.logging_setup import (
     configure_root_logging,
@@ -333,7 +337,10 @@ class DesktopBridgeServer:
             return True
 
         text = str(origin).strip()
-        if text == "null":
+        # Opaque browser origins (sandboxed iframes, data: URLs, some file pages)
+        # must not bypass the local-host allowlist. Native/WebView clients that do
+        # not send an Origin header are still accepted above.
+        if text.lower() == "null":
             return False
 
         try:
@@ -381,6 +388,7 @@ class Live2DAssistant:
         self._preload_runtime_lock = threading.Lock()
         self._bridge_server: Optional[DesktopBridgeServer] = None
         self._bridge_only = False
+        self._hybrid_ui_server = None  # HybridUiHandle (Windows pet) when hybrid UI
         self._active_response_future = None
         self._turn_timeout_sec = resolve_turn_timeout_sec(self.config)
         self._turn_counter = 0
@@ -398,6 +406,7 @@ class Live2DAssistant:
         self._debug_visible = False
         self._backend_state = "warming_up"
         self._degraded_reason: Optional[str] = None
+        self._microphone_degraded_reason: Optional[str] = None
         self._runtime_error: Optional[str] = None
         self._js_api = DesktopBridgeApi(self)
         self._conversation_logger = CONVERSATION_LOGGER
@@ -650,14 +659,15 @@ class Live2DAssistant:
         return CURRENT_DESKTOP_TURN_ID.get() or self._active_turn_id
 
     def _dispatch_frontend_event(self, event_name: str, *args):
-        js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
-        self._evaluate_js(f"window.{event_name}?.({js_args})")
         window = self._window
         if window and hasattr(window, "dispatch_frontend_event"):
             try:
                 window.dispatch_frontend_event(event_name, *args)
             except Exception as exc:
                 logger.debug("Desktop shell event dispatch error (%s): %s", event_name, exc)
+        else:
+            js_args = ", ".join(json.dumps(arg, ensure_ascii=False) for arg in args)
+            self._evaluate_js(f"window.{event_name}?.({js_args})")
         if self._bridge_server:
             self._bridge_server.emit_frontend_event_sync(event_name, *args)
 
@@ -823,10 +833,19 @@ class Live2DAssistant:
 
         return llm.__class__.__name__
 
+    def _collect_extra_degraded_reason(self) -> Optional[str]:
+        extra_reasons = [
+            reason
+            for reason in (self._degraded_reason, self._microphone_degraded_reason)
+            if reason
+        ]
+        return " | ".join(dict.fromkeys(extra_reasons)) or None
+
     def _collect_degraded_reason(self) -> Optional[str]:
+        extra_reason = self._collect_extra_degraded_reason()
         pipeline_runtime = getattr(self, "_pipeline_runtime", None)
         if pipeline_runtime is not None:
-            return pipeline_runtime.collect_degraded_reason(extra_reason=self._degraded_reason)
+            return pipeline_runtime.collect_degraded_reason(extra_reason=extra_reason)
 
         parts: list[str] = []
         pipeline = self._get_active_pipeline()
@@ -841,8 +860,8 @@ class Live2DAssistant:
         if tts_reason:
             parts.append(str(tts_reason))
 
-        if self._degraded_reason:
-            parts.append(self._degraded_reason)
+        if extra_reason:
+            parts.append(extra_reason)
 
         unique_parts: list[str] = []
         for part in parts:
@@ -991,7 +1010,7 @@ class Live2DAssistant:
             backend_status = pipeline_runtime.resolve_backend_status(
                 requested_state=self._backend_state,
                 runtime_error=self._runtime_error,
-                extra_degraded_reason=self._degraded_reason,
+                extra_degraded_reason=self._collect_extra_degraded_reason(),
             )
             degraded_reason = backend_status.degraded_reason
             backend_state = backend_status.state
@@ -1004,8 +1023,7 @@ class Live2DAssistant:
                 backend_state = "degraded"
         character_name = self.config.get('character', {}).get('name', 'AI')
         character_slug = re.sub(r'[^a-z0-9]+', '', str(character_name).lower())
-        if 'march7' in character_slug:
-            character_slug = 'march7th'
+        live2d_model_path, live2d_model_name = resolve_live2d_desktop_model(self.config)
         return {
             "mode": self.config.get('mode', 'pipeline'),
             "backend_state": backend_state,
@@ -1016,6 +1034,8 @@ class Live2DAssistant:
             "debug_visible": self._debug_visible,
             "character_name": character_name,
             "character_id": character_slug or "default",
+            "live2d_model_path": live2d_model_path,
+            "live2d_model_name": live2d_model_name,
             "active_language": getattr(self._get_active_pipeline(), "_current_language_code", None),
             "active_llm_model": self._active_llm_model_name(),
             "active_tts_provider": self._active_tts_provider_name(),
@@ -1175,6 +1195,12 @@ class Live2DAssistant:
     
     def _on_mic_state_change(self, state: MicState):
         """Called when mic state changes."""
+        if state == MicState.LISTENING and self._microphone_degraded_reason:
+            self._microphone_degraded_reason = None
+            if self._backend_state != "warming_up" and not self._runtime_error:
+                self._backend_state = (
+                    "degraded" if self._collect_degraded_reason() else "ready"
+                )
         self._dispatch_frontend_event("onMicStateChange", state.value)
     
     async def _on_transcription(self, text: str):
@@ -1358,15 +1384,29 @@ class Live2DAssistant:
             degraded_reason = self._collect_degraded_reason()
             self._set_backend_health(
                 state="degraded" if degraded_reason else "ready",
-                degraded_reason=degraded_reason,
+                degraded_reason=None,
                 runtime_error=None,
             )
             if self.audio_service and self._loop and not self.audio_service._running:
-                self.audio_service.start(self._loop)
-                self._mark_startup_step("audio_capture_started")
-                logger.info("✅ Audio capture enabled after model preload")
+                try:
+                    self.audio_service.start(self._loop)
+                    self._mark_startup_step("audio_capture_started")
+                    logger.info("✅ Audio capture enabled after model preload")
+                except RuntimeError as exc:
+                    if not self.audio_service.is_muted:
+                        raise
+                    logger.warning(
+                        "Audio capture unavailable while starting muted; continuing without microphone: %s",
+                        exc,
+                    )
+                    self._microphone_degraded_reason = f"Microphone unavailable: {exc}"
+                    self._set_backend_health(
+                        state="degraded",
+                        runtime_error=None,
+                    )
+                    self._mark_startup_step("audio_capture_unavailable")
             self._dispatch_frontend_event("onBackendReady", self.get_runtime_state())
-            self._finish_startup_profile("degraded" if degraded_reason else "ready")
+            self._finish_startup_profile("degraded" if self._collect_degraded_reason() else "ready")
 
         except Exception as e:
             self._set_backend_health(state="error", runtime_error=str(e))
@@ -1507,10 +1547,20 @@ class Live2DAssistant:
     
     # ==================== Main ====================
     
-    def start(self, bridge_only: bool = False, bridge_port: int = 8765, shell: str = "qt"):
-        """Start the assistant application."""
+    def start(
+        self,
+        bridge_only: bool = False,
+        bridge_port: int = 8765,
+        shell: str = "qt",
+        hybrid_windows_ui: bool = False,
+    ):
+        """Start the assistant application.
+
+        hybrid_windows_ui (WSL): run the pipeline + bridge in WSL, open the
+        Windows-native transparent pet shell (PyQt6) via WSL interop.
+        """
         logger.info("🚀 Starting Live2D Assistant...")
-        self._bridge_only = bridge_only
+        self._bridge_only = bridge_only or hybrid_windows_ui
         self._shutdown_requested.clear()
         self._running = True
         
@@ -1518,7 +1568,7 @@ class Live2DAssistant:
         self._create_components()
         
         # Setup hotkeys only for the legacy pywebview shell.
-        if not bridge_only:
+        if not self._bridge_only:
             self._setup_hotkeys()
         
         # Create event loop and run it in a background thread
@@ -1536,20 +1586,52 @@ class Live2DAssistant:
         self._mark_startup_step("event_loop_started")
         logger.info("✅ Event loop started in background thread")
 
-        if bridge_only:
+        if self._bridge_only:
             self._bridge_server = DesktopBridgeServer(self, port=bridge_port)
             asyncio.run_coroutine_threadsafe(self._bridge_server.start(), self._loop).result(timeout=5)
             self._mark_startup_step("bridge_server_started")
             logger.info("Bridge-only desktop backend enabled on port %s", bridge_port)
+            if hybrid_windows_ui:
+                try:
+                    from src.utils.wsl_hybrid_ui import start_hybrid_windows_ui
+
+                    model_path, _ = resolve_live2d_model_config(self.config)
+                    self._hybrid_ui_server = start_hybrid_windows_ui(
+                        bridge_port=bridge_port,
+                        model_path=model_path,
+                    )
+                    self._mark_startup_step("hybrid_windows_ui_started")
+                    logger.info(
+                        "Hybrid mode: backend in WSL, host UI initialized"
+                    )
+                except Exception as exc:
+                    logger.error("Hybrid Windows UI failed to start: %s", exc, exc_info=True)
+                    logger.error(
+                        "Manual fallback — Windows PowerShell:\n"
+                        "  venv\\Scripts\\python.exe scripts\\windows_pet_shell.py "
+                        "--bridge-url ws://127.0.0.1:%s",
+                        bridge_port,
+                    )
         
         # Pre-load models without blocking the window, then start audio capture
         self._start_background_preload()
 
         # Create and start window
-        if bridge_only:
-            logger.info("Running in bridge-only mode (no pywebview window)")
+        if self._bridge_only:
+            logger.info(
+                "Running in bridge-only mode (%s)",
+                "WSL backend + Windows UI" if hybrid_windows_ui else "no local window",
+            )
             try:
                 while self._running:
+                    process = getattr(self._hybrid_ui_server, "process", None)
+                    if (
+                        hybrid_windows_ui
+                        and process is not None
+                        and process.poll() is not None
+                    ):
+                        logger.info("Hybrid Windows UI exited; stopping the WSL backend")
+                        break
                     time.sleep(0.2)
             except KeyboardInterrupt:
                 pass
@@ -1641,6 +1723,11 @@ class Live2DAssistant:
                 finally:
                     self._preload_runtime_lock.release()
         
+        if self._hybrid_ui_server is not None:
+            with contextlib.suppress(Exception):
+                self._hybrid_ui_server.stop()
+            self._hybrid_ui_server = None
+
         if self._bridge_server and self._loop:
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -1708,11 +1795,38 @@ def main():
         default='qt',
         help='Desktop shell to launch when not in bridge-server mode'
     )
+    parser.add_argument(
+        '--hybrid-windows-ui',
+        action='store_true',
+        help=(
+            'WSL: run backend/bridge here and launch the Windows-native '
+            'transparent pet shell (option A). Default on WSL unless '
+            'LOCAL_AI_FORCE_WSL_DESKTOP=1.'
+        ),
+    )
+    parser.add_argument(
+        '--force-wsl-desktop',
+        action='store_true',
+        help='WSL: force Qt/pywebview inside WSLg instead of hybrid Windows UI',
+    )
     
     args = parser.parse_args()
     
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    hybrid = bool(args.hybrid_windows_ui)
+    force_wsl_desktop = bool(args.force_wsl_desktop) or os.environ.get(
+        "LOCAL_AI_FORCE_WSL_DESKTOP", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    try:
+        from src.utils.platform_compat import is_wsl
+
+        # On WSL, default to hybrid: pipeline in Linux, avatar window on Windows.
+        if is_wsl() and not args.bridge_server and not force_wsl_desktop:
+            hybrid = True
+    except Exception:
+        pass
     
     # Handle Ctrl+C gracefully
     app = Live2DAssistant(config_path=args.config)
@@ -1723,7 +1837,12 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    app.start(bridge_only=args.bridge_server, bridge_port=args.bridge_port, shell=args.desktop_shell)
+    app.start(
+        bridge_only=bool(args.bridge_server or hybrid),
+        bridge_port=args.bridge_port,
+        shell=args.desktop_shell,
+        hybrid_windows_ui=bool(hybrid),
+    )
 
 
 if __name__ == "__main__":

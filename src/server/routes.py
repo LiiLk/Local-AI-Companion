@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from pathlib import PurePath, PureWindowsPath
 
+from src.utils.character_loader import resolve_live2d_web_model
+
 router = APIRouter(tags=["API"])
 
 
@@ -24,6 +26,8 @@ class ConfigResponse(BaseModel):
     tts_provider: str
     tts_voice: str
     asr_model: str
+    live2d_model_path: str | None = None
+    live2d_model_name: str | None = None
 
 
 def public_voice_label(value: object, fallback: str) -> str:
@@ -99,13 +103,16 @@ async def get_config(request: Request):
             tts_voice = tts.get("kokoro_voice", tts.get("voice", "ff_siwis"))
         asr_model = asr.get("model_size", "base")
 
+    live2d_model_path, live2d_model_name = resolve_live2d_web_model(config)
     return ConfigResponse(
         mode=mode,
         character_name=character.get("name", "AI"),
         llm_model=llm_model,
         tts_provider=tts_provider,
         tts_voice=tts_voice,
-        asr_model=asr_model
+        asr_model=asr_model,
+        live2d_model_path=live2d_model_path,
+        live2d_model_name=live2d_model_name,
     )
 
 

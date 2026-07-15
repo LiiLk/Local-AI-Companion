@@ -14,7 +14,7 @@
     response_active: false,
     playback_active: false,
     debug_visible: false,
-    character_name: "March 7th",
+    character_name: "Assistant",
     backend: "assistant-bridge",
   };
 
@@ -55,6 +55,9 @@
   }
 
   async function ensureBridgeReady() {
+    const embeddedQtHost = window.location.protocol === "file:"
+      || /QtWebEngine/i.test(window.navigator?.userAgent || "");
+    // Prefer in-process desktop hosts (Qt / pywebview / Tauri app).
     if (hasQt()) {
       await ensureQtBridge();
       return "qt";
@@ -69,8 +72,12 @@
       return "tauri";
     }
 
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    // Embedded Qt pages must use QWebChannel. Opening a websocket fallback in
+    // the same page would create a second backend client and duplicate events.
+    const attempts = embeddedQtHost ? 100 : 8;
+    const delayMs = embeddedQtHost ? 100 : 50;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
       if (hasQt()) {
         await ensureQtBridge();
         return "qt";
@@ -84,7 +91,21 @@
       }
     }
 
-    throw new Error("No desktop bridge available");
+    if (embeddedQtHost) {
+      throw new Error("Qt WebChannel did not become available");
+    }
+
+    // Standalone browser shell: connect directly to the assistant websocket.
+    // Reuses the existing "tauri" command protocol over ws://127.0.0.1:<port>.
+    try {
+      await ensureTauriSocket();
+      return "tauri";
+    } catch (error) {
+      throw new Error(
+        `No desktop bridge available (${error?.message || error}). `
+        + `Expected Qt/pywebview host, or assistant bridge at ${websocketUrl()}.`
+      );
+    }
   }
 
   async function ensureQtBridge() {

@@ -88,16 +88,20 @@ class Qwen3ASRProvider(BaseASR):
         self.dtype = dtype
         self.max_new_tokens = max_new_tokens
         self.backend = (backend or "worker").lower()
-        self.python_path = (
-            Path(python_path).resolve() if python_path else Path(sys.executable).resolve()
+        from src.utils.platform_compat import (
+            resolve_project_path,
+            resolve_python_executable,
+            resolve_worker_script,
         )
-        self.site_packages_dir = (
-            Path(site_packages_dir).resolve() if site_packages_dir else None
+
+        self.python_path = resolve_python_executable(python_path, project_root=PROJECT_ROOT)
+        self.site_packages_dir = resolve_project_path(
+            site_packages_dir, project_root=PROJECT_ROOT
         )
-        self.worker_script = (
-            Path(worker_script).resolve()
-            if worker_script
-            else DEFAULT_QWEN3_ASR_WORKER.resolve()
+        self.worker_script = resolve_worker_script(
+            worker_script,
+            DEFAULT_QWEN3_ASR_WORKER,
+            project_root=PROJECT_ROOT,
         )
         self._model = None
         self._load_lock = threading.Lock()
@@ -108,35 +112,12 @@ class Qwen3ASRProvider(BaseASR):
 
     @staticmethod
     def _kill_process_tree(process: subprocess.Popen[str]) -> None:
-        if os.name == "nt":
-            pid = int(process.pid)
-            if pid <= 0:
-                return
-            system_root = Path(os.environ.get("SystemRoot", "C:/Windows"))
-            taskkill = system_root / "System32" / "taskkill.exe"
-            taskkill_exe = str(taskkill.resolve()) if taskkill.is_file() else "taskkill"
-            command = [taskkill_exe, "/PID", str(pid), "/T", "/F"]
-            try:
-                # Fixed taskkill command with validated PID and shell=False.
-                subprocess.run(  # nosec B603
-                    command,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=10,
-                    check=False,
-                    shell=False,
-                )
-                return
-            except Exception:
-                logger.debug("Failed to terminate Qwen3-ASR worker process tree", exc_info=True)
+        from src.utils.platform_compat import kill_process_tree
 
         try:
-            process.kill()
-            process.wait(timeout=5)
+            kill_process_tree(process)
         except Exception:
-            logger.debug("Failed to kill Qwen3-ASR worker process", exc_info=True)
+            logger.debug("Failed to terminate Qwen3-ASR worker process tree", exc_info=True)
 
     @staticmethod
     def _normalize_language_code(language: Optional[str]) -> Optional[str]:
@@ -224,16 +205,22 @@ class Qwen3ASRProvider(BaseASR):
         if backend == "inprocess":
             return True
 
-        python_path_resolved = (
-            Path(python_path).resolve() if python_path else Path(sys.executable).resolve()
+        from src.utils.platform_compat import (
+            resolve_project_path,
+            resolve_python_executable,
+            resolve_worker_script,
         )
-        site_packages_resolved = (
-            Path(site_packages_dir).resolve() if site_packages_dir else None
+
+        python_path_resolved = resolve_python_executable(
+            python_path, project_root=PROJECT_ROOT
         )
-        worker_script_resolved = (
-            Path(worker_script).resolve()
-            if worker_script
-            else DEFAULT_QWEN3_ASR_WORKER.resolve()
+        site_packages_resolved = resolve_project_path(
+            site_packages_dir, project_root=PROJECT_ROOT
+        )
+        worker_script_resolved = resolve_worker_script(
+            worker_script,
+            DEFAULT_QWEN3_ASR_WORKER,
+            project_root=PROJECT_ROOT,
         )
         return cls._worker_import_check(
             python_path=python_path_resolved,
@@ -275,6 +262,8 @@ class Qwen3ASRProvider(BaseASR):
         if self._worker_process is not None:
             return
 
+        from src.utils.platform_compat import is_windows
+
         self._validate_worker_process_inputs(self.python_path, self.worker_script)
         # Validated local worker script, shell=False.
         process = subprocess.Popen(  # nosec B603
@@ -288,6 +277,7 @@ class Qwen3ASRProvider(BaseASR):
             errors="replace",
             bufsize=1,
             shell=False,
+            start_new_session=not is_windows(),
         )
 
         self._worker_process = process
