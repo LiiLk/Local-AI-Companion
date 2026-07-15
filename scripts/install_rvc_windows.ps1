@@ -12,6 +12,7 @@ if (-not (Test-Path $PythonExe)) {
 
 $installPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $InstallDir))
 $requirementsFile = Join-Path (Get-Location) "scripts\requirements-rvc-worker.txt"
+$fairseqArchive = "https://github.com/One-sixth/fairseq/archive/44800430a728c2216fd1cf1e8daa672f50dfacba.zip"
 if (-not (Test-Path $requirementsFile)) {
     throw "RVC requirements file not found: $requirementsFile"
 }
@@ -64,7 +65,7 @@ set INCLUDE=$msvcRoot\include;C:\Program Files (x86)\Microsoft Visual Studio\202
 set LIB=$msvcRoot\lib\x64;C:\Program Files (x86)\Windows Kits\10\Lib\$sdkVersion\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\Lib\$sdkVersion\um\x64
 set LIBPATH=$msvcRoot\lib\x64;C:\Program Files (x86)\Windows Kits\10\Lib\$sdkVersion\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\Lib\$sdkVersion\um\x64
 "$PythonExe" -m pip install --upgrade --target "$stagingPath" -r "$requirementsFile"
-"$PythonExe" -m pip install --upgrade --target "$stagingPath" "inferrvc==1.0" --no-deps
+"$PythonExe" -m pip install --upgrade --target "$stagingPath" --no-deps "$fairseqArchive" "torchcrepe==0.0.24" "inferrvc==1.0"
 "@
 
 Set-Content -Path $cmdPath -Value $cmd -Encoding ASCII

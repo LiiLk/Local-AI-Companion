@@ -47,6 +47,30 @@ def test_resolve_python_maps_windows_venv_to_posix(tmp_path, monkeypatch):
     assert resolved == linux_python.absolute()
 
 
+def test_resolve_python_prefers_native_venv_twin(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform_compat, "is_windows", lambda: False)
+    linux_python = _executable(tmp_path / "venv" / "bin" / "python")
+    _executable(tmp_path / "venv" / "Scripts" / "python.exe")
+
+    resolved = platform_compat.resolve_python_executable(
+        "venv/Scripts/python.exe",
+        project_root=tmp_path,
+    )
+
+    assert resolved == linux_python.absolute()
+
+
+def test_windows_rvc_installer_keeps_core_packages():
+    installer = (
+        Path(__file__).parents[1] / "scripts" / "install_rvc_windows.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "fairseq/archive/44800430a728c2216fd1cf1e8daa672f50dfacba.zip" in installer
+    assert '"torchcrepe==0.0.24"' in installer
+    assert '"inferrvc==1.0"' in installer
+    assert "--no-deps" in installer
+
+
 def test_resolve_python_maps_posix_venv_to_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_compat, "is_windows", lambda: True)
     windows_python = _executable(tmp_path / ".venv-worker" / "Scripts" / "python.exe")

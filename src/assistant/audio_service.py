@@ -170,6 +170,8 @@ class AudioService:
         if self._running:
             logger.warning("AudioService already running")
             return
+        if self._capture_thread and self._capture_thread.is_alive():
+            raise RuntimeError("Previous audio capture attempt is still stopping")
 
         self._loop = loop
         self._running = True

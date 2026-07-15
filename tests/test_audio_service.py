@@ -165,6 +165,22 @@ def test_audio_service_start_surfaces_capture_failure(monkeypatch):
     assert service._capture_thread is None
 
 
+def test_audio_service_start_rejects_retry_while_previous_thread_is_alive(monkeypatch):
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    service = make_audio_service_state()
+    service._capture_thread = AliveThread()
+    monkeypatch.setattr("src.assistant.audio_service.SOUNDDEVICE_AVAILABLE", True)
+
+    with pytest.raises(RuntimeError, match="still stopping"):
+        service.start()
+
+    assert service._capture_thread is not None
+    assert service._running is False
+
+
 def test_audio_service_start_timeout_closes_late_stream(monkeypatch):
     class FakeStream:
         def __init__(self):

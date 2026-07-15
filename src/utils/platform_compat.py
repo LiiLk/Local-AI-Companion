@@ -176,7 +176,9 @@ def resolve_python_executable(
         if is_windows()
         else _windows_venv_python_to_posix(path)
     )
-    candidates = [path, *mapped_candidates]
+    # On the opposite platform, prefer the native venv twin even when both
+    # layouts exist in the checkout.
+    candidates = [*mapped_candidates, path]
 
     seen: set[str] = set()
     for candidate in candidates:
