@@ -291,6 +291,7 @@ def create_pipeline_llm(config: dict) -> tuple[Any, str]:
         base_url=ollama_config.get("base_url", "http://localhost:11434"),
         think=ollama_config.get("think"),
         options=ollama_config.get("options"),
+        keep_alive=ollama_config.get("keep_alive"),
         request_timeout_sec=ollama_config.get("request_timeout_sec", 180),
         preload_timeout_sec=ollama_config.get("preload_timeout_sec", 120),
     )

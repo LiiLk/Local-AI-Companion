@@ -307,6 +307,10 @@ ollama pull qwen3.5:4b
 
 Make sure Ollama is running on `http://localhost:11434`.
 
+The tracked configuration keeps the active Ollama model loaded for 30 minutes
+to avoid a cold reload after a short pause. Override `llm.ollama.keep_alive` in
+`config/config.local.yaml` when a different memory/latency tradeoff is needed.
+
 #### Option B: OpenRouter (optional)
 
 Set `OPENROUTER_API_KEY` in your environment, then switch the provider in

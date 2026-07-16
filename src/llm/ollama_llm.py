@@ -25,6 +25,7 @@ class OllamaLLM(BaseLLM):
         base_url: str = "http://localhost:11434",
         think: bool | None = None,
         options: dict[str, Any] | None = None,
+        keep_alive: str | int | None = None,
         request_timeout_sec: float = 180.0,
         preload_timeout_sec: float = 120.0,
     ):
@@ -32,6 +33,7 @@ class OllamaLLM(BaseLLM):
         self.base_url = base_url
         self.think = think
         self.options = dict(options or {})
+        self.keep_alive = keep_alive
         self.request_timeout_sec = float(request_timeout_sec)
         self.preload_timeout_sec = float(preload_timeout_sec)
         self.degraded_reason: str | None = None
@@ -56,6 +58,8 @@ class OllamaLLM(BaseLLM):
             payload["think"] = self.think
         if self.options:
             payload["options"] = self.options
+        if self.keep_alive is not None:
+            payload["keep_alive"] = self.keep_alive
         return payload
 
     def _should_retry_without_think(self, error_text: str) -> bool:
