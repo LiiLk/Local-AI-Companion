@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -91,6 +92,8 @@ LAYOUT_SIZES: dict[str, tuple[int, int]] = {
     "compact": (860, 760),
     "expanded": (1040, 980),
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_windows_borderless_style(widget: QWidget, *, click_through: bool, no_activate: bool) -> None:
@@ -974,11 +977,9 @@ class QtAvatarShell(QWidget):
         try:
             self._assistant.request_shutdown("qt_hud")
         except Exception as exc:
-            self._quit_in_progress = False
-            self._hud.append_chat_message("SYS", f"Quit failed: {exc}")
-            self._sync_hud_geometry()
-            return
-        self._close_internal()
+            logger.warning("Backend shutdown request failed; closing the shell: %s", exc)
+        finally:
+            self._close_internal()
 
     def _toggle_chat(self) -> None:
         self._hud.toggle_chat_panel()

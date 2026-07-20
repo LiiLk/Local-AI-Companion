@@ -278,18 +278,20 @@ class DesktopBridgeServer:
             )
             return
 
-        await self._send_json(
-            websocket,
-            {
-                "type": "command_result",
-                "request_id": request_id,
-                "name": name,
-                "ok": True,
-                "result": self._with_backend(result),
-            },
-        )
-        if shutdown_after_response:
-            self._assistant.request_shutdown("bridge")
+        try:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "command_result",
+                    "request_id": request_id,
+                    "name": name,
+                    "ok": True,
+                    "result": self._with_backend(result),
+                },
+            )
+        finally:
+            if shutdown_after_response:
+                self._assistant.request_shutdown("bridge")
 
     async def _send_backend_ready(self, websocket) -> None:
         await self._send_json(

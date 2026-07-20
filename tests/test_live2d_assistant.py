@@ -5,6 +5,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from src.assistant.app import (
     CURRENT_DESKTOP_TURN_ID,
     DesktopBridgeServer,
@@ -137,6 +139,30 @@ def test_bridge_acknowledges_quit_before_requesting_shutdown():
     assert payload["ok"] is True
     assert payload["result"]["status"] == "stopping"
     assert events[1] == ("shutdown", "bridge")
+
+
+def test_bridge_requests_shutdown_when_quit_acknowledgement_fails():
+    events = []
+
+    class Assistant:
+        def request_shutdown(self, source):
+            events.append(("shutdown", source))
+
+    class WebSocket:
+        async def send(self, payload):
+            raise ConnectionError("client disconnected")
+
+    server = DesktopBridgeServer(Assistant())
+    message = {
+        "type": "command",
+        "name": "quit",
+        "request_id": "quit-1",
+    }
+
+    with pytest.raises(ConnectionError, match="client disconnected"):
+        asyncio.run(server._handle_message(WebSocket(), json.dumps(message)))
+
+    assert events == [("shutdown", "bridge")]
 
 
 def _make_assistant() -> Live2DAssistant:

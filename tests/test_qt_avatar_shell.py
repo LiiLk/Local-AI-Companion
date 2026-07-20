@@ -18,11 +18,14 @@ class FakeQtShell:
 
 
 class FakeShutdownAssistant:
-    def __init__(self, calls):
+    def __init__(self, calls, error=None):
         self.calls = calls
+        self.error = error
 
     def request_shutdown(self, source: str) -> None:
         self.calls.append(("shutdown", source))
+        if self.error:
+            raise self.error
 
 
 class FakeQuitShell:
@@ -54,6 +57,15 @@ def test_quit_requests_backend_cleanup_before_closing_shell():
     shell = FakeQuitShell()
 
     QtAvatarShell._request_quit(shell)
+    QtAvatarShell._request_quit(shell)
+
+    assert shell.calls == [("shutdown", "qt_hud"), "close"]
+
+
+def test_quit_closes_shell_when_backend_request_fails():
+    shell = FakeQuitShell()
+    shell._assistant = FakeShutdownAssistant(shell.calls, ConnectionError("disconnected"))
+
     QtAvatarShell._request_quit(shell)
 
     assert shell.calls == [("shutdown", "qt_hud"), "close"]
