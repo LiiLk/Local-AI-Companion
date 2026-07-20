@@ -24,6 +24,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _create_quit_hotkey(shell, keyboard_module):
+    """Create the one host-side shortcut needed by the WSL bridge shell."""
+    return keyboard_module.GlobalHotKeys({"<ctrl>+<shift>+q": shell.request_quit})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Windows pet shell (bridge client)")
     parser.add_argument(
@@ -109,10 +114,23 @@ def main() -> int:
             log.debug("onBackendReady: %s", exc)
 
     log.info("Starting transparent desktop pet shell (Windows-native)")
+    hotkey_listener = None
     try:
+        try:
+            from pynput import keyboard
+
+            hotkey_listener = _create_quit_hotkey(shell, keyboard)
+            hotkey_listener.start()
+            log.info("Quit shortcut enabled: Ctrl+Shift+Q")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Global quit shortcut unavailable (%s); use the QUIT button", exc)
         return int(shell.run(on_loaded) or 0)
     finally:
-        proxy.close()
+        try:
+            if hotkey_listener is not None:
+                hotkey_listener.stop()
+        finally:
+            proxy.close()
 
 
 if __name__ == "__main__":

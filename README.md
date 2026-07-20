@@ -260,6 +260,10 @@ WSL it automatically starts the backend locally and the Windows-native pet
 shell. For the browser UI instead, run `bash scripts/run_wsl.sh web`, then open
 **http://localhost:8000/web/** in Windows Edge/Chrome.
 
+Use the HUD `QUIT` button or `Ctrl+Shift+Q` to stop the desktop shell and its
+backend cleanly on both Windows and WSL
+([LIL-50](docs/lil-50-graceful-quit.md)).
+
 The RVC setup installs dependencies only. Configure your own trusted model in
 the active character preset or `config.local.yaml`; the FAISS index is optional
 when the configured `index_rate` is `0`.

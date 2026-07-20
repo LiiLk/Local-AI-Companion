@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import Future
+import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -111,6 +112,33 @@ def test_desktop_bridge_rejects_opaque_and_file_origins():
     assert not DesktopBridgeServer._is_origin_allowed("file:///tmp/companion.html")
 
 
+def test_bridge_acknowledges_quit_before_requesting_shutdown():
+    events = []
+
+    class Assistant:
+        def request_shutdown(self, source):
+            events.append(("shutdown", source))
+
+    class WebSocket:
+        async def send(self, payload):
+            events.append(("send", payload))
+
+    server = DesktopBridgeServer(Assistant())
+    message = {
+        "type": "command",
+        "name": "quit",
+        "request_id": "quit-1",
+    }
+
+    asyncio.run(server._handle_message(WebSocket(), json.dumps(message)))
+
+    assert events[0][0] == "send"
+    payload = json.loads(events[0][1])
+    assert payload["ok"] is True
+    assert payload["result"]["status"] == "stopping"
+    assert events[1] == ("shutdown", "bridge")
+
+
 def _make_assistant() -> Live2DAssistant:
     assistant = Live2DAssistant.__new__(Live2DAssistant)
     assistant._window = FakeWindow()
@@ -147,6 +175,22 @@ def _make_assistant() -> Live2DAssistant:
     assistant._shutdown_requested = threading.Event()
     assistant._preload_runtime_lock = threading.Lock()
     return assistant
+
+
+def test_request_shutdown_is_idempotent_and_closes_window():
+    assistant = _make_assistant()
+    assistant._running = True
+    close_calls = []
+    assistant._window.close = lambda: close_calls.append("close")
+
+    first = assistant.request_shutdown("test")
+    second = assistant.request_shutdown("test-again")
+
+    assert first == {"status": "stopping"}
+    assert second == {"status": "stopping"}
+    assert assistant._running is False
+    assert assistant._shutdown_requested.is_set()
+    assert close_calls == ["close"]
 
 
 def test_interrupt_current_turn_cancels_future_and_stops_playback():

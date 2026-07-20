@@ -117,8 +117,9 @@ class BridgeProxyAssistant:
             # Fail any waiters
             with self._lock:
                 for waiter in self._pending.values():
-                    waiter["error"] = "bridge disconnected"
-                    waiter["event"].set()
+                    if not waiter["event"].is_set():
+                        waiter["error"] = "bridge disconnected"
+                        waiter["event"].set()
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         mtype = message.get("type")
@@ -206,6 +207,9 @@ class BridgeProxyAssistant:
 
     def toggle_debug(self) -> dict[str, Any]:
         return self._rpc("toggle_debug")
+
+    def request_shutdown(self, source: str = "windows-shell") -> dict[str, Any]:
+        return self._rpc("quit", timeout=5.0)
 
     def close(self) -> None:
         self._closed.set()

@@ -270,6 +270,7 @@ class DragHandle(QWidget):
 class HudOverlay(QWidget):
     toggle_mute_requested = pyqtSignal()
     interrupt_requested = pyqtSignal()
+    quit_requested = pyqtSignal()
     toggle_chat_requested = pyqtSignal()
     chat_send_requested = pyqtSignal(str)
     toggle_settings_requested = pyqtSignal()
@@ -401,6 +402,10 @@ class HudOverlay(QWidget):
                 background: rgba(255, 122, 122, 0.18);
                 color: #ffd6d6;
             }
+            QPushButton#quitButton {
+                border-color: rgba(255, 128, 128, 0.5);
+                color: #ffd6d6;
+            }
             """
         )
 
@@ -493,6 +498,8 @@ class HudOverlay(QWidget):
         self._mute_button = QPushButton("MIC", root)
         self._mute_button.setObjectName("muteButton")
         self._stop_button = QPushButton("STOP", root)
+        self._quit_button = QPushButton("QUIT", root)
+        self._quit_button.setObjectName("quitButton")
         self._chat_button = QPushButton("CHAT", root)
         self._settings_button = QPushButton("SET", root)
         self._layout_button = QPushButton("EXPAND", root)
@@ -503,6 +510,7 @@ class HudOverlay(QWidget):
         self._buttons_layout.setSpacing(6)
         self._buttons_layout.addWidget(self._mute_button)
         self._buttons_layout.addWidget(self._stop_button)
+        self._buttons_layout.addWidget(self._quit_button)
         self._buttons_layout.addWidget(self._chat_button)
         self._buttons_layout.addWidget(self._settings_button)
         self._buttons_layout.addWidget(self._layout_button)
@@ -523,6 +531,7 @@ class HudOverlay(QWidget):
 
         self._mute_button.clicked.connect(self.toggle_mute_requested)
         self._stop_button.clicked.connect(self.interrupt_requested)
+        self._quit_button.clicked.connect(self.quit_requested)
         self._chat_button.clicked.connect(self.toggle_chat_requested)
         self._settings_button.clicked.connect(self.toggle_settings_requested)
         self._layout_button.clicked.connect(self.toggle_layout_requested)
@@ -532,6 +541,7 @@ class HudOverlay(QWidget):
         self._drag_handle.drag_moved.connect(self._on_drag_moved)
         self._drag_handle.drag_ended.connect(self._on_drag_ended)
         self._drag_handle.setToolTip("Drag avatar. Quit: Ctrl+Shift+Q")
+        self._quit_button.setToolTip("Quit Local AI Companion")
         self._settings_button.setToolTip("Settings")
         self._layout_button.setToolTip("Switch compact/expanded")
 
@@ -657,6 +667,7 @@ class QtAvatarShell(QWidget):
     evaluate_js_requested = pyqtSignal(str)
     frontend_event_requested = pyqtSignal(str, str)
     close_requested = pyqtSignal()
+    quit_requested = pyqtSignal()
     layout_mode_requested = pyqtSignal(str)
 
     def __init__(
@@ -683,6 +694,7 @@ class QtAvatarShell(QWidget):
         self._layout_mode = "compact"
         self._logged_user_turn_ids: set[int] = set()
         self._logged_assistant_turn_ids: set[int] = set()
+        self._quit_in_progress = False
 
         flags = (
             Qt.WindowType.Tool
@@ -721,11 +733,13 @@ class QtAvatarShell(QWidget):
         self.evaluate_js_requested.connect(self._run_javascript)
         self.frontend_event_requested.connect(self._handle_frontend_event)
         self.close_requested.connect(self._close_internal)
+        self.quit_requested.connect(self._request_quit)
         self.layout_mode_requested.connect(self._apply_layout_mode)
 
         self._hud = HudOverlay(self, always_on_top=always_on_top)
         self._hud.toggle_mute_requested.connect(self._toggle_mute)
         self._hud.interrupt_requested.connect(self._interrupt_turn)
+        self._hud.quit_requested.connect(self.request_quit)
         self._hud.toggle_chat_requested.connect(self._toggle_chat)
         self._hud.chat_send_requested.connect(self._send_chat_text)
         self._hud.toggle_settings_requested.connect(self._toggle_settings)
@@ -767,6 +781,10 @@ class QtAvatarShell(QWidget):
 
     def close(self) -> None:  # type: ignore[override]
         self.close_requested.emit()
+
+    def request_quit(self) -> None:
+        """Thread-safe entry point for the HUD and host hotkey listener."""
+        self.quit_requested.emit()
 
     def start_drag(self, screen_x: int, screen_y: int) -> None:
         self._drag_origin = QPoint(screen_x, screen_y)
@@ -946,6 +964,21 @@ class QtAvatarShell(QWidget):
         except Exception:
             return
         self._refresh_hud_runtime_state()
+
+    @pyqtSlot()
+    def _request_quit(self) -> None:
+        if self._quit_in_progress:
+            return
+
+        self._quit_in_progress = True
+        try:
+            self._assistant.request_shutdown("qt_hud")
+        except Exception as exc:
+            self._quit_in_progress = False
+            self._hud.append_chat_message("SYS", f"Quit failed: {exc}")
+            self._sync_hud_geometry()
+            return
+        self._close_internal()
 
     def _toggle_chat(self) -> None:
         self._hud.toggle_chat_panel()
