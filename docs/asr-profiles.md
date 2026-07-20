@@ -38,7 +38,7 @@ Windows-friendly: full NeMo is the risk called out in LIL-45/LIL-48; ONNX avoids
 
 | Item | Value |
 |---|---|
-| Public default? | **No** — opt-in only until Go decision is documented |
+| Public default? | **No** — validated on Windows and WSL, but kept opt-in because coverage is narrower and there is no Whisper fallback |
 | Install impact if unused | None (`requirements-optional-parakeet.txt`) |
 | Languages | 25 European (fr, en, es, de, …) — **not** zh/ja/ar/ko/hi |
 | Runtime | CPU by default (`CPUExecutionProvider`) |

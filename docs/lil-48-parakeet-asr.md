@@ -7,7 +7,7 @@ than Whisper `small` / `quality-local`, without forcing a heavy NeMo stack on ev
 
 Related: [LIL-45](https://linear.app/lilkorp/issue/LIL-45), [LIL-37](https://linear.app/lilkorp/issue/LIL-37), [LIL-35](https://linear.app/lilkorp/issue/LIL-35).
 
-## Decision (current)
+## Final decision
 
 | Question | Answer |
 |---|---|
@@ -15,13 +15,40 @@ Related: [LIL-45](https://linear.app/lilkorp/issue/LIL-45), [LIL-37](https://lin
 | Runtime | **onnx-asr** (ONNX Runtime), **not** full NVIDIA NeMo |
 | Public default? | **No** — remains **opt-in** |
 | Heavy dep if unused? | **No** — optional file only |
-| Go / No-Go for default | **Pending** your Windows live bakeoff |
+| Windows + WSL live paths? | **Validated** |
+| Go / No-Go | **Go for opt-in; No-Go for public default** |
 
-Why not flip default yet (ticket AC):
+Why the public default stays on Whisper:
 
-1. No checked-in FR/EN WER + latency + VRAM table on *this* machine.
-2. Language coverage is EU-only (breaking change for non-EU users if defaulted).
-3. First-run model download + optional install must stay non-blocking for stock users.
+1. Parakeet's language coverage is narrower than Whisper's. Making it the
+   default would be a breaking change for unsupported languages.
+2. There is no automatic Whisper fallback for unsupported languages.
+3. The optional dependency and first-run model download should not be imposed
+   on stock installs.
+
+The research goal is complete: Parakeet is a fast, working local option on both
+supported development paths without changing the public default.
+
+## Live validation
+
+Validated by the project owner on Windows 11 and WSL on 2026-07-16 and
+2026-07-20.
+
+| Environment | Result |
+|---|---|
+| Windows | Optional install, startup, microphone capture, transcription, and full assistant turn passed |
+| WSL hybrid | Optional install, CPU inference, microphone capture, transcription, bridge, and full assistant turn passed |
+
+Observed WSL transcripts:
+
+| Audio | Transcript | ASR time |
+|---:|---|---:|
+| 2.27 s | `Salut, comment ça va?` | 0.81 s |
+| 4.58 s | `Tu peux m'expliquer comment fonctionne une centrale nucléaire?` | 1.35 s |
+
+The WSL provider used `CPUExecutionProvider` with `int8`, so it did not compete
+with Ollama and TTS for GPU memory. Windows was validated functionally; no
+synthetic benchmark number is claimed for that run.
 
 ## What shipped in code
 
@@ -49,7 +76,7 @@ asr:
 
 Cold start will download ONNX weights once.
 
-## Bakeoff you should run (owner tests)
+## Reproducing the bakeoff
 
 Automated unit tests **do not** load the ONNX model (no download in CI).
 
@@ -83,7 +110,7 @@ Compare columns:
 - whisper `large-v3-turbo` beam 5
 - parakeet int8
 
-### 3. Live desktop path (required for Go)
+### 3. Live desktop path
 
 Same mic path as LIL-35:
 
@@ -103,7 +130,7 @@ Record:
 
 Optional: include `qwen3` ASR if that worker is already set up.
 
-## Go criteria (suggested)
+## Default-promotion criteria
 
 Promote to public default only if **all** hold:
 
@@ -112,7 +139,8 @@ Promote to public default only if **all** hold:
 3. Install from `requirements-optional-parakeet.txt` is reliable on Windows 11 + your GPU driver stack.
 4. Docs/README language limitation is acceptable as product default (or Whisper remains auto-fallback — not implemented yet).
 
-Otherwise: **keep opt-in**, document No-Go reasons here, close ticket as research complete.
+The current result does not meet criterion 4, so Parakeet remains opt-in and
+the ticket closes as research complete.
 
 ## Provisional notes from earlier agent work
 

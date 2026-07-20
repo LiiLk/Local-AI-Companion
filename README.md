@@ -501,7 +501,9 @@ For dependency security audits, see `docs/python-dependency-audit.md`.
 ## Known Constraints
 
 - The project is optimized for **single-GPU desktop usage**, so heavyweight providers should not all be enabled blindly.
-- The default stable ASR remains `whisper` with the `balanced` profile. Parakeet is an optional candidate pending the LIL-48 bakeoff.
+- The default stable ASR remains `whisper` with the `balanced` profile.
+  Parakeet passed live Windows and WSL validation in LIL-48 and remains opt-in
+  because its language coverage is narrower and there is no Whisper fallback.
 - `Qwen3-TTS`, `Qwen3-ASR`, `Gemma`, and `MiniCPM-o` are not the baseline that the repository is currently simplified around.
 - Windows remains the primary polished desktop target; WSL2 supports the full local test path after `bash scripts/setup_wsl.sh`. The launcher selects deterministic software WebGL for Live2D under WSL, and WSLg/Pulse provides microphone capture.
 - Tauri shell polish and native desktop behavior remain Windows-oriented.
