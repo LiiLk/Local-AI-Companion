@@ -1656,7 +1656,7 @@ class Live2DAssistant:
             # No GUI mode - just run the loop
             logger.info("Running in headless mode (no GUI)")
             try:
-                while True:
+                while self._running:
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
