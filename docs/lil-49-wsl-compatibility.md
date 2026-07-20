@@ -2,9 +2,9 @@
 
 **Linear:** [LIL-49](https://linear.app/lilkorp/issue/LIL-49/plat-01-compatibilite-wsl2-chemins-workers-audio-docs-en-plus-de)
 **Branch:** `feature/lil-49-wsl-run-path`
-**Status:** In progress (option A hybrid pet wired + documented)
-**Related:** [LIL-48](https://linear.app/lilkorp/issue/LIL-48) Parakeet ASR — **standby** until platform path is stable
-**Last updated:** 2026-07-11
+**Status:** Completed and merged
+**Related:** [LIL-48](https://linear.app/lilkorp/issue/LIL-48) Parakeet ASR — completed separately after the platform path stabilized
+**Last updated:** 2026-07-20
 
 This note follows the same ticket-doc pattern as `docs/lil-35-voice-benchmark.md` and `docs/python-dependency-audit.md` (LIL-40): problem, scope, how to run, acceptance, non-goals.
 
@@ -56,7 +56,7 @@ does not install or modify GPU drivers.
 ### Non-goals
 
 - Full native Linux desktop-pet parity (transparency, global hotkeys) under WSLg alone
-- Finishing LIL-48 Parakeet bakeoff (see standby note on LIL-48)
+- Parakeet evaluation, which remained a separate LIL-48 scope
 - Shipping WSL installers for every experimental provider; Qwen/Gemma/MiniCPM remain opt-in
 
 ---
@@ -408,7 +408,7 @@ back silently to the main environment when their configured venv is missing.
 | Artifact | Location |
 |---|---|
 | Linear ticket | LIL-49 |
-| Standby related work | LIL-48 (Parakeet) + stash `WIP LIL-48 parakeet standby` |
+| Follow-up related work | LIL-48 (Parakeet), completed separately |
 | Code helper | `src/utils/platform_compat.py` |
 | Hybrid launcher | `src/utils/wsl_hybrid_ui.py` |
 | Windows pet shell | `scripts/windows_pet_shell.py` |
@@ -428,7 +428,7 @@ back silently to the main environment when their configured venv is missing.
 ## Acceptance checklist
 
 - [x] Ticket LIL-49 created and linked from this doc
-- [x] LIL-48 marked standby with pointer to this work
+- [x] LIL-48 kept separate until the WSL platform path was stable
 - [x] Deterministic Windows↔WSL path and process-cleanup unit tests
 - [x] `check_platform.py` text and JSON output execute on contributor WSL
 - [x] WSL bootstrap and RVC scripts pass shell syntax validation

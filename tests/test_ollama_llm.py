@@ -7,12 +7,13 @@ from src.llm.base import Message
 from src.llm.ollama_llm import OllamaLLM
 
 
-async def _make_llm(handler, *, think=False, options=None):
+async def _make_llm(handler, *, think=False, options=None, keep_alive=None):
     llm = OllamaLLM(
         model="qwen3.5:4b",
         base_url="http://test-ollama",
         think=think,
         options=options,
+        keep_alive=keep_alive,
     )
     await llm._client.aclose()
     llm._client = httpx.AsyncClient(
@@ -50,6 +51,26 @@ async def test_ollama_chat_sends_think_and_options():
             "options": {"temperature": 0.6, "top_p": 0.9},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_ollama_chat_sends_configured_keep_alive():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={"model": "qwen3.5:4b", "message": {"content": "ok"}},
+        )
+
+    llm = await _make_llm(handler, keep_alive="30m")
+    try:
+        await llm.chat([Message(role="user", content="Hello")])
+    finally:
+        await llm.close()
+
+    assert seen_payloads[0]["keep_alive"] == "30m"
 
 
 @pytest.mark.asyncio

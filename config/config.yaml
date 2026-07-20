@@ -61,6 +61,8 @@ llm:
     model: "qwen3.5:4b"
     base_url: "http://localhost:11434"
     think: false
+    # Avoid a cold model reload after Ollama's default 5-minute idle timeout.
+    keep_alive: "30m"
     request_timeout_sec: 180
     preload_timeout_sec: 120
     turn_timeout_sec: 210
@@ -166,9 +168,10 @@ tts:
     output_freq: null
 
 asr:
-  # Stable choices:
-  # - "whisper" : best default
-  # - "qwen3"   : advanced local quality path
+  # Provider choices:
+  # - "whisper"  : public multilingual default
+  # - "parakeet" : optional local candidate; install requirements-optional-parakeet.txt
+  # - "qwen3"    : advanced local quality path
   provider: "whisper"
   # Whisper profile. Public default "balanced" for broad GPU compatibility:
   #   balanced      -> whisper small,          beam 3  (~2GB VRAM)
@@ -181,6 +184,13 @@ asr:
   prompt: null
   compute_type: "float16"
   device: "cuda"
+
+  # Used only when provider is "parakeet". Keep model/runtime choices
+  # configurable because Parakeet is an optional experimental path.
+  parakeet:
+    model_name: "nemo-parakeet-tdt-0.6b-v3"
+    quantization: "int8"
+    # providers: ["CUDAExecutionProvider"]
 
   qwen3:
     model_id: "Qwen/Qwen3-ASR-0.6B"

@@ -134,6 +134,13 @@ def create_asr(asr_config: dict) -> RealtimeWhisperProvider:
     Returns:
         ASR provider instance
     """
+    provider = str(asr_config.get("provider", "whisper")).strip().lower()
+    if provider != "whisper":
+        raise ValueError(
+            f"main.py voice CLI supports only asr.provider: whisper (got {provider!r}). "
+            "Use `python run_assistant.py` for pipeline ASR providers."
+        )
+
     settings = resolve_whisper_profile(asr_config)
     return RealtimeWhisperProvider(
         model_size=settings["model_size"],

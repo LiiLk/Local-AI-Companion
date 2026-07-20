@@ -1,0 +1,17 @@
+# Optional Parakeet ASR stack (LIL-48 / LIL-45)
+#
+# Opt-in only. The public default remains faster-whisper.
+# Install into the runtime venv when you want asr.provider: "parakeet":
+#
+#   python -m pip install -r requirements-optional-parakeet.txt
+#
+# Then in config/config.local.yaml:
+#
+#   asr:
+#     provider: "parakeet"
+#
+# First run downloads the ONNX model from Hugging Face (~hundreds of MB).
+# Prefer the CPU extras for broad Windows compatibility; CUDA/DirectML can be
+# layered later via onnxruntime-* packages if needed.
+
+onnx-asr[cpu,hub]>=0.11,<0.13

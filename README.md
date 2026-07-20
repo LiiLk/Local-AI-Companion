@@ -307,6 +307,10 @@ ollama pull qwen3.5:4b
 
 Make sure Ollama is running on `http://localhost:11434`.
 
+The tracked configuration keeps the active Ollama model loaded for 30 minutes
+to avoid a cold reload after a short pause. Override `llm.ollama.keep_alive` in
+`config/config.local.yaml` when a different memory/latency tradeoff is needed.
+
 #### Option B: OpenRouter (optional)
 
 Set `OPENROUTER_API_KEY` in your environment, then switch the provider in
@@ -387,7 +391,7 @@ tts:
 
 asr:
   provider: "whisper"
-  model_size: "small"
+  profile: "balanced"
   device: "cuda"
 ```
 
@@ -418,6 +422,28 @@ Relevant assets already wired in the repo:
 ## Optional Advanced Providers
 
 These are intentionally not part of the primary README quick path, but they still exist in the codebase.
+
+### Parakeet ASR
+
+Parakeet TDT 0.6B v3 is an optional local ASR candidate. Whisper remains the
+multilingual default and stock installs do not include Parakeet dependencies.
+
+```bash
+python -m pip install -r requirements-optional-parakeet.txt
+```
+
+Enable it in `config/config.local.yaml`:
+
+```yaml
+asr:
+  provider: "parakeet"
+```
+
+Parakeet is supported by the desktop/server pipeline (`run_assistant.py` and
+`python -m src.server`). The legacy `main.py --voice --listen` microphone path
+remains Whisper-only and reports a clear error for other ASR providers.
+
+See `docs/lil-48-parakeet-asr.md` for the current evaluation status.
 
 ### Qwen3-TTS
 
@@ -479,7 +505,9 @@ For dependency security audits, see `docs/python-dependency-audit.md`.
 ## Known Constraints
 
 - The project is optimized for **single-GPU desktop usage**, so heavyweight providers should not all be enabled blindly.
-- The default stable ASR is still `whisper small`; higher-accuracy upgrades are planned but not the current default.
+- The default stable ASR remains `whisper` with the `balanced` profile.
+  Parakeet passed live Windows and WSL validation in LIL-48 and remains opt-in
+  because its language coverage is narrower and there is no Whisper fallback.
 - `Qwen3-TTS`, `Qwen3-ASR`, `Gemma`, and `MiniCPM-o` are not the baseline that the repository is currently simplified around.
 - Windows remains the primary polished desktop target; WSL2 supports the full local test path after `bash scripts/setup_wsl.sh`. The launcher selects deterministic software WebGL for Live2D under WSL, and WSLg/Pulse provides microphone capture.
 - Tauri shell polish and native desktop behavior remain Windows-oriented.

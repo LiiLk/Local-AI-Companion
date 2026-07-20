@@ -291,6 +291,7 @@ def create_pipeline_llm(config: dict) -> tuple[Any, str]:
         base_url=ollama_config.get("base_url", "http://localhost:11434"),
         think=ollama_config.get("think"),
         options=ollama_config.get("options"),
+        keep_alive=ollama_config.get("keep_alive"),
         request_timeout_sec=ollama_config.get("request_timeout_sec", 180),
         preload_timeout_sec=ollama_config.get("preload_timeout_sec", 120),
     )
@@ -469,6 +470,26 @@ def create_pipeline_asr(config: dict) -> tuple[Any, str]:
             worker_script=qwen3_config.get("worker_script"),
         )
         return asr, f"Qwen3-ASR ({qwen3_config.get('model_id', 'Qwen/Qwen3-ASR-0.6B')})"
+
+    if asr_provider == "parakeet":
+        from src.asr.parakeet_provider import DEFAULT_MODEL_NAME, ParakeetASRProvider
+
+        if not ParakeetASRProvider.is_available():
+            raise ImportError(
+                "asr.provider is 'parakeet' but onnx-asr is not installed. "
+                "Install with: pip install -r requirements-optional-parakeet.txt "
+                "(or switch asr.provider back to 'whisper')."
+            )
+
+        parakeet_config = asr_config.get("parakeet", {})
+        model_name = parakeet_config.get("model_name", DEFAULT_MODEL_NAME)
+        quantization = parakeet_config.get("quantization", "int8")
+        asr = ParakeetASRProvider(
+            model_name=model_name,
+            quantization=quantization,
+            providers=parakeet_config.get("providers"),
+        )
+        return asr, f"Parakeet ({model_name}, {quantization}) [opt-in]"
 
     from src.asr import WhisperProvider
 

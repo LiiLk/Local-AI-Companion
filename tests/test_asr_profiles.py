@@ -1,5 +1,7 @@
 """Smoke tests for ASR profile resolution (LIL-37)."""
 
+import pytest
+
 from src.assistant.pipeline_runtime import (
     DEFAULT_WHISPER_PROFILE,
     resolve_whisper_profile,
@@ -47,3 +49,10 @@ def test_create_asr_honors_profile_beam():
     asr = create_asr({"profile": "quality-local", "device": "cpu"})
     assert asr.model_size == "large-v3-turbo"
     assert asr.beam_size == 5
+
+
+def test_voice_cli_rejects_pipeline_only_asr_provider():
+    from main import create_asr
+
+    with pytest.raises(ValueError, match="run_assistant.py"):
+        create_asr({"provider": "parakeet"})
