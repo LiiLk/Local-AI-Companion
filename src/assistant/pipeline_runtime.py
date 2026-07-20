@@ -488,7 +488,6 @@ def create_pipeline_asr(config: dict) -> tuple[Any, str]:
             model_name=model_name,
             quantization=quantization,
             providers=parakeet_config.get("providers"),
-            sample_rate=int(parakeet_config.get("sample_rate", 16000)),
         )
         return asr, f"Parakeet ({model_name}, {quantization}) [opt-in]"
 

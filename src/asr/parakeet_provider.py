@@ -7,9 +7,7 @@ This is intentional for Windows-first installs: full NeMo is heavy and fragile;
 
 Status (LIL-48 / LIL-45):
 - Opt-in provider only. Public default remains Whisper (`asr.provider: whisper`).
-- Candidate for a future public default after documented FR/EN bakeoff.
-- Provisional agent notes claim ~large-v3-turbo quality at high RTFx on CPU;
-  keep those numbers as hypotheses until reproduced on the target machine.
+- Validated on the Windows and WSL desktop pipeline paths.
 
 Languages: 25 European (incl. fr / en / es). Not for zh / ja / ar / ko / hi —
 use Whisper for full multilingual coverage.
@@ -72,7 +70,6 @@ class ParakeetASRProvider(BaseASR):
     Args:
         model_name: onnx-asr model id (default nemo-parakeet-tdt-0.6b-v3).
         quantization: ONNX quantization ("int8" recommended on CPU; "fp16" for GPU).
-        sample_rate: Sample rate of numpy input from the pipeline (16 kHz here).
         providers: onnxruntime execution providers. Defaults to CPU only so
             runtime does not probe missing CUDA/TensorRT DLLs.
     """
@@ -81,12 +78,11 @@ class ParakeetASRProvider(BaseASR):
         self,
         model_name: str = DEFAULT_MODEL_NAME,
         quantization: Optional[str] = "int8",
-        sample_rate: int = TARGET_SAMPLE_RATE,
         providers: Optional[List[str]] = None,
     ):
         self.model_name = model_name
         self.quantization = quantization
-        self.sample_rate = int(sample_rate)
+        self.sample_rate = TARGET_SAMPLE_RATE
         # Default to CPU: int8 is a CPU path and avoids onnxruntime probing
         # CUDA/TensorRT when GPU DLLs are absent. GPU users can pass
         # providers=["CUDAExecutionProvider"] (or DirectML on Windows).
@@ -133,25 +129,6 @@ class ParakeetASRProvider(BaseASR):
         """Drop the model reference so runtime shutdown can reclaim memory."""
         self._model = None
 
-    def _normalize_language(self, language: Optional[str]) -> Optional[str]:
-        """Return a supported language hint, or None for auto-detect."""
-        if not language:
-            return None
-        code = language.strip().lower().replace("_", "-")
-        # Accept BCP-47 style tags like fr-FR → fr
-        if "-" in code:
-            code = code.split("-", 1)[0]
-        if code in ("", "auto"):
-            return None
-        if code not in SUPPORTED_LANGUAGES:
-            # Unknown / non-European code: auto-detect instead of forcing.
-            logger.debug(
-                "Parakeet: language %r not in supported EU set, using auto-detect",
-                language,
-            )
-            return None
-        return code
-
     @staticmethod
     def _to_mono_float32(waveform: np.ndarray) -> np.ndarray:
         arr = np.asarray(waveform, dtype=np.float32)
@@ -183,7 +160,9 @@ class ParakeetASRProvider(BaseASR):
         initial_prompt: Optional[str] = None,  # interface parity; unused by Parakeet
     ) -> ASRResult:
         """Transcribe an audio file or float32 numpy array to text."""
-        del initial_prompt  # unused
+        # onnx-asr performs its own language detection and does not accept a
+        # language hint. Keep these arguments only for BaseASR compatibility.
+        del language, initial_prompt
         model = self._get_model()
 
         if isinstance(audio_input, (str, Path)):
@@ -192,11 +171,7 @@ class ParakeetASRProvider(BaseASR):
                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
             # Prefer path-based recognize so onnx-asr can resample as needed.
             logger.info("Transcribing %s", audio_path.name)
-            lang_hint = self._normalize_language(language)
-            kwargs: dict[str, Any] = {}
-            if lang_hint:
-                kwargs["language"] = lang_hint
-            raw = model.recognize(str(audio_path), **kwargs)
+            raw = model.recognize(str(audio_path))
             # Duration best-effort via soundfile when available.
             duration = None
             try:
@@ -209,7 +184,7 @@ class ParakeetASRProvider(BaseASR):
             text = self._coerce_text(raw)
             return ASRResult(
                 text=text,
-                language=lang_hint,
+                language=None,
                 confidence=None,
                 duration=duration,
                 segments=[],
@@ -220,7 +195,7 @@ class ParakeetASRProvider(BaseASR):
         if waveform.size == 0:
             return ASRResult(
                 text="",
-                language=self._normalize_language(language),
+                language=None,
                 duration=0.0,
             )
 
@@ -231,16 +206,11 @@ class ParakeetASRProvider(BaseASR):
             duration or 0.0,
         )
 
-        lang_hint = self._normalize_language(language)
-        kwargs = {"sample_rate": int(sample_rate)}
-        if lang_hint:
-            kwargs["language"] = lang_hint
-
-        raw = model.recognize(waveform, **kwargs)
+        raw = model.recognize(waveform, sample_rate=sample_rate)
         text = self._coerce_text(raw)
         return ASRResult(
             text=text,
-            language=lang_hint,
+            language=None,
             confidence=None,
             duration=duration,
             segments=[],
@@ -281,5 +251,5 @@ class ParakeetASRProvider(BaseASR):
             "languages": "25 European (auto-detect)",
             "loaded": self._model is not None,
             "optional_dependency": "onnx-asr",
-            "status": "opt-in candidate (LIL-48)",
+            "status": "validated opt-in (LIL-48)",
         }

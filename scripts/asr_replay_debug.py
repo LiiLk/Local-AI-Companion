@@ -7,8 +7,8 @@ Usage (from repo root, runtime venv):
     venv\\Scripts\\python.exe scripts\\asr_replay_debug.py [--language fr] [wav ...]
     venv\\Scripts\\python.exe scripts\\asr_replay_debug.py --include-parakeet
 
-Defaults to logs/asr_debug/*.wav. Language defaults to auto-detect; pass
---language to replay a forced-language capture under the same conditions.
+Defaults to logs/asr_debug/*.wav. Language defaults to auto-detect; --language
+applies to Whisper only because onnx-asr handles Parakeet language detection.
 Loads one model at a time to keep VRAM / RAM bounded.
 """
 from __future__ import annotations
@@ -54,8 +54,8 @@ def main() -> None:
     parser.add_argument(
         "--language",
         default=None,
-        help="Force a language code (e.g. fr) to match a forced-language capture. "
-        "Default: auto-detect (matches asr.language: auto).",
+        help="Force a Whisper language code (e.g. fr). Parakeet always auto-detects. "
+        "Default: auto-detect.",
     )
     parser.add_argument(
         "--include-parakeet",
@@ -80,6 +80,9 @@ def main() -> None:
     for model, beams in WHISPER_PLAN:
         print(f"\n>>> Loading whisper {model} ...", flush=True)
         provider = WhisperProvider(model_size=model, device="auto", beam_size=beams[0])
+        load_started = time.perf_counter()
+        provider._get_model()
+        print(f"    loaded in {time.perf_counter() - load_started:.2f}s", flush=True)
         for wav in wavs:
             for beam in beams:
                 provider.beam_size = beam
@@ -105,7 +108,9 @@ def main() -> None:
                     "onnx-asr missing — pip install -r requirements-optional-parakeet.txt"
                 )
             parakeet = ParakeetASRProvider()
+            load_started = time.perf_counter()
             parakeet.preload()
+            print(f"    loaded in {time.perf_counter() - load_started:.2f}s", flush=True)
             for wav in wavs:
                 key = (wav, "parakeet", "int8")
                 try:

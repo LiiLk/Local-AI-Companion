@@ -1,7 +1,7 @@
 """Unit tests for the Parakeet ASR provider wiring (LIL-48).
 
 These do not download or load the ONNX model — they cover factory dispatch,
-language normalization, text coercion, and mocked transcribe paths.
+automatic language handling, text coercion, and mocked transcribe paths.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import pytest
 from src.asr.parakeet_provider import (
     INSTALL_HINT,
     SUPPORTED_LANGUAGES,
+    TARGET_SAMPLE_RATE,
     ParakeetASRProvider,
 )
 from src.assistant.pipeline_runtime import create_pipeline_asr
@@ -40,12 +41,14 @@ def test_factory_honors_parakeet_config():
                         "quantization": "fp16",
                         "model_name": "nemo-parakeet-tdt-0.6b-v3",
                         "providers": ["CUDAExecutionProvider"],
+                        "sample_rate": 8000,
                     },
                 }
             }
         )
     assert asr.quantization == "fp16"
     assert asr.providers == ["CUDAExecutionProvider"]
+    assert asr.sample_rate == TARGET_SAMPLE_RATE
 
 
 def test_factory_errors_clearly_when_onnx_asr_missing():
@@ -66,20 +69,6 @@ def test_default_providers_are_cpu():
     assert asr.providers == ["CPUExecutionProvider"]
 
 
-def test_language_normalization():
-    asr = ParakeetASRProvider()
-    assert asr._normalize_language("fr") == "fr"
-    assert asr._normalize_language("EN") == "en"
-    assert asr._normalize_language("fr-FR") == "fr"
-    # auto / empty / None -> auto-detect (None)
-    assert asr._normalize_language("auto") is None
-    assert asr._normalize_language("") is None
-    assert asr._normalize_language(None) is None
-    # Non-European (unsupported) -> fall back to auto-detect, never forced
-    assert asr._normalize_language("zh") is None
-    assert asr._normalize_language("ja") is None
-
-
 def test_supported_languages_cover_project_scope():
     langs = ParakeetASRProvider().get_supported_languages()
     assert {"fr", "en", "es"}.issubset(set(langs))
@@ -91,7 +80,8 @@ def test_model_info_before_load():
     info = ParakeetASRProvider().get_model_info()
     assert info["provider"] == "parakeet"
     assert info["loaded"] is False
-    assert info["status"].startswith("opt-in")
+    assert info["sample_rate"] == TARGET_SAMPLE_RATE
+    assert info["status"].startswith("validated opt-in")
 
 
 def test_cleanup_releases_model():
@@ -120,12 +110,27 @@ def test_transcribe_numpy_uses_model_recognize():
     result = asr.transcribe(audio, language="fr")
 
     assert result.text == "bonjour"
-    assert result.language == "fr"
+    assert result.language is None
     assert result.duration == pytest.approx(1.0)
     fake_model.recognize.assert_called_once()
-    kwargs = fake_model.recognize.call_args.kwargs
-    assert kwargs.get("language") == "fr"
-    assert kwargs.get("sample_rate") == 16000
+    called_audio = fake_model.recognize.call_args.args[0]
+    assert np.array_equal(called_audio, audio)
+    assert fake_model.recognize.call_args.kwargs == {"sample_rate": TARGET_SAMPLE_RATE}
+
+
+def test_transcribe_file_does_not_forward_language(tmp_path):
+    asr = ParakeetASRProvider()
+    fake_model = MagicMock()
+    fake_model.recognize.return_value = "bonjour"
+    asr._model = fake_model
+    audio_path = tmp_path / "sample.wav"
+    audio_path.touch()
+
+    result = asr.transcribe(audio_path, language="fr")
+
+    assert result.text == "bonjour"
+    assert result.language is None
+    fake_model.recognize.assert_called_once_with(str(audio_path))
 
 
 def test_transcribe_empty_buffer():

@@ -103,6 +103,9 @@ python scripts\asr_replay_debug.py --include-parakeet
 python scripts\asr_replay_debug.py --include-parakeet --language fr
 ```
 
+`--language` forces Whisper only. Parakeet continues to use automatic language
+detection because `onnx-asr` does not expose a language hint.
+
 Compare columns:
 
 - runtime capture text

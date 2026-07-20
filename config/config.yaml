@@ -191,7 +191,6 @@ asr:
     model_name: "nemo-parakeet-tdt-0.6b-v3"
     quantization: "int8"
     # providers: ["CUDAExecutionProvider"]
-    # sample_rate: 16000
 
   qwen3:
     model_id: "Qwen/Qwen3-ASR-0.6B"

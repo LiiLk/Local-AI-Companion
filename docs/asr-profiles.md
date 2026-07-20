@@ -61,6 +61,12 @@ asr:
 ```
 
 First load downloads the ONNX weights from Hugging Face.
+Parakeet always uses its built-in language detection; `asr.language` is not
+forwarded because `onnx-asr` does not accept a language hint.
+
+The supported runtime paths are `python run_assistant.py` and
+`python -m src.server`. The legacy `main.py --voice --listen` microphone path
+remains Whisper-only.
 
 ### When to prefer Parakeet vs Whisper
 
@@ -71,10 +77,9 @@ First load downloads the ONNX weights from Hugging Face.
 | Zero optional deps / stock install | **whisper** |
 | GPU quality-local Whisper already good enough | Keep **whisper** `quality-local` |
 
-Provisional agent notes (not a formal bakeoff): Parakeet may approach
-`large-v3-turbo` quality at high realtime factor on CPU. Re-measure on *your*
-machine with captured WAVs before promoting to default. See
-`docs/lil-48-parakeet-asr.md`.
+LIL-48 validated the opt-in provider on Windows and WSL. See
+`docs/lil-48-parakeet-asr.md` for the observed transcripts, timings, and the
+decision to keep Whisper as the public default.
 
 ---
 

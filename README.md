@@ -439,6 +439,10 @@ asr:
   provider: "parakeet"
 ```
 
+Parakeet is supported by the desktop/server pipeline (`run_assistant.py` and
+`python -m src.server`). The legacy `main.py --voice --listen` microphone path
+remains Whisper-only and reports a clear error for other ASR providers.
+
 See `docs/lil-48-parakeet-asr.md` for the current evaluation status.
 
 ### Qwen3-TTS
