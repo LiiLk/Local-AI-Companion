@@ -164,6 +164,9 @@ class DesktopBridgeApi:
     def toggle_debug(self) -> dict:
         return self._assistant.toggle_debug()
 
+    def request_shutdown(self) -> dict:
+        return self._assistant.request_shutdown("ui")
+
     def set_layout_mode(self, layout: str) -> dict:
         return self._assistant.set_layout_mode(layout)
 
@@ -244,6 +247,7 @@ class DesktopBridgeServer:
 
         name = str(message.get("name") or "")
         request_id = message.get("request_id")
+        shutdown_after_response = False
 
         try:
             if name == "send_text":
@@ -256,6 +260,9 @@ class DesktopBridgeServer:
                 result = self._assistant.get_runtime_state()
             elif name == "toggle_debug":
                 result = self._assistant.toggle_debug()
+            elif name == "quit":
+                result = {"status": "stopping"}
+                shutdown_after_response = True
             else:
                 raise ValueError(f"Unknown bridge command: {name}")
         except Exception as exc:
@@ -271,16 +278,20 @@ class DesktopBridgeServer:
             )
             return
 
-        await self._send_json(
-            websocket,
-            {
-                "type": "command_result",
-                "request_id": request_id,
-                "name": name,
-                "ok": True,
-                "result": self._with_backend(result),
-            },
-        )
+        try:
+            await self._send_json(
+                websocket,
+                {
+                    "type": "command_result",
+                    "request_id": request_id,
+                    "name": name,
+                    "ok": True,
+                    "result": self._with_backend(result),
+                },
+            )
+        finally:
+            if shutdown_after_response:
+                self._assistant.request_shutdown("bridge")
 
     async def _send_backend_ready(self, websocket) -> None:
         await self._send_json(
@@ -1436,8 +1447,6 @@ class Live2DAssistant:
             logger.warning("pynput not available, hotkeys disabled")
             return
 
-        quit_requested = False
-
         def on_toggle_mute():
             try:
                 runtime = self.toggle_mute()
@@ -1460,14 +1469,8 @@ class Live2DAssistant:
                 logger.error(f"Hotkey error: {e}")
 
         def on_quit():
-            nonlocal quit_requested
             try:
-                if quit_requested:
-                    return
-                quit_requested = True
-                logger.info("👋 Quit requested (Ctrl+Shift+Q)")
-                # Run stop out of the pynput callback thread.
-                threading.Thread(target=self.stop, daemon=True, name="HotkeyQuit").start()
+                self.request_shutdown("hotkey")
             except Exception as e:
                 logger.error(f"Hotkey error: {e}")
 
@@ -1655,12 +1658,25 @@ class Live2DAssistant:
             # No GUI mode - just run the loop
             logger.info("Running in headless mode (no GUI)")
             try:
-                while True:
+                while self._running:
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
         
         self.stop()
+
+    def request_shutdown(self, source: str = "ui") -> dict:
+        """Ask the main application lifecycle to perform its normal cleanup."""
+        if self._shutdown_requested.is_set():
+            return {"status": "stopping"}
+
+        logger.info("👋 Quit requested (%s)", source)
+        self._shutdown_requested.set()
+        self._running = False
+        if self._window is not None:
+            with contextlib.suppress(Exception):
+                self._window.close()
+        return {"status": "stopping"}
     
     def stop(self):
         """Stop the assistant application."""

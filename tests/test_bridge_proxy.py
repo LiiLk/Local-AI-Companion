@@ -44,6 +44,27 @@ def test_reader_preserves_disconnect_error_for_pending_rpc():
     assert proxy._pending["request"]["error"] == "bridge disconnected"
 
 
+def test_reader_does_not_overwrite_completed_rpc_on_disconnect():
+    class DisconnectedSocket:
+        def recv(self):
+            return None
+
+    proxy = make_proxy()
+    proxy._ws = DisconnectedSocket()
+    event = threading.Event()
+    event.set()
+    proxy._pending["request"] = {
+        "event": event,
+        "result": {"status": "stopping"},
+        "error": None,
+    }
+
+    proxy._read_loop()
+
+    assert proxy._pending["request"]["error"] is None
+    assert proxy._pending["request"]["result"] == {"status": "stopping"}
+
+
 def test_close_closes_socket_and_joins_reader():
     class Socket:
         closed = False
@@ -68,3 +89,16 @@ def test_close_closes_socket_and_joins_reader():
 
     assert proxy._ws is None
     assert proxy._reader is None
+
+
+def test_request_shutdown_uses_short_quit_rpc():
+    proxy = make_proxy()
+    calls = []
+    proxy._rpc = lambda name, timeout=30.0, **payload: calls.append(
+        (name, timeout, payload)
+    ) or {"status": "stopping"}
+
+    result = proxy.request_shutdown()
+
+    assert result == {"status": "stopping"}
+    assert calls == [("quit", 5.0, {})]
