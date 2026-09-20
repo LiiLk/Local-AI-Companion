@@ -41,6 +41,7 @@ from src.utils.language_detection import (
     normalize_language_code,
 )
 from src.utils.sentence_splitter import SentenceSplitter
+from src.utils.turn_latency import get_turn_latency_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -556,12 +557,18 @@ class ConversationPipeline:
             return text
         return await self._rewrite_response_in_language(text, response_language_code, run_id, trace)
     
-    async def process_speech(self, audio_bytes: bytes) -> Optional[str]:
+    async def process_speech(
+        self,
+        audio_bytes: bytes,
+        speech_end_monotonic: Optional[float] = None,
+    ) -> Optional[str]:
         """
         Process speech audio through the full pipeline.
         
         Args:
             audio_bytes: Raw PCM audio from VAD (16-bit, 16kHz)
+            speech_end_monotonic: perf_counter captured at VAD speech end, used
+                as t=0 for turn latency instrumentation.
             
         Returns:
             The full response text, or None on error
@@ -569,6 +576,9 @@ class ConversationPipeline:
         run_id = self._begin_run("speech")
         if run_id is None:
             return None
+
+        latency = get_turn_latency_tracker()
+        latency.start(turn_id=run_id, t0=speech_end_monotonic)
         
         try:
             trace = {
@@ -578,6 +588,7 @@ class ConversationPipeline:
             # 1. Transcribe audio
             transcription_result = await self._transcribe(audio_bytes)
             trace["asr_done_epoch_ms"] = int(time.time() * 1000)
+            latency.mark("asr_done")
             self._ensure_run_active(run_id)
             if not transcription_result or not transcription_result.text:
                 logger.info("No speech detected in audio")
@@ -659,6 +670,7 @@ class ConversationPipeline:
             return None
             
         finally:
+            latency.finish()
             self._finish_run(run_id)
 
     async def process_text(self, text: str) -> Optional[str]:
@@ -671,6 +683,9 @@ class ConversationPipeline:
         if not user_text:
             self._finish_run(run_id)
             return None
+
+        latency = get_turn_latency_tracker()
+        latency.start(turn_id=run_id)
 
         try:
             trace = {
@@ -738,6 +753,7 @@ class ConversationPipeline:
                 await self._call_async(self.on_error, _describe_exception(e))
             return None
         finally:
+            latency.finish()
             self._finish_run(run_id)
     
     async def _transcribe(self, audio_bytes: bytes) -> Optional[ASRResult]:
@@ -826,11 +842,15 @@ class ConversationPipeline:
     ) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
+        first_token_seen = False
         
         async for chunk in self.llm.chat_stream(messages):
             self._ensure_run_active(run_id)
-            if trace is not None and "llm_first_token_epoch_ms" not in trace:
-                trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
+            if not first_token_seen:
+                first_token_seen = True
+                get_turn_latency_tracker().mark("llm_first_token")
+                if trace is not None and "llm_first_token_epoch_ms" not in trace:
+                    trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
             full_response += chunk
             if emit_chunks and self.on_response_chunk:
                 await self._call_async(self.on_response_chunk, chunk)
@@ -918,6 +938,7 @@ class ConversationPipeline:
 
                 if not first_llm_chunk_logged:
                     first_llm_chunk_logged = True
+                    get_turn_latency_tracker().mark("llm_first_token")
                     if trace is not None:
                         trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
                     logger.info(
@@ -947,6 +968,7 @@ class ConversationPipeline:
                                 continue
                         if not first_sentence_submitted:
                             first_sentence_submitted = True
+                            get_turn_latency_tracker().mark("first_sentence")
                             if trace is not None:
                                 trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                             logger.info(
@@ -973,6 +995,7 @@ class ConversationPipeline:
                         )
                 if not fallback_to_full_response and not first_sentence_submitted:
                     first_sentence_submitted = True
+                    get_turn_latency_tracker().mark("first_sentence")
                     if trace is not None:
                         trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                     logger.info(
@@ -1041,6 +1064,7 @@ class ConversationPipeline:
             except asyncio.CancelledError:
                 self._abort_inflight_tts()
                 raise
+            get_turn_latency_tracker().mark("tts_first_audio")
 
             if tts_result and tts_result.audio_data:
                 full_wav_bytes = tts_result.audio_data
@@ -1065,6 +1089,8 @@ class ConversationPipeline:
         full_wav_bytes, audio_bytes, sample_rate = await self._maybe_apply_rvc(
             full_wav_bytes, audio_bytes, sample_rate
         )
+        if self.rvc:
+            get_turn_latency_tracker().mark("rvc_done")
         self._ensure_run_active(run_id)
 
         volumes = analyze_audio_volumes(audio_bytes, sample_rate, self.config.lip_sync_chunk_ms)

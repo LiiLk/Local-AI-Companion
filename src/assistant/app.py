@@ -63,6 +63,7 @@ from src.utils.logging_setup import (
     log_conversation_event,
 )
 from src.utils.startup_profiler import StartupProfiler
+from src.utils.turn_latency import get_turn_latency_tracker
 
 # Conditional imports
 try:
@@ -411,6 +412,7 @@ class Live2DAssistant:
         self._drop_current_speech = False
         self._speech_active = False
         self._pending_speech_audio = bytearray()
+        self._pending_speech_end_monotonic: Optional[float] = None
         self._pending_speech_commit_handle: Optional[asyncio.Handle] = None
         self._pending_speech_lock = threading.Lock()
         self._speech_commit_delay_ms = int(self.config.get("audio", {}).get("speech_commit_delay_ms", 700))
@@ -767,6 +769,8 @@ class Live2DAssistant:
                 return
             audio_bytes = bytes(self._pending_speech_audio)
             self._pending_speech_audio.clear()
+            speech_end_monotonic = self._pending_speech_end_monotonic
+            self._pending_speech_end_monotonic = None
 
         audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
         logger.info(
@@ -782,7 +786,16 @@ class Live2DAssistant:
             return
 
         turn_id = self._next_turn_id()
-        self._start_turn(turn_id, lambda: active_pipeline.process_speech(audio_bytes), source="speech")
+        if isinstance(active_pipeline, ConversationPipeline):
+            self._start_turn(
+                turn_id,
+                lambda: active_pipeline.process_speech(
+                    audio_bytes, speech_end_monotonic=speech_end_monotonic
+                ),
+                source="speech",
+            )
+        else:
+            self._start_turn(turn_id, lambda: active_pipeline.process_speech(audio_bytes), source="speech")
 
     def _finalize_playback_window(self) -> None:
         self._playback_release_handle = None
@@ -1181,6 +1194,7 @@ class Live2DAssistant:
         pending_audio_bytes = 0
         with self._pending_speech_lock:
             self._speech_active = False
+            self._pending_speech_end_monotonic = time.perf_counter()
             should_arm_commit = bool(self._pending_speech_audio)
             pending_audio_bytes = len(self._pending_speech_audio)
         if should_arm_commit:
@@ -1278,6 +1292,7 @@ class Live2DAssistant:
             },
         }
         self._dispatch_frontend_event("onAudioReady", data)
+        get_turn_latency_tracker().mark("first_audio_out")
     
     async def _on_expression_change(self, expression: str):
         """Called when emotion is detected."""
@@ -1771,6 +1786,7 @@ class Live2DAssistant:
             self._loop_thread = None
         self._loop = None
         
+        get_turn_latency_tracker().log_summary(logger)
         logger.info("👋 Goodbye!")
 
     def set_layout_mode(self, layout: str) -> dict:
