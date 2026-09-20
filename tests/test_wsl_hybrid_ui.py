@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,10 @@ from src.utils.wsl_hybrid_ui import (
 )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Path.resolve() re-roots /mnt/c onto the current drive on Windows; WSL-only helper",
+)
 def test_wsl_path_to_windows_mnt_style(monkeypatch):
     # Force fallback conversion without calling wslpath
     monkeypatch.setattr("src.utils.wsl_hybrid_ui.shutil.which", lambda name: None)

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from src.utils import platform_compat
 
@@ -236,6 +239,7 @@ class _FakeProcess:
         self.killed = True
 
 
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="os.killpg is POSIX-only")
 def test_kill_process_tree_uses_posix_process_group(monkeypatch):
     process = _FakeProcess()
     signals: list[tuple[int, int]] = []

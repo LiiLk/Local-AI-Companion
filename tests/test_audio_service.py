@@ -50,6 +50,8 @@ def test_audio_service_toggle_mute_works_while_processing():
 
 def test_audio_service_unmute_while_processing_returns_to_processing_state():
     service = make_audio_service_state(muted_by_user=True, processing_blocked=True)
+    # Capture is already running here; a stopped service would retry start().
+    service._running = True
 
     muted = service.toggle_mute()
 
