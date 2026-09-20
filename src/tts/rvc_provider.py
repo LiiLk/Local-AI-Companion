@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -240,6 +241,13 @@ class RVCConverter:
         self._worker_stderr: deque[str] = deque(maxlen=50)
         self._worker_stderr_thread: threading.Thread | None = None
         self._warmed_up = False
+        self._worker_ready = False
+        self._worker_relaunch_count = 0
+        self._relaunching = False
+        self._relaunch_thread: threading.Thread | None = None
+        self._relaunch_lock = threading.Lock()
+        self._relaunch_cooldown_sec = 60.0
+        self._last_relaunch_at = float("-inf")
 
         if requested_index_path and self.index_rate <= 0:
             logger.info(
@@ -668,6 +676,7 @@ class RVCConverter:
     def _reset_worker_state(self) -> None:
         self._worker_process = None
         self._converter = None
+        self._worker_ready = False
 
     def _terminate_worker_process(self) -> None:
         process = self._worker_process
@@ -684,6 +693,57 @@ class RVCConverter:
             pass
         finally:
             self._reset_worker_state()
+
+    def _worker_is_ready(self) -> bool:
+        process = self._worker_process
+        return bool(
+            self._worker_ready and process is not None and process.poll() is None
+        )
+
+    def _schedule_worker_relaunch(self) -> None:
+        """Relaunch the worker in the background after a timeout.
+
+        At most one automatic relaunch per cooldown window is allowed, so a
+        persistently broken worker cannot spawn processes in a loop.
+        """
+        now = time.monotonic()
+        with self._relaunch_lock:
+            if now - self._last_relaunch_at < self._relaunch_cooldown_sec:
+                logger.warning(
+                    "RVC worker timed out but auto-relaunch is throttled "
+                    "(last relaunch %.1fs ago)",
+                    now - self._last_relaunch_at,
+                )
+                return
+            if self._relaunch_thread is not None and self._relaunch_thread.is_alive():
+                return
+            self._last_relaunch_at = now
+            self._worker_relaunch_count += 1
+            self._relaunching = True
+            self._relaunch_thread = threading.Thread(
+                target=self._relaunch_worker,
+                daemon=True,
+                name="RVCWorkerRelaunch",
+            )
+            self._relaunch_thread.start()
+
+    def _relaunch_worker(self) -> None:
+        try:
+            self._start_worker()
+            logger.info("RVC worker auto-relaunched after timeout")
+            was_warmed = self._warmed_up
+            self._warmed_up = False
+            if was_warmed:
+                try:
+                    self.warmup()
+                    logger.info("RVC worker re-warmed after relaunch")
+                except Exception as exc:
+                    logger.warning("RVC worker re-warmup failed: %s", exc)
+        except Exception as exc:
+            logger.error("RVC worker auto-relaunch failed: %s", exc)
+            self._terminate_worker_process()
+        finally:
+            self._relaunching = False
 
     def _read_worker_response_line(
         self,
@@ -710,6 +770,7 @@ class RVCConverter:
             status, payload = result_queue.get(timeout=max(timeout_sec, 0.1))
         except queue.Empty as exc:
             self._terminate_worker_process()
+            self._schedule_worker_relaunch()
             raise TimeoutError(
                 f"RVC worker {operation} timed out after {timeout_sec:.1f}s.\n"
                 f"{self._worker_error_summary()}"
@@ -780,6 +841,7 @@ class RVCConverter:
 
         self._converter = self._worker_process
         self._backend_name = "worker"
+        self._worker_ready = True
         logger.info("Loaded RVC backend: %s", self._backend_name)
 
     def _load(self) -> None:
@@ -898,6 +960,14 @@ class RVCConverter:
 
     def convert_file(self, input_path: str | Path, output_path: str | Path) -> Path:
         """Convert an audio file to the target voice."""
+        if self._backend_name == "worker" and not self._worker_is_ready():
+            if not self._relaunching:
+                self._schedule_worker_relaunch()
+            raise RuntimeError(
+                "RVC worker is not ready (relaunching or unavailable); "
+                "skipping conversion.\n"
+                f"{self._worker_error_summary()}"
+            )
         self._load()
 
         input_path = Path(input_path).resolve()

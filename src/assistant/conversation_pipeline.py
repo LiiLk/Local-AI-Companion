@@ -45,6 +45,11 @@ from src.utils.turn_latency import get_turn_latency_tracker
 
 logger = logging.getLogger(__name__)
 
+# Sentence fragments shorter than this are never used alone to judge the reply
+# language. Detecting a language on a fragment like "Sure!" produces false
+# negatives, which used to trigger a full-response fallback for the whole turn.
+MIN_LANGUAGE_CHECK_CHARS = 24
+
 
 def _describe_exception(exc: BaseException) -> str:
     message = str(exc).strip()
@@ -500,7 +505,22 @@ class ConversationPipeline:
             str(detect_text_language(clean, default=expected_language_code))
         )
         expected = self._normalize_supported_language(expected_language_code)
-        return bool(detected and expected and detected == expected)
+        if not detected or not expected or detected == expected:
+            return True
+
+        # Only a reply in a language this conversation actually uses is a real
+        # mismatch. langdetect returns spurious codes (ro, tl, ...) on short
+        # English text; treating those as inconclusive avoids pointless
+        # full-response rewrites that cost seconds of latency.
+        conversation_languages = {
+            self._normalize_supported_language(self._last_user_language_code),
+            self._normalize_supported_language(self._current_language_code),
+        }
+        conversation_languages.discard(None)
+        if detected not in conversation_languages:
+            return True
+
+        return False
 
     async def _rewrite_response_in_language(
         self,
@@ -873,7 +893,8 @@ class ConversationPipeline:
         first_sentence_submitted = False
         first_audio_sent = False
         fallback_to_full_response = False
-        first_sentence_checked = response_language_code is None
+        language_check_done = response_language_code is None
+        pending_language_sentences: list[str] = []
 
         async def _on_audio_ready(payload: dict):
             nonlocal first_audio_sent
@@ -931,6 +952,29 @@ class ConversationPipeline:
         )
         await tts_mgr.start()
 
+        async def _queue_sentence(sentence: str) -> None:
+            """Submit a sentence to TTS, marking the first real submission."""
+            nonlocal first_sentence_submitted
+            if not first_sentence_submitted:
+                first_sentence_submitted = True
+                get_turn_latency_tracker().mark("first_sentence")
+                if trace is not None:
+                    trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
+                logger.info(
+                    "First TTS chunk queued after %.1f ms: %r",
+                    (time.perf_counter() - llm_started) * 1000,
+                    sentence[:80],
+                )
+            await tts_mgr.submit(sentence)
+
+        def _language_text(sentences: list[str]) -> str:
+            joined = " ".join(sentences)
+            return self.emotion_detector.strip_markers(joined).strip()
+
+        async def _release_held_sentences(sentences: list[str]) -> None:
+            for queued in sentences:
+                await _queue_sentence(queued)
+
         try:
             async for chunk in self.llm.chat_stream(messages):
                 self._ensure_run_active(run_id)
@@ -953,60 +997,60 @@ class ConversationPipeline:
 
                 splitter.feed(chunk)
                 for sentence in splitter.get_sentences():
-                    if sentence.strip():
-                        self._ensure_run_active(run_id)
-                        if fallback_to_full_response:
+                    if not sentence.strip():
+                        continue
+                    self._ensure_run_active(run_id)
+                    if fallback_to_full_response:
+                        continue
+                    if response_language_code and not language_check_done:
+                        pending_language_sentences.append(sentence)
+                        combined = _language_text(pending_language_sentences)
+                        if len(combined) < MIN_LANGUAGE_CHECK_CHARS:
                             continue
-                        if not first_sentence_checked and response_language_code:
-                            first_sentence_checked = True
-                            if not self._response_matches_language(sentence, response_language_code):
-                                fallback_to_full_response = True
-                                logger.warning(
-                                    "First streamed sentence did not match %s; falling back to full-response rewrite",
-                                    get_language_name(response_language_code) or response_language_code,
-                                )
-                                continue
-                        if not first_sentence_submitted:
-                            first_sentence_submitted = True
-                            get_turn_latency_tracker().mark("first_sentence")
-                            if trace is not None:
-                                trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
-                            logger.info(
-                                "First TTS chunk queued after %.1f ms: %r",
-                                (time.perf_counter() - llm_started) * 1000,
-                                sentence[:80],
+                        language_check_done = True
+                        if not self._response_matches_language(combined, response_language_code):
+                            fallback_to_full_response = True
+                            logger.warning(
+                                "Accumulated streamed text did not match %s; falling back to full-response rewrite",
+                                get_language_name(response_language_code) or response_language_code,
                             )
-                        await tts_mgr.submit(sentence)
+                            continue
+                        await _release_held_sentences(pending_language_sentences)
+                        pending_language_sentences = []
+                        continue
+                    await _queue_sentence(sentence)
 
             remaining = splitter.flush()
             if remaining.strip():
                 self._ensure_run_active(run_id)
-                if (
-                    not fallback_to_full_response
-                    and not first_sentence_checked
-                    and response_language_code
-                ):
-                    first_sentence_checked = True
-                    if not self._response_matches_language(remaining, response_language_code):
+                if fallback_to_full_response:
+                    pass
+                elif response_language_code and not language_check_done:
+                    pending_language_sentences.append(remaining)
+                    combined = _language_text(pending_language_sentences)
+                    language_check_done = True
+                    if (
+                        len(combined) >= MIN_LANGUAGE_CHECK_CHARS
+                        and not self._response_matches_language(combined, response_language_code)
+                    ):
                         fallback_to_full_response = True
                         logger.warning(
-                            "First streamed sentence did not match %s; falling back to full-response rewrite",
+                            "Accumulated streamed text did not match %s; falling back to full-response rewrite",
                             get_language_name(response_language_code) or response_language_code,
                         )
-                if not fallback_to_full_response and not first_sentence_submitted:
-                    first_sentence_submitted = True
-                    get_turn_latency_tracker().mark("first_sentence")
-                    if trace is not None:
-                        trace["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
-                    logger.info(
-                        "First TTS chunk queued after %.1f ms: %r",
-                        (time.perf_counter() - llm_started) * 1000,
-                        remaining[:80],
-                    )
-                if not fallback_to_full_response:
-                    await tts_mgr.submit(remaining)
+                    else:
+                        await _release_held_sentences(pending_language_sentences)
+                        pending_language_sentences = []
+                else:
+                    await _queue_sentence(remaining)
 
-            await tts_mgr.finish()
+            if not language_check_done and pending_language_sentences:
+                # End of stream and the whole reply stayed under the threshold:
+                # a very short reply like "Sure!" is accepted as-is.
+                language_check_done = True
+                await _release_held_sentences(pending_language_sentences)
+                pending_language_sentences = []
+
             if fallback_to_full_response and response_language_code:
                 full_response = await self._ensure_response_language(
                     full_response,
@@ -1014,7 +1058,18 @@ class ConversationPipeline:
                     run_id,
                     trace,
                 )
-                await self._synthesize_and_send(full_response, run_id, trace)
+                fallback_splitter = SentenceSplitter()
+                fallback_splitter.feed(full_response)
+                for sentence in fallback_splitter.get_sentences():
+                    if sentence.strip():
+                        self._ensure_run_active(run_id)
+                        await _queue_sentence(sentence)
+                fallback_remaining = fallback_splitter.flush()
+                if fallback_remaining.strip():
+                    self._ensure_run_active(run_id)
+                    await _queue_sentence(fallback_remaining)
+
+            await tts_mgr.finish()
             return full_response
         except asyncio.CancelledError:
             await tts_mgr.cancel()
