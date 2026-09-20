@@ -113,6 +113,14 @@ tts:
   rate: "+0%"
   pitch: "+0Hz"
 
+  pocket:
+    voice: "alba"
+    language: "en"
+    ref_audio_path: null
+    python_path: ".venv-pocket-tts/Scripts/python.exe"
+    startup_timeout_sec: 300
+    request_timeout_sec: 60
+
   qwen3:
     model_id: "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     mode: "voice_clone"

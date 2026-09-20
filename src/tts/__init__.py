@@ -15,6 +15,7 @@ __all__ = [
     "ChatterboxTTSProvider",
     "Qwen3TTSProvider",
     "RoutedTTSProvider",
+    "PocketTTSWorkerProvider",
 ]
 
 
@@ -24,6 +25,7 @@ _PROVIDER_MODULES = {
     "ChatterboxTTSProvider": ".chatterbox_provider",
     "Qwen3TTSProvider": ".qwen3_tts_provider",
     "RoutedTTSProvider": ".routed_provider",
+    "PocketTTSWorkerProvider": ".pocket_tts_provider",
 }
 
 

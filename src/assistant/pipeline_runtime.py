@@ -303,6 +303,22 @@ def create_pipeline_tts(
     *,
     initial_language: str | None = None,
 ) -> tuple[Any, str]:
+    tts_config = config.get("tts", {})
+    if tts_config.get("provider") == "pocket":
+        from src.tts import PocketTTSWorkerProvider
+
+        pocket = tts_config.get("pocket", {})
+        tts = PocketTTSWorkerProvider(
+            voice=pocket.get("voice", "alba"),
+            language=pocket.get("language", "en"),
+            ref_audio_path=pocket.get("ref_audio_path"),
+            python_path=pocket.get("python_path", ".venv-pocket-tts/Scripts/python.exe"),
+            startup_timeout_sec=pocket.get("startup_timeout_sec", 300),
+            request_timeout_sec=pocket.get("request_timeout_sec", 60),
+        )
+        _maybe_set_tts_language(tts, initial_language)
+        return tts, "Pocket TTS (CPU worker)"
+
     from src.tts import (
         ChatterboxTTSProvider,
         EdgeTTSProvider,
