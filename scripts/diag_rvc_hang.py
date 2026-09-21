@@ -170,6 +170,11 @@ def transcribe_once(whisper, audio_path: Path, warm: bool) -> tuple[float, str]:
         return elapsed, f"error:{str(exc).splitlines()[0][:80]}"
 
 
+def whisper_warmup_ok(status: str) -> bool:
+    """Return True only when the Whisper warmup transcribe did not fail."""
+    return not status.startswith("error:")
+
+
 def convert_once(converter, audio_path: Path, out_path: Path) -> tuple[float, str]:
     started = time.perf_counter()
     try:
@@ -251,26 +256,36 @@ def main() -> int:
                 f"VRAM after Whisper init: used={mem['used']:.0f} free={mem['free']:.0f} MB"
             )
             log_report()
-            phase_b_rows = run_phase(
-                "B", converter, audios, tmp_dir, deadline, phase_b=True, whisper=whisper
-            )
-            report_rows.extend(phase_b_rows)
-            for row in phase_b_rows:
-                max_vram_used = max(
-                    max_vram_used, row["vram_before"], row["vram_after"]
+            if not whisper_warmup_ok(w_status):
+                notes.append(
+                    f"Whisper warmup failed ({w_status}); Phases B and C skipped"
                 )
+                log_report(
+                    "Whisper warmup FAILED; skipping Phase B and Phase C - no "
+                    "Whisper/RVC contention data was collected."
+                )
+                log_report()
+            else:
+                phase_b_rows = run_phase(
+                    "B", converter, audios, tmp_dir, deadline, phase_b=True, whisper=whisper
+                )
+                report_rows.extend(phase_b_rows)
+                for row in phase_b_rows:
+                    max_vram_used = max(
+                        max_vram_used, row["vram_before"], row["vram_after"]
+                    )
 
-            log_report()
-            log_report("Phase C: TRUE concurrency - Whisper in background thread "
-                       "while RVC worker converts")
-            phase_c_rows = run_phase_c(
-                converter, audios, tmp_dir, deadline, whisper
-            )
-            report_rows.extend(phase_c_rows)
-            for row in phase_c_rows:
-                max_vram_used = max(
-                    max_vram_used, row["vram_before"], row["vram_after"]
+                log_report()
+                log_report("Phase C: TRUE concurrency - Whisper in background thread "
+                           "while RVC worker converts")
+                phase_c_rows = run_phase_c(
+                    converter, audios, tmp_dir, deadline, whisper
                 )
+                report_rows.extend(phase_c_rows)
+                for row in phase_c_rows:
+                    max_vram_used = max(
+                        max_vram_used, row["vram_before"], row["vram_after"]
+                    )
         except Exception as exc:
             log_report(f"Phase B setup FAILED: {exc}")
             notes.append(f"Phase B setup failed: {exc}")

@@ -732,6 +732,9 @@ class RVCConverter:
     def _relaunch_worker(self) -> None:
         try:
             self._start_worker()
+            # Keep the worker advertised as not ready during the re-warmup so
+            # concurrent conversions fail fast instead of blocking behind it.
+            self._worker_ready = False
             logger.info("RVC worker auto-relaunched after timeout")
             was_warmed = self._warmed_up
             self._warmed_up = False
@@ -741,11 +744,13 @@ class RVCConverter:
                     logger.info("RVC worker re-warmed after relaunch")
                 except Exception as exc:
                     logger.warning("RVC worker re-warmup failed: %s", exc)
+            self._worker_ready = True
         except Exception as exc:
             logger.error("RVC worker auto-relaunch failed: %s", exc)
             self._terminate_worker_process()
         finally:
-            self._relaunching = False
+            with self._relaunch_lock:
+                self._relaunching = False
 
     def _read_worker_response_line(
         self,
@@ -979,14 +984,26 @@ class RVCConverter:
 
     def convert_file(self, input_path: str | Path, output_path: str | Path) -> Path:
         """Convert an audio file to the target voice."""
+        with self._relaunch_lock:
+            relaunching = self._relaunching
+        if relaunching:
+            # A relaunch may still be warming up; fail fast rather than queue
+            # behind it (or spawn a second worker when no backend is loaded yet).
+            raise RuntimeError(
+                "RVC worker is not ready (relaunching); skipping conversion.\n"
+                f"{self._worker_error_summary()}"
+            )
         if self._backend_name == "worker" and not self._worker_is_ready():
-            if not self._relaunching:
-                self._schedule_worker_relaunch()
+            self._schedule_worker_relaunch()
             raise RuntimeError(
                 "RVC worker is not ready (relaunching or unavailable); "
                 "skipping conversion.\n"
                 f"{self._worker_error_summary()}"
             )
+        return self._convert_file(input_path, output_path)
+
+    def _convert_file(self, input_path: str | Path, output_path: str | Path) -> Path:
+        """Run a conversion, bypassing the fast-fail guard (used by warmup)."""
         self._load()
 
         input_path = Path(input_path).resolve()
@@ -1074,7 +1091,7 @@ class RVCConverter:
         try:
             warmup_audio = np.zeros(16000, dtype=np.float32)
             sf.write(input_path, warmup_audio, 16000)
-            self.convert_file(input_path, output_path)
+            self._convert_file(input_path, output_path)
             self._warmed_up = True
         finally:
             input_path.unlink(missing_ok=True)

@@ -1079,6 +1079,11 @@ class ConversationPipeline:
         except asyncio.CancelledError:
             await tts_mgr.cancel()
             raise
+        except Exception:
+            # Any other failure (e.g. the language rewrite raising) must still
+            # tear down the TTS worker, or its task stays blocked on the queue.
+            await tts_mgr.cancel()
+            raise
     
     async def _synthesize_and_send(
         self,

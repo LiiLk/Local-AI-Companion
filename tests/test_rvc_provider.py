@@ -415,6 +415,99 @@ def test_worker_startup_times_out_and_resets_worker(tmp_path, monkeypatch):
     assert converter._worker_ready is False
 
 
+def test_convert_file_fast_fails_while_relaunching_without_backend(tmp_path, monkeypatch):
+    """Regression for LIL-67: after a first-startup timeout ``_backend_name`` is
+    still ``None`` while the relaunch thread is in flight. A concurrent
+    conversion must fail fast instead of calling ``_load()`` and spawning a
+    second worker in parallel with that relaunch.
+    """
+
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+    input_path.write_bytes(b"fake wav")
+
+    spawned: list[FakePopen] = []
+
+    class _RecordingPopen(FakePopen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            spawned.append(self)
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", _RecordingPopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+    )
+    # State left behind by a first-startup timeout, with the auto-relaunch
+    # thread still running.
+    converter._backend_name = None
+    converter._relaunching = True
+
+    with pytest.raises(RuntimeError, match="relaunching|not ready"):
+        converter.convert_file(input_path, output_path)
+
+    assert spawned == []
+
+
+def test_relaunch_defers_worker_ready_until_after_rewarmup(tmp_path, monkeypatch):
+    """Regression for LIL-67: the relaunched worker must not be advertised as
+    ready until its re-warmup finishes, otherwise concurrent conversions block
+    behind the warmup instead of failing fast.
+    """
+
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+    )
+    converter._backend_name = "worker"
+    converter._warmed_up = True
+
+    observed: dict[str, bool] = {}
+
+    def _fake_start_worker() -> None:
+        converter._worker_process = FakePopen()
+        converter._backend_name = "worker"
+        converter._worker_ready = True
+
+    def _fake_warmup() -> None:
+        observed["ready_during_warmup"] = converter._worker_ready
+        observed["relaunching_during_warmup"] = converter._relaunching
+        converter._warmed_up = True
+
+    monkeypatch.setattr(converter, "_start_worker", _fake_start_worker)
+    monkeypatch.setattr(converter, "warmup", _fake_warmup)
+
+    converter._relaunching = True
+    converter._relaunch_worker()
+
+    assert observed["ready_during_warmup"] is False
+    assert observed["relaunching_during_warmup"] is True
+    assert converter._worker_ready is True
+    assert converter._relaunching is False
+
+
 def _wait_until(predicate, timeout: float = 3.0, interval: float = 0.01) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
