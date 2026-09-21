@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import Future
 import json
+import logging
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -447,6 +448,37 @@ def test_commit_retains_audio_until_first_response_audio():
 
     assert assistant._inflight_turn_audio == b"A" * 3200
     assert assistant._inflight_turn_audio_turn_id == captured["turn_id"]
+
+
+def test_commit_pending_speech_records_latency_for_omni_pipeline(monkeypatch):
+    """Omni/gemma turns must start and finish a latency turn like the pipeline."""
+    from src.utils.turn_latency import TurnLatencyTracker
+
+    assistant = _make_assistant()
+    tracker = TurnLatencyTracker()
+    monkeypatch.setattr(
+        "src.assistant.app.get_turn_latency_tracker", lambda: tracker
+    )
+
+    async def process_speech(audio_bytes):
+        tracker.mark("first_audio_out")
+        return "ok"
+
+    assistant.pipeline = SimpleNamespace(process_speech=process_speech)
+    captured = {}
+    assistant._start_turn = lambda turn_id, runner, source: captured.update(
+        turn_id=turn_id, runner=runner
+    )
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    _delay, handle = assistant._loop.scheduled[-1]
+    handle.callback()
+
+    assert asyncio.run(captured["runner"]()) == "ok"
+    assert tracker.summary()["count"] == 1
 
 
 def test_first_response_audio_clears_retained_turn_audio():

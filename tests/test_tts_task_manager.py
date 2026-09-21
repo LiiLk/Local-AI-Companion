@@ -249,3 +249,35 @@ async def test_deletes_provider_owned_audio_path_after_delivery(tmp_path):
 
     assert delivered == ["Clean me up."]
     assert not tts.generated_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_invalid_synthesis_does_not_mark_tts_first_audio(monkeypatch):
+    """An empty/invalid synthesis must not count as the first audio."""
+
+    class EmptyTTS:
+        async def synthesize(self, text, output_path=None):
+            return TTSResult()
+
+    from src.utils.turn_latency import TurnLatencyTracker
+
+    tracker = TurnLatencyTracker()
+    monkeypatch.setattr(
+        "src.tts.tts_task_manager.get_turn_latency_tracker", lambda: tracker
+    )
+
+    delivered = []
+
+    async def on_audio(payload):
+        delivered.append(payload)
+
+    mgr = TTSTaskManager(tts=EmptyTTS(), on_audio_ready=on_audio)
+    await mgr.start()
+    tracker.start(turn_id=1)
+    await mgr.submit("Hello.")
+    await mgr.finish()
+
+    assert delivered == []
+    # No usable audio was produced, so nothing should have been marked: the
+    # fallback would otherwise report the empty synthesis as first audio.
+    assert tracker.finish() == {}

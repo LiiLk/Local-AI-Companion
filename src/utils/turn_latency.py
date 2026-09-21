@@ -14,6 +14,7 @@ pipeline, websocket server) can import and mark stages with a single call.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import math
 import threading
@@ -52,11 +53,23 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[rank]
 
 
+class _TurnState:
+    """Mutable state for one in-flight turn, isolated per execution context."""
+
+    __slots__ = ("turn_id", "t0", "marks")
+
+    def __init__(self, turn_id: object, t0: float) -> None:
+        self.turn_id = turn_id
+        self.t0 = t0
+        self.marks: dict[str, float] = {}
+
+
 class TurnLatencyTracker:
     """Collect the first occurrence of each latency stage for a turn.
 
-    A single instance tracks one active turn at a time and keeps a bounded
-    history of completed turns so a session summary can be reported later.
+    Each execution context (asyncio task or thread) owns its own active turn,
+    so overlapping turns from concurrent websocket clients no longer clobber
+    each other. The completed-turn history is shared and lock-protected.
     """
 
     def __init__(
@@ -69,49 +82,50 @@ class TurnLatencyTracker:
         self._lock = threading.Lock()
         self._history: deque[float] = deque(maxlen=max(1, int(history_size)))
         self._counter = 0
-        self._turn_id: Optional[object] = None
-        self._t0: Optional[float] = None
-        self._marks: dict[str, float] = {}
+        self._current: contextvars.ContextVar[Optional[_TurnState]] = (
+            contextvars.ContextVar("turn_latency_current", default=None)
+        )
 
     def start(self, turn_id: object = None, t0: Optional[float] = None) -> None:
         """Begin a new turn at speech end (``t0``) or now."""
         with self._lock:
             self._counter += 1
-            self._turn_id = turn_id if turn_id is not None else self._counter
-            self._t0 = t0 if t0 is not None else self._clock()
-            self._marks = {}
+            resolved_id = turn_id if turn_id is not None else self._counter
+        self._current.set(
+            _TurnState(resolved_id, t0 if t0 is not None else self._clock())
+        )
 
     def ensure_started(self, turn_id: object = None, t0: Optional[float] = None) -> None:
-        """Start a turn only if none is currently active."""
+        """Start a turn only if this context has no active turn."""
+        if self._current.get() is not None:
+            return
         with self._lock:
-            if self._t0 is not None:
+            if self._current.get() is not None:
                 return
             self._counter += 1
-            self._turn_id = turn_id if turn_id is not None else self._counter
-            self._t0 = t0 if t0 is not None else self._clock()
-            self._marks = {}
+            resolved_id = turn_id if turn_id is not None else self._counter
+        self._current.set(
+            _TurnState(resolved_id, t0 if t0 is not None else self._clock())
+        )
 
     def mark(self, stage: str) -> None:
         """Record the first occurrence of ``stage``; later calls are ignored.
 
         Safe to call without an active turn (no-op).
         """
-        with self._lock:
-            if self._t0 is None or stage in self._marks:
-                return
-            self._marks[stage] = (self._clock() - self._t0) * 1000.0
+        turn = self._current.get()
+        if turn is None or stage in turn.marks:
+            return
+        turn.marks[stage] = (self._clock() - turn.t0) * 1000.0
 
     def finish(self) -> dict[str, float]:
         """Close the active turn, log one structured line and return the marks."""
-        with self._lock:
-            if self._t0 is None:
-                return {}
-            turn_id = self._turn_id
-            marks = self._ordered_marks()
-            self._turn_id = None
-            self._t0 = None
-            self._marks = {}
+        turn = self._current.get()
+        if turn is None:
+            return {}
+        self._current.set(None)
 
+        marks = self._ordered_marks(turn.marks)
         if not marks:
             return {}
 
@@ -123,7 +137,7 @@ class TurnLatencyTracker:
             with self._lock:
                 self._history.append(total)
 
-        logger.info("%s", self._format_line(turn_id, marks))
+        logger.info("%s", self._format_line(turn.turn_id, marks))
         return marks
 
     def summary(self) -> dict[str, float]:
@@ -156,9 +170,9 @@ class TurnLatencyTracker:
             summary["p95_ms"],
         )
 
-    def _ordered_marks(self) -> dict[str, float]:
-        ordered = {stage: self._marks[stage] for stage in STAGE_ORDER if stage in self._marks}
-        for stage, value in self._marks.items():
+    def _ordered_marks(self, marks: dict[str, float]) -> dict[str, float]:
+        ordered = {stage: marks[stage] for stage in STAGE_ORDER if stage in marks}
+        for stage, value in marks.items():
             if stage not in ordered:
                 ordered[stage] = value
         return ordered
