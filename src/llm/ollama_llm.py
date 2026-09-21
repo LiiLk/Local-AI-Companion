@@ -48,23 +48,52 @@ class OllamaLLM(BaseLLM):
     def _format_messages(self, messages: list[Message]) -> list[dict[str, str]]:
         return [{"role": m.role, "content": m.content} for m in messages]
 
-    def _build_payload(self, messages: list[Message], stream: bool) -> dict[str, Any]:
+    def _resolve_think(self, options_override: dict[str, Any] | None) -> bool | None:
+        """Map a per-request override onto Ollama's ``think`` flag.
+
+        ``reasoning.effort == "none"`` disables thinking, any other effort
+        enables it. An explicit ``think`` key wins when present. Providers do
+        not support ``max_completion_tokens`` here, so it is ignored.
+        """
+        think = self.think
+        if not options_override:
+            return think
+        if "think" in options_override:
+            return options_override["think"]
+        effort = (options_override.get("reasoning") or {}).get("effort")
+        if effort is not None:
+            return str(effort).lower() != "none"
+        return think
+
+    def _build_payload(
+        self,
+        messages: list[Message],
+        stream: bool,
+        options_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": self._format_messages(messages),
             "stream": stream,
         }
-        if self.think is not None:
-            payload["think"] = self.think
+        think = self._resolve_think(options_override)
+        if think is not None:
+            payload["think"] = think
         if self.options:
             payload["options"] = self.options
         if self.keep_alive is not None:
             payload["keep_alive"] = self.keep_alive
         return payload
 
-    def _should_retry_without_think(self, error_text: str) -> bool:
+    def _should_retry_without_think(
+        self,
+        error_text: str,
+        has_think: bool | None = None,
+    ) -> bool:
+        if has_think is None:
+            has_think = self.think is not None
         lowered = (error_text or "").lower()
-        return self.think is not None and "think" in lowered
+        return has_think and "think" in lowered
 
     @staticmethod
     def _error_text(exc: BaseException) -> str:
@@ -106,7 +135,7 @@ class OllamaLLM(BaseLLM):
             return response
 
         error_text = response.text
-        if self._should_retry_without_think(error_text):
+        if self._should_retry_without_think(error_text, payload.get("think") is not None):
             retry_payload = {key: value for key, value in payload.items() if key != "think"}
             self.degraded_reason = "Ollama daemon rejected the think parameter; retried without it."
             response = await self._client.post("/api/chat", json=retry_payload)
@@ -124,8 +153,13 @@ class OllamaLLM(BaseLLM):
         data = response.json()
         return LLMResponse(content=data["message"]["content"], model=data["model"])
 
-    async def chat_stream(self, messages: list[Message]) -> AsyncGenerator[str, None]:
-        payload = self._build_payload(messages, stream=True)
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        options_override: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        payload = self._build_payload(messages, stream=True, options_override=options_override)
+        has_think = payload.get("think") is not None
 
         async def _stream_once(stream_payload: dict[str, Any]):
             async with self._client.stream("POST", "/api/chat", json=stream_payload) as response:
@@ -154,7 +188,7 @@ class OllamaLLM(BaseLLM):
             error_text = ""
             if exc.__cause__:
                 error_text = str(exc.__cause__)
-            if not self._should_retry_without_think(error_text):
+            if not self._should_retry_without_think(error_text, has_think):
                 raise
 
         retry_payload = {key: value for key, value in payload.items() if key != "think"}

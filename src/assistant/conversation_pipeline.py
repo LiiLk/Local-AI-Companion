@@ -31,6 +31,10 @@ from src.assistant.conversation_memory import (
     ConversationMemoryStore,
     initial_messages,
 )
+from src.assistant.reasoning_router import (
+    AdaptiveReasoningConfig,
+    stream_llm_with_adaptive_reasoning,
+)
 from src.llm.base import BaseLLM, Message
 from src.tts.base import BaseTTS, prefers_full_response_tts
 from src.tts.tts_task_manager import TTSTaskManager
@@ -75,6 +79,9 @@ class ConversationConfig:
     auto_detect_language: bool = True
     asr_language: Optional[str] = None
     reply_language: Optional[str] = None
+
+    # Adaptive reasoning ("fast by default, think when needed")
+    adaptive_reasoning: Optional[AdaptiveReasoningConfig] = None
 
     # Omni mode (MiniCPM-o)
     omni_use_single_pass: bool = True  # Single omni call for speech -> response
@@ -561,6 +568,7 @@ class ConversationPipeline:
             run_id,
             trace,
             emit_chunks=False,
+            use_adaptive_reasoning=False,
         )
         rewritten = rewritten.strip()
         return rewritten or text
@@ -860,12 +868,24 @@ class ConversationPipeline:
         trace: Optional[dict[str, float | int | str | None]] = None,
         *,
         emit_chunks: bool = True,
+        use_adaptive_reasoning: bool = True,
     ) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
         first_token_seen = False
-        
-        async for chunk in self.llm.chat_stream(messages):
+
+        async def _on_escalation(decision: str, effort: str, filler: str) -> None:
+            await self._synthesize_and_send(filler, run_id, trace)
+
+        reasoning_config = (
+            self.config.adaptive_reasoning if use_adaptive_reasoning else None
+        )
+        async for chunk in stream_llm_with_adaptive_reasoning(
+            self.llm,
+            messages,
+            reasoning_config,
+            on_escalation=_on_escalation,
+        ):
             self._ensure_run_active(run_id)
             if not first_token_seen:
                 first_token_seen = True
@@ -980,8 +1000,18 @@ class ConversationPipeline:
             for queued in sentences:
                 await _queue_sentence(queued)
 
+        async def _on_escalation(decision: str, effort: str, filler: str) -> None:
+            # Speak the waiting phrase right away; it is never part of the
+            # recorded response or of the routing marker stream.
+            await _queue_sentence(filler)
+
         try:
-            async for chunk in self.llm.chat_stream(messages):
+            async for chunk in stream_llm_with_adaptive_reasoning(
+                self.llm,
+                messages,
+                self.config.adaptive_reasoning,
+                on_escalation=_on_escalation,
+            ):
                 self._ensure_run_active(run_id)
                 full_response += chunk
 

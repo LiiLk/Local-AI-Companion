@@ -76,13 +76,32 @@ class OpenRouterLLM(BaseLLM):
     def _format_messages(self, messages: list[Message]) -> list[dict[str, str]]:
         return [{"role": m.role, "content": m.content} for m in messages]
 
-    def _build_payload(self, messages: list[Message], stream: bool) -> dict[str, Any]:
+    @staticmethod
+    def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+        """Merge ``override`` into ``base`` recursively, preserving key order."""
+        merged = dict(base)
+        for key, value in override.items():
+            current = merged.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                merged[key] = OpenRouterLLM._deep_merge(current, value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _build_payload(
+        self,
+        messages: list[Message],
+        stream: bool,
+        options_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": self._format_messages(messages),
             "stream": stream,
         }
         payload.update(self.options)
+        if options_override:
+            payload = self._deep_merge(payload, options_override)
         return payload
 
     @staticmethod
@@ -159,8 +178,12 @@ class OpenRouterLLM(BaseLLM):
             content = data["choices"][0].get("message", {}).get("content", "") or ""
         return LLMResponse(content=content, model=data.get("model", self.model))
 
-    async def chat_stream(self, messages: list[Message]) -> AsyncGenerator[str, None]:
-        payload = self._build_payload(messages, stream=True)
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        options_override: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        payload = self._build_payload(messages, stream=True, options_override=options_override)
         async with self._client.stream("POST", "/chat/completions", json=payload) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

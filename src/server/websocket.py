@@ -39,6 +39,10 @@ from src.assistant.conversation_memory import (
     ConversationMemoryStore,
     initial_messages,
 )
+from src.assistant.reasoning_router import (
+    AdaptiveReasoningConfig,
+    stream_llm_with_adaptive_reasoning,
+)
 from src.utils.audio_analysis import analyze_audio_volumes, read_wav_pcm, calculate_audio_duration_ms
 from src.utils.character_loader import resolve_character_config
 from src.utils.config_loader import load_yaml_config
@@ -1537,9 +1541,26 @@ class WebSocketManager:
         )
         await tts_mgr.start()
 
+        adaptive_reasoning = AdaptiveReasoningConfig.from_dict(
+            state.config.get("llm", {}).get("adaptive_reasoning")
+        )
+
+        async def _on_escalation(decision: str, effort: str, filler: str) -> None:
+            nonlocal first_sentence_logged
+            if not first_sentence_logged:
+                first_sentence_logged = True
+                trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
+                latency.mark("first_sentence")
+            await tts_mgr.submit(filler)
+
         try:
             llm = state.get_llm()
-            async for chunk in llm.chat_stream(llm_messages):
+            async for chunk in stream_llm_with_adaptive_reasoning(
+                llm,
+                llm_messages,
+                adaptive_reasoning,
+                on_escalation=_on_escalation,
+            ):
                 if "llm_first_token_epoch_ms" not in trace_data:
                     trace_data["llm_first_token_epoch_ms"] = int(time.time() * 1000)
                     latency.mark("llm_first_token")
