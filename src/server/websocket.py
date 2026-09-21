@@ -225,7 +225,6 @@ class ConversationState:
         """Get or create VAD engine (lazy loading)."""
         if self.vad is None:
             from src.vad.silero_vad import VADConfig
-            from src.vad.smart_turn import SmartTurnConfig, resolve_vad_required_misses
 
             llm_provider = self.config.get("llm", {}).get("provider", "ollama")
             # Read VAD settings: gemma-omni uses gemma config, pipeline uses pipeline config
@@ -236,30 +235,40 @@ class ConversationState:
             pipeline_config = self.config.get("pipeline", {})
             # Pipeline-level vad_required_misses overrides the default 30
             default_misses = pipeline_config.get("vad_required_misses", 30)
-            configured_misses = vad_source.get("vad_required_misses", default_misses)
-            audio_config = self.config.get("audio", {}) if isinstance(self.config, dict) else {}
-            try:
-                fallback_delay = max(0, int(audio_config.get("speech_commit_delay_ms", 700)))
-            except (TypeError, ValueError):
-                fallback_delay = 700
-            turn_detection_config = SmartTurnConfig.from_config(
-                audio_config, fallback_delay_ms=fallback_delay
-            )
-            detector = self.get_smart_turn()
-            required_misses = resolve_vad_required_misses(
-                turn_detection_config,
-                detector_available=getattr(detector, "available", True),
-                default_misses=configured_misses,
-            )
+            self._configured_vad_required_misses = vad_source.get("vad_required_misses", default_misses)
             vad_config = VADConfig(
                 sample_rate=16000,
                 prob_threshold=vad_source.get("vad_prob_threshold", 0.5),
                 db_threshold=vad_source.get("vad_db_threshold", -50),
                 required_hits=vad_source.get("vad_required_hits", 3),
-                required_misses=required_misses,
+                required_misses=self.effective_vad_required_misses(),
             )
             self.vad = SileroVAD(config=vad_config)
         return self.vad
+
+    def effective_vad_required_misses(self) -> int:
+        """VAD end-of-speech silence window for this mode.
+
+        The shorter Smart Turn window only applies to the pipeline path, which
+        actually calls ``_arm_adaptive_speech_commit``. Omni modes never run
+        Smart Turn, so they keep their configured silence window.
+        """
+        from src.vad.smart_turn import resolve_vad_required_misses
+
+        detector = self.get_smart_turn()
+        detector_available = self.mode == "pipeline" and bool(
+            getattr(detector, "available", True)
+        )
+        return resolve_vad_required_misses(
+            detector.config,
+            detector_available=detector_available,
+            default_misses=getattr(self, "_configured_vad_required_misses", 30),
+        )
+
+    def sync_vad_required_misses(self) -> None:
+        """Re-apply the silence window once Smart Turn availability is known."""
+        if self.vad is not None:
+            self.vad.config.required_misses = self.effective_vad_required_misses()
 
     def get_smart_turn(self):
         """Get or create the shared Smart Turn end-of-turn detector (lazy)."""
@@ -2097,6 +2106,8 @@ class WebSocketManager:
                         logger.info("Smart Turn ready for %s", client_id)
                 except Exception as e:
                     logger.warning("Smart Turn warmup warning for %s: %s", client_id, e)
+                # Detector availability is now known: pick the VAD silence window.
+                state.sync_vad_required_misses()
 
                 llm_provider = state.config.get("llm", {}).get("provider", "ollama")
                 if llm_provider == "gemma" and is_connected():

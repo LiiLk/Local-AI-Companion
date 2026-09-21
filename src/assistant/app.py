@@ -658,11 +658,7 @@ class Live2DAssistant:
         self._default_vad_required_misses = configured_misses
         # While Smart Turn is active we can end segments earlier: the semantic
         # detector, not the long VAD silence window, decides the actual turn end.
-        vad_required_misses = resolve_vad_required_misses(
-            self._turn_detection_config,
-            detector_available=True,
-            default_misses=configured_misses,
-        )
+        vad_required_misses = self._effective_vad_required_misses()
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=start_muted,
@@ -765,19 +761,27 @@ class Live2DAssistant:
             self._smart_turn = detector
         return detector
 
+    def _uses_adaptive_turn_detection(self) -> bool:
+        """True when this mode runs the Smart Turn driven pipeline path."""
+        return getattr(self, "config", {}).get("mode", "pipeline") == "pipeline"
+
+    def _effective_vad_required_misses(self) -> int:
+        detector_available = (
+            self._uses_adaptive_turn_detection() and self._get_smart_turn().available
+        )
+        return resolve_vad_required_misses(
+            self._turn_detection_config,
+            detector_available=detector_available,
+            default_misses=getattr(self, "_default_vad_required_misses", 30),
+        )
+
     def _sync_vad_turn_detection_misses(self) -> None:
         """Use the shorter VAD silence window only while Smart Turn is usable."""
         audio_service = self.audio_service
         setter = getattr(audio_service, "set_vad_required_misses", None)
         if not callable(setter):
             return
-        detector = self._get_smart_turn()
-        misses = resolve_vad_required_misses(
-            self._turn_detection_config,
-            detector_available=detector.available,
-            default_misses=getattr(self, "_default_vad_required_misses", 30),
-        )
-        setter(misses)
+        setter(self._effective_vad_required_misses())
 
     def _arm_pending_speech_commit(self, delay_ms: Optional[int] = None) -> None:
         if delay_ms is None:
@@ -1332,8 +1336,11 @@ class Live2DAssistant:
             if self._allow_barge_in():
                 interrupted_turn_id = self._active_turn_id if self._active_turn_id is not None else self._latest_audio_turn_id
                 if interrupted_turn_id is not None:
-                    self._interrupt_current_turn("barge-in")
+                    # Re-merge before cancelling: a real future runs its done
+                    # callback synchronously on cancel, clearing the inflight
+                    # audio for this turn in the process.
                     self._requeue_interrupted_turn_audio(interrupted_turn_id)
+                    self._interrupt_current_turn("barge-in")
             else:
                 self._drop_current_speech = True
                 logger.info("Ignoring speech start while assistant is busy (barge-in disabled)")
