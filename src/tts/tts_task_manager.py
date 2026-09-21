@@ -20,6 +20,7 @@ from typing import Any, Callable, Coroutine, Optional
 import numpy as np
 
 from src.utils.turn_latency import get_turn_latency_tracker
+from src.utils.tts_text import has_speakable_content, prepare_text_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +134,10 @@ class TTSTaskManager:
             detected = self._emotion_detector.detect(text)
             if detected and self._on_expression:
                 await self._on_expression(detected)
-            text = self._emotion_detector.strip_markers(text)
-            if not text.strip():
-                return
+
+        text = prepare_text_for_tts(text, self._emotion_detector)
+        if not has_speakable_content(text):
+            return
 
         full_wav: Optional[bytes] = None
         pcm: Optional[bytes] = None

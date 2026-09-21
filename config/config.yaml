@@ -18,6 +18,17 @@ server:
 pipeline:
   vad_required_misses: 20
   reply_language: "en"
+  # Generic spoken-style guidance appended to the character system prompt when
+  # the reply is synthesized as voice. Set to "" to disable it entirely.
+  voice_style_prompt: |
+    You are speaking out loud in a real-time voice conversation.
+    Reply in natural spoken language, using 1 to 3 sentences by default.
+    If the user explicitly asks for a detailed explanation, use at most 5 to 6
+    sentences, then offer to continue.
+    Never use Markdown, lists, headings or emojis, and do not put
+    abbreviations in parentheses. Write numbers and symbols the way they are
+    pronounced. Emotion markers requested by your character instructions are
+    still allowed.
 
 memory:
   enabled: true

@@ -227,13 +227,29 @@ def resolve_initial_tts_language(
     return config.get("pipeline", {}).get("reply_language") or fallback_language
 
 
+def resolve_pipeline_system_prompt(config: dict) -> str:
+    """Return the character system prompt plus the generic voice-style rule.
+
+    ``pipeline.voice_style_prompt`` is appended only when configured, so an
+    empty string disables it and the character personality is left untouched.
+    """
+    character = config.get("character", {})
+    base_prompt = character.get("system_prompt", "You are a helpful assistant.")
+    voice_style = str(
+        config.get("pipeline", {}).get("voice_style_prompt", "") or ""
+    ).strip()
+    if not voice_style:
+        return base_prompt
+    return f"{base_prompt}\n\n{voice_style}"
+
+
 def build_pipeline_conversation_config(config: dict) -> ConversationConfig:
     character_config = config.get("character", {})
     tts_config = config.get("tts", {})
     asr_config = config.get("asr", {})
     return ConversationConfig(
         character_name=character_config.get("name", "AI"),
-        system_prompt=character_config.get("system_prompt", "You are a helpful assistant."),
+        system_prompt=resolve_pipeline_system_prompt(config),
         stream_tts=tts_config.get("stream_tts", True),
         tts_max_queue_size=max(0, int(tts_config.get("max_queue_size", 8))),
         auto_detect_language=tts_config.get("auto_detect_language", True),

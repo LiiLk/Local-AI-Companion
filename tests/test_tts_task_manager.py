@@ -82,6 +82,25 @@ async def test_skips_empty_text():
 
 
 @pytest.mark.asyncio
+async def test_normalizes_markdown_and_drops_marker_only_segments():
+    """Shared TTS choke point keeps words and skips non-speakable segments."""
+    tts = FakeTTS()
+    delivered = []
+
+    async def on_audio(payload):
+        delivered.append(payload["text"])
+
+    mgr = TTSTaskManager(tts=tts, on_audio_ready=on_audio)
+    await mgr.start()
+    await mgr.submit("The **Ergosphere** region.")
+    await mgr.submit("**1.")
+    await mgr.finish()
+
+    assert delivered == ["The Ergosphere region."]
+    assert tts.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_handles_tts_error_gracefully():
     """TTS failure on one sentence doesn't crash the pipeline."""
 

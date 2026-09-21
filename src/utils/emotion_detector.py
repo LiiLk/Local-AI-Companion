@@ -73,12 +73,35 @@ class EmotionDetector:
     # Chatterbox emotion tags to preserve in TTS text
     CHATTERBOX_TAGS = {"laugh", "chuckle", "cough", "sigh"}
 
+    # Common action/stage directions the characters use in their prompts.
+    # Only words from this set (plus the emotion mapping and Chatterbox tags)
+    # are treated as removable markers, so real words wrapped in Markdown or
+    # parentheses are never deleted from the TTS text.
+    KNOWN_ACTION_WORDS = {
+        "giggle", "giggles", "giggling",
+        "laugh", "laughs", "laughing", "chuckle", "chuckles", "chuckling",
+        "sigh", "sighs", "sighing", "cough", "coughs", "coughing",
+        "smile", "smiles", "smiling", "smirk", "smirks", "smirking",
+        "whisper", "whispers", "whispering", "gasp", "gasps", "gasping",
+        "yawn", "yawns", "yawning", "hum", "hums", "humming",
+        "nod", "nods", "nodding", "wink", "winks", "winking",
+        "shrug", "shrugs", "shrugging", "pout", "pouts", "pouting",
+        "bounce", "bounces", "bouncing", "tilt", "tilts", "tilting",
+    }
+
     def __init__(self, config: Optional[EmotionConfig] = None):
         self.config = config or EmotionConfig()
         self._compiled_patterns = [
             re.compile(p, re.IGNORECASE) 
             for p in self.config.patterns
         ]
+
+    def _known_marker_words(self) -> set[str]:
+        return (
+            set(self.config.mapping)
+            | self.CHATTERBOX_TAGS
+            | self.KNOWN_ACTION_WORDS
+        )
     
     def detect(self, text: str) -> Optional[str]:
         """
@@ -140,49 +163,64 @@ class EmotionDetector:
     
     def strip_markers(self, text: str) -> str:
         """
-        Remove emotion markers from text for TTS.
-        
-        The TTS should not read "(happy)" or "*excited*" aloud.
-        
+        Remove known emotion/action markers from text for TTS.
+
+        The TTS should not read "(happy)" or "*excited*" aloud, but a real word
+        that merely sits inside asterisks or parentheses (for example
+        "**Ergosphere**" or "(EV)") must be preserved.
+
         Args:
             text: Input text with emotion markers
-            
+
         Returns:
             Clean text without markers
         """
+        known = self._known_marker_words()
+
+        def _replace(match: re.Match) -> str:
+            return "" if match.group(1).lower() in known else match.group(0)
+
         result = text
         for pattern in self._compiled_patterns:
-            result = pattern.sub('', result)
-        
+            result = pattern.sub(_replace, result)
+
         # Clean up extra whitespace
         result = re.sub(r'\s+', ' ', result).strip()
         return result
 
     def strip_markers_for_tts(self, text: str) -> str:
         """
-        Remove emotion markers but KEEP Chatterbox tags for TTS.
+        Remove known emotion/action markers but KEEP Chatterbox tags for TTS.
 
         Chatterbox natively interprets [laugh], [chuckle], [cough], [sigh].
-        These must be preserved in the text sent to TTS.
-        All other markers are stripped.
+        These must be preserved in the text sent to TTS. Only markers whose
+        inner word belongs to the project's known emotion/action vocabulary are
+        removed, so ordinary words are never deleted.
 
         Args:
             text: Input text with emotion markers
 
         Returns:
-            Clean text with only Chatterbox tags remaining
+            Clean text with only Chatterbox tags and ordinary words remaining
         """
+        known = self._known_marker_words()
+
+        def _replace(match: re.Match) -> str:
+            return "" if match.group(1).lower() in known else match.group(0)
+
+        def _replace_bracket(match: re.Match) -> str:
+            word = match.group(1).lower()
+            if word in self.CHATTERBOX_TAGS:
+                return match.group(0)
+            return "" if word in known else match.group(0)
+
         result = text
         # Remove (happy), *excited*, <blush>
-        result = re.sub(r'\((\w+)\)', '', result)
-        result = re.sub(r'\*(\w+)\*', '', result)
-        result = re.sub(r'<(\w+)>', '', result)
-        # Remove [brackets] EXCEPT Chatterbox tags
-        result = re.sub(
-            r'\[(\w+)\]',
-            lambda m: m.group(0) if m.group(1).lower() in self.CHATTERBOX_TAGS else '',
-            result,
-        )
+        result = re.sub(r'\((\w+)\)', _replace, result)
+        result = re.sub(r'\*(\w+)\*', _replace, result)
+        result = re.sub(r'<(\w+)>', _replace, result)
+        # Remove known [brackets] EXCEPT Chatterbox tags, keep unknown words
+        result = re.sub(r'\[(\w+)\]', _replace_bracket, result)
         # Clean up extra whitespace
         result = re.sub(r'\s+', ' ', result).strip()
         return result

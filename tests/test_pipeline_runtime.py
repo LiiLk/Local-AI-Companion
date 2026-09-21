@@ -59,6 +59,29 @@ def test_build_pipeline_conversation_config_uses_pipeline_defaults():
     assert conversation_config.reply_language == "en"
 
 
+def test_voice_style_prompt_is_appended_when_configured():
+    config = {
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {"voice_style_prompt": "Speak naturally, 1 to 3 sentences."},
+    }
+
+    conversation_config = build_pipeline_conversation_config(config)
+
+    assert conversation_config.system_prompt.startswith("You are March 7th.")
+    assert "Speak naturally, 1 to 3 sentences." in conversation_config.system_prompt
+
+
+def test_voice_style_prompt_is_omitted_when_empty():
+    config = {
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {"voice_style_prompt": ""},
+    }
+
+    conversation_config = build_pipeline_conversation_config(config)
+
+    assert conversation_config.system_prompt == "You are March 7th."
+
+
 def test_preload_pipeline_asr_uses_get_model_fallback():
     class FakeASR:
         def __init__(self):

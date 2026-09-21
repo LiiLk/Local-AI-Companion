@@ -7,6 +7,7 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 import soundfile as sf
 
@@ -49,6 +50,16 @@ class FakeConfig:
         self.x_query = 10
         self.x_center = 60
         self.x_max = 65
+
+
+class DurationPreservingInferRVC(FakeInferRVC):
+    """InferRVC stand-in that keeps the input duration at tgt_sr."""
+
+    def __call__(self, audio_path: str, **kwargs):
+        audio, sample_rate = sf.read(audio_path, dtype="float32")
+        target_rate = getattr(self, "tgt_sr", None) or self.outputfreq
+        samples = int(round(len(audio) / float(sample_rate) * target_rate))
+        return np.zeros(samples, dtype=np.float32)
 
 
 class _FakeEmptyStream:
@@ -213,6 +224,37 @@ def test_convert_file_with_inferrvc_backend(tmp_path, monkeypatch):
     assert result == output_path
     assert sample_rate == 32000
     assert audio.shape[0] == 4
+
+
+def test_inferrvc_backend_trims_short_input_padding(tmp_path, monkeypatch):
+    inferrvc_module = types.ModuleType("inferrvc")
+    inferrvc_module.RVC = DurationPreservingInferRVC
+    inferrvc_configs_module = types.ModuleType("inferrvc.configs")
+    inferrvc_config_module = types.ModuleType("inferrvc.configs.config")
+    inferrvc_config_module.Config = FakeConfig
+
+    monkeypatch.setitem(sys.modules, "inferrvc", inferrvc_module)
+    monkeypatch.setitem(sys.modules, "inferrvc.configs", inferrvc_configs_module)
+    monkeypatch.setitem(sys.modules, "inferrvc.configs.config", inferrvc_config_module)
+
+    model_path = tmp_path / "March-7th.pth"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    model_path.write_bytes(b"fake model")
+    sf.write(input_path, np.zeros(8000, dtype=np.float32), 16000)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="inferrvc",
+    )
+
+    result = converter.convert_file(input_path, output_path)
+    audio, sample_rate = sf.read(output_path, dtype="float32")
+
+    assert result == output_path
+    assert sample_rate == 32000
+    assert len(audio) / float(sample_rate) == pytest.approx(0.5, abs=0.06)
 
 
 def test_convert_file_with_worker_backend(tmp_path, monkeypatch):
