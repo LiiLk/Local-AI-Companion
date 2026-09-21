@@ -982,17 +982,24 @@ class RVCConverter:
             )
         return converted_path
 
-    def convert_file(self, input_path: str | Path, output_path: str | Path) -> Path:
-        """Convert an audio file to the target voice."""
+    def _raise_if_relaunching(self) -> None:
+        """Fail fast when a background worker relaunch is in flight.
+
+        A relaunch may still be warming up; calling ``_load()`` now would spawn
+        a second worker when no backend is loaded yet, so public entry points
+        check this before touching ``_load()``.
+        """
         with self._relaunch_lock:
             relaunching = self._relaunching
         if relaunching:
-            # A relaunch may still be warming up; fail fast rather than queue
-            # behind it (or spawn a second worker when no backend is loaded yet).
             raise RuntimeError(
                 "RVC worker is not ready (relaunching); skipping conversion.\n"
                 f"{self._worker_error_summary()}"
             )
+
+    def convert_file(self, input_path: str | Path, output_path: str | Path) -> Path:
+        """Convert an audio file to the target voice."""
+        self._raise_if_relaunching()
         if self._backend_name == "worker" and not self._worker_is_ready():
             self._schedule_worker_relaunch()
             raise RuntimeError(
@@ -1069,6 +1076,7 @@ class RVCConverter:
 
     def preload(self):
         """Force backend/model initialization ahead of the first conversion."""
+        self._raise_if_relaunching()
         self._load()
         return self
 
@@ -1108,6 +1116,7 @@ class RVCConverter:
         Returns:
             (converted_audio, sample_rate) tuple.
         """
+        self._raise_if_relaunching()
         self._load()
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_in:

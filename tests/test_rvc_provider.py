@@ -460,6 +460,84 @@ def test_convert_file_fast_fails_while_relaunching_without_backend(tmp_path, mon
     assert spawned == []
 
 
+def test_convert_array_fast_fails_while_relaunching_without_backend(tmp_path, monkeypatch):
+    """Regression for LIL-67 follow-up: ``convert_array`` calls ``_load()``
+    before reaching the ``convert_file`` guard, so after a first-startup timeout
+    (``_backend_name`` still ``None``) it could spawn a second worker while the
+    relaunch thread is in flight.
+    """
+
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+
+    spawned: list[FakePopen] = []
+
+    class _RecordingPopen(FakePopen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            spawned.append(self)
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", _RecordingPopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+    )
+    converter._backend_name = None
+    converter._relaunching = True
+
+    with pytest.raises(RuntimeError, match="relaunching|not ready"):
+        converter.convert_array(np.zeros(1600, dtype=np.float32), 16000)
+
+    assert spawned == []
+
+
+def test_preload_fast_fails_while_relaunching_without_backend(tmp_path, monkeypatch):
+    """Regression for LIL-67 follow-up: ``preload`` must not spawn a second
+    worker while a background relaunch is already starting one.
+    """
+
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+
+    spawned: list[FakePopen] = []
+
+    class _RecordingPopen(FakePopen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            spawned.append(self)
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", _RecordingPopen)
+
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+    )
+    converter._backend_name = None
+    converter._relaunching = True
+
+    with pytest.raises(RuntimeError, match="relaunching|not ready"):
+        converter.preload()
+
+    assert spawned == []
+
+
 def test_relaunch_defers_worker_ready_until_after_rewarmup(tmp_path, monkeypatch):
     """Regression for LIL-67: the relaunched worker must not be advertised as
     ready until its re-warmup finishes, otherwise concurrent conversions block
