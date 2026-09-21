@@ -21,7 +21,10 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from src.vad.smart_turn import SmartTurnConfig, SmartTurnDetector
+# Allow running as a standalone script (its own directory is sys.path[0]).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.vad.smart_turn import SmartTurnConfig, SmartTurnDetector  # noqa: E402
 
 
 def _read_wav(path: Path):
