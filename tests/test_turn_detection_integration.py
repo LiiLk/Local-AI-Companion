@@ -550,6 +550,50 @@ def test_desktop_omni_mode_keeps_default_vad_misses():
     assert calls == [20]
 
 
+@pytest.mark.parametrize("mode", ["omni", "gemma-omni"])
+def test_desktop_omni_modes_use_fixed_delay_without_inference(mode):
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": mode}
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    assert detector.calls == 0
+    assert assistant._pending_speech_detection_thread is None
+    assert len(assistant._loop.scheduled) == 1
+    assert assistant._loop.scheduled[-1][0] == pytest.approx(0.7)
+
+
+def test_desktop_pipeline_mode_still_starts_inference():
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": "pipeline"}
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+    assistant._pending_speech_detection_thread.join(timeout=5)
+
+    assert detector.calls == 1
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [("pipeline", True), ("omni", False), ("gemma-omni", False)],
+)
+def test_desktop_turn_detection_active_requires_pipeline_mode(mode, expected):
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": mode}
+
+    assert assistant._turn_detection_active() is expected
+
+
 @pytest.mark.asyncio
 async def test_websocket_disabled_turn_detection_uses_fixed_delay():
     manager = WebSocketManager()

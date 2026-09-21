@@ -765,13 +765,25 @@ class Live2DAssistant:
         """True when this mode runs the Smart Turn driven pipeline path."""
         return getattr(self, "config", {}).get("mode", "pipeline") == "pipeline"
 
+    def _turn_detection_active(
+        self, config: Optional[SmartTurnConfig] = None
+    ) -> bool:
+        """Single source of truth: can this mode actually run Smart Turn?
+
+        Omni / gemma-omni never run the adaptive delay policy, so they must
+        behave as if turn detection were disabled even when it is enabled in
+        config and the detector is available.
+        """
+        if config is None:
+            config = getattr(self, "_turn_detection_config", None)
+        if config is None or not config.enabled:
+            return False
+        return self._uses_adaptive_turn_detection() and self._get_smart_turn().available
+
     def _effective_vad_required_misses(self) -> int:
-        detector_available = (
-            self._uses_adaptive_turn_detection() and self._get_smart_turn().available
-        )
         return resolve_vad_required_misses(
             self._turn_detection_config,
-            detector_available=detector_available,
+            detector_available=self._turn_detection_active(),
             default_misses=getattr(self, "_default_vad_required_misses", 30),
         )
 
@@ -913,7 +925,7 @@ class Live2DAssistant:
                 config = getattr(self, "_turn_detection_config", None)
                 long_delay = (
                     config.incomplete_delay_ms
-                    if config is not None and config.enabled
+                    if config is not None and self._turn_detection_active(config)
                     else self._speech_commit_delay_ms
                 )
                 self._arm_pending_speech_commit(long_delay)
@@ -1404,14 +1416,12 @@ class Live2DAssistant:
                 audio_snapshot = bytes(self._pending_speech_audio)
 
         config = getattr(self, "_turn_detection_config", None)
-        detection_enabled = bool(config.enabled) if config is not None else False
-        detector_available = detection_enabled and self._get_smart_turn().available
         if should_arm_commit:
             logger.info(
                 "Speech ended; arming end-of-turn commit window for %s buffered bytes",
                 pending_audio_bytes,
             )
-            if detector_available:
+            if self._turn_detection_active(config):
                 # Long window first so the user is not cut off, then shorten
                 # once the verdict arrives.
                 self._arm_pending_speech_commit(resolve_commit_delay_for_turn(config, False))
@@ -1632,7 +1642,7 @@ class Live2DAssistant:
                     self.pipeline.rvc = runtime.rvc
                 logger.info("✅ Pipeline models ready")
 
-            if self.pipeline is not None and self._turn_detection_config.enabled:
+            if self.pipeline is not None and self._turn_detection_active():
                 if not preload_step("Smart Turn", self._get_smart_turn().warmup):
                     logger.info("Model preload finished after shutdown began; skipping audio start")
                     close_partial_pipeline_runtime()
