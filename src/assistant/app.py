@@ -64,6 +64,11 @@ from src.utils.logging_setup import (
 )
 from src.utils.startup_profiler import StartupProfiler
 from src.utils.turn_latency import get_turn_latency_tracker
+from src.vad.smart_turn import (
+    SmartTurnConfig,
+    SmartTurnDetector,
+    resolve_commit_delay_for_turn,
+)
 
 # Conditional imports
 try:
@@ -416,6 +421,14 @@ class Live2DAssistant:
         self._pending_speech_commit_handle: Optional[asyncio.Handle] = None
         self._pending_speech_lock = threading.Lock()
         self._speech_commit_delay_ms = int(self.config.get("audio", {}).get("speech_commit_delay_ms", 700))
+        audio_config = self.config.get("audio", {})
+        self._turn_detection_config = SmartTurnConfig.from_config(
+            audio_config, fallback_delay_ms=self._speech_commit_delay_ms
+        )
+        self._smart_turn: Optional[SmartTurnDetector] = None
+        self._pending_speech_commit_delay_ms = self._speech_commit_delay_ms
+        self._pending_speech_generation = 0
+        self._pending_speech_detection_thread: Optional[threading.Thread] = None
         self._debug_visible = False
         self._backend_state = "warming_up"
         self._degraded_reason: Optional[str] = None
@@ -726,7 +739,17 @@ class Live2DAssistant:
 
         loop.call_soon_threadsafe(_cancel)
 
-    def _arm_pending_speech_commit(self) -> None:
+    def _get_smart_turn(self) -> SmartTurnDetector:
+        detector = self._smart_turn
+        if detector is None:
+            detector = SmartTurnDetector(self._turn_detection_config)
+            self._smart_turn = detector
+        return detector
+
+    def _arm_pending_speech_commit(self, delay_ms: Optional[int] = None) -> None:
+        if delay_ms is None:
+            delay_ms = self._speech_commit_delay_ms
+        delay_ms = max(0, int(delay_ms))
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -735,10 +758,96 @@ class Live2DAssistant:
             handle = self._pending_speech_commit_handle
             if handle is not None:
                 handle.cancel()
-            delay = max(self._speech_commit_delay_ms, 0) / 1000.0
-            self._pending_speech_commit_handle = loop.call_later(delay, self._commit_pending_speech)
+            self._pending_speech_commit_delay_ms = delay_ms
+            self._pending_speech_commit_handle = loop.call_later(
+                delay_ms / 1000.0, self._commit_pending_speech
+            )
 
         loop.call_soon_threadsafe(_arm)
+
+    def _start_turn_detection(
+        self,
+        generation: int,
+        audio_bytes: bytes,
+        speech_end_monotonic: Optional[float],
+    ) -> None:
+        """Run Smart Turn off the audio thread; never blocks the event loop."""
+        thread = threading.Thread(
+            target=self._run_turn_detection,
+            args=(generation, audio_bytes, speech_end_monotonic),
+            name="smart-turn",
+            daemon=True,
+        )
+        self._pending_speech_detection_thread = thread
+        thread.start()
+
+    def _run_turn_detection(
+        self,
+        generation: int,
+        audio_bytes: bytes,
+        speech_end_monotonic: Optional[float],
+    ) -> None:
+        config = self._turn_detection_config
+        started = time.perf_counter()
+        try:
+            verdict = self._get_smart_turn().predict(audio_bytes, config.sample_rate)
+        except Exception as exc:
+            verdict = None
+            logger.debug("Smart Turn inference failed: %s", exc)
+        infer_ms = (time.perf_counter() - started) * 1000.0
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            self._apply_turn_verdict, generation, verdict, infer_ms, speech_end_monotonic
+        )
+
+    def _apply_turn_verdict(
+        self,
+        generation: int,
+        verdict: Optional[tuple],
+        infer_ms: float,
+        speech_end_monotonic: Optional[float],
+    ) -> None:
+        config = self._turn_detection_config
+        if not config.enabled:
+            return
+        with self._pending_speech_lock:
+            if generation != self._pending_speech_generation:
+                return
+            if not self._pending_speech_audio:
+                return
+
+        elapsed_ms = 0.0
+        if speech_end_monotonic is not None:
+            elapsed_ms = max(0.0, (time.perf_counter() - speech_end_monotonic) * 1000.0)
+
+        if verdict is None:
+            fallback_delay = max(0, int(self._speech_commit_delay_ms - elapsed_ms))
+            delay_ms = resolve_commit_delay_for_turn(
+                config, None, fallback_delay_ms=fallback_delay, elapsed_ms=elapsed_ms
+            )
+            self._arm_pending_speech_commit(delay_ms)
+            logger.info(
+                "turn_detection unavailable delay=%sms infer=%sms",
+                delay_ms,
+                round(infer_ms),
+            )
+            return
+
+        is_complete, probability = verdict
+        if is_complete:
+            delay_ms = resolve_commit_delay_for_turn(config, True, elapsed_ms=elapsed_ms)
+            self._arm_pending_speech_commit(delay_ms)
+        else:
+            delay_ms = resolve_commit_delay_for_turn(config, False)
+        logger.info(
+            "turn_detection complete=%s p=%.2f delay=%sms infer=%sms",
+            is_complete,
+            probability,
+            delay_ms,
+            round(infer_ms),
+        )
 
     def _queue_pending_speech_segment(self, audio_bytes: bytes) -> None:
         total_audio_bytes = 0
@@ -763,10 +872,17 @@ class Live2DAssistant:
 
         with self._pending_speech_lock:
             if self._speech_active:
-                self._arm_pending_speech_commit()
+                config = getattr(self, "_turn_detection_config", None)
+                long_delay = (
+                    config.incomplete_delay_ms
+                    if config is not None and config.enabled
+                    else self._speech_commit_delay_ms
+                )
+                self._arm_pending_speech_commit(long_delay)
                 return
             if not self._pending_speech_audio:
                 return
+            self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
             audio_bytes = bytes(self._pending_speech_audio)
             self._pending_speech_audio.clear()
             speech_end_monotonic = self._pending_speech_end_monotonic
@@ -777,7 +893,7 @@ class Live2DAssistant:
             "Committing %s bytes of buffered speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),
             audio_ms,
-            self._speech_commit_delay_ms,
+            getattr(self, "_pending_speech_commit_delay_ms", self._speech_commit_delay_ms),
         )
 
         active_pipeline = self._get_active_pipeline()
@@ -1181,6 +1297,7 @@ class Live2DAssistant:
         self._drop_current_speech = False
         with self._pending_speech_lock:
             self._speech_active = True
+            self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
         self._cancel_pending_speech_commit()
         self._dispatch_frontend_event("onSpeechStart", interrupted_turn_id)
 
@@ -1192,17 +1309,44 @@ class Live2DAssistant:
             return
         should_arm_commit = False
         pending_audio_bytes = 0
+        audio_snapshot = b""
+        generation = 0
         with self._pending_speech_lock:
             self._speech_active = False
             self._pending_speech_end_monotonic = time.perf_counter()
             should_arm_commit = bool(self._pending_speech_audio)
             pending_audio_bytes = len(self._pending_speech_audio)
+            if should_arm_commit:
+                self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
+                generation = self._pending_speech_generation
+                audio_snapshot = bytes(self._pending_speech_audio)
+
+        config = getattr(self, "_turn_detection_config", None)
+        detection_enabled = bool(config.enabled) if config is not None else False
+        detector_available = detection_enabled and self._get_smart_turn().available
         if should_arm_commit:
             logger.info(
                 "Speech ended; arming end-of-turn commit window for %s buffered bytes",
                 pending_audio_bytes,
             )
-            self._arm_pending_speech_commit()
+            if detector_available:
+                # Long window first so the user is not cut off, then shorten
+                # once the verdict arrives.
+                self._arm_pending_speech_commit(resolve_commit_delay_for_turn(config, False))
+                self._start_turn_detection(
+                    generation, audio_snapshot, self._pending_speech_end_monotonic
+                )
+            else:
+                # Disabled or known-unavailable detector: fixed delay, no inference.
+                fallback_delay = self._speech_commit_delay_ms
+                delay_ms = (
+                    resolve_commit_delay_for_turn(
+                        config, None, fallback_delay_ms=fallback_delay
+                    )
+                    if config is not None
+                    else fallback_delay
+                )
+                self._arm_pending_speech_commit(delay_ms)
         self._dispatch_frontend_event("onSpeechEnd", self._active_turn_id)
 
     def _on_speech_detected(self, audio_bytes: bytes):
@@ -1400,6 +1544,13 @@ class Live2DAssistant:
                         return
                     self.pipeline.rvc = runtime.rvc
                 logger.info("✅ Pipeline models ready")
+
+            if self.pipeline is not None and self._turn_detection_config.enabled:
+                if not preload_step("Smart Turn", self._get_smart_turn().warmup):
+                    logger.info("Model preload finished after shutdown began; skipping audio start")
+                    close_partial_pipeline_runtime()
+                    self._finish_startup_profile("shutdown")
+                    return
 
             if not self._running:
                 logger.info("Model preload finished after shutdown began; skipping audio start")

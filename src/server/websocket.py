@@ -29,6 +29,7 @@ from src.tts import ChatterboxTTSProvider, KokoroProvider
 from src.tts.base import prefers_full_response_tts
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
+from src.vad.smart_turn import resolve_commit_delay_for_turn
 from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
@@ -153,6 +154,11 @@ class ConversationState:
     pending_speech_audio: bytearray = field(default_factory=bytearray)
     pending_speech_commit_task: Optional[asyncio.Task] = None
     pending_speech_end_epoch_ms: Optional[int] = None
+    pending_speech_delay_ms: Optional[int] = None
+    pending_speech_commit_generation: int = 0
+    pending_speech_detection_task: Optional[asyncio.Task] = None
+    pending_speech_infer_started: Optional[float] = None
+    smart_turn: Optional[Any] = None
 
     def __post_init__(self):
         self.config = load_config()
@@ -238,6 +244,21 @@ class ConversationState:
             )
             self.vad = SileroVAD(config=vad_config)
         return self.vad
+
+    def get_smart_turn(self):
+        """Get or create the shared Smart Turn end-of-turn detector (lazy)."""
+        if self.smart_turn is None:
+            from src.vad.smart_turn import SmartTurnConfig, SmartTurnDetector
+
+            audio_config = self.config.get("audio", {}) if isinstance(self.config, dict) else {}
+            try:
+                fallback_delay = max(0, int(audio_config.get("speech_commit_delay_ms", 700)))
+            except (TypeError, ValueError):
+                fallback_delay = 700
+            self.smart_turn = SmartTurnDetector(
+                SmartTurnConfig.from_config(audio_config, fallback_delay_ms=fallback_delay)
+            )
+        return self.smart_turn
 
     def preload_llm(self):
         """Preload the configured pipeline LLM when it supports it."""
@@ -380,6 +401,9 @@ class ConversationState:
         if self.pending_speech_commit_task and not self.pending_speech_commit_task.done():
             self.pending_speech_commit_task.cancel()
         self.pending_speech_commit_task = None
+        if self.pending_speech_detection_task and not self.pending_speech_detection_task.done():
+            self.pending_speech_detection_task.cancel()
+        self.pending_speech_detection_task = None
         self.pending_speech_audio.clear()
         self.pending_speech_end_epoch_ms = None
         if self.response_task and not self.response_task.done():
@@ -566,8 +590,17 @@ class WebSocketManager:
             task.cancel()
         state.pending_speech_commit_task = None
 
+    @staticmethod
+    def _cancel_pending_speech_detection(state: ConversationState) -> None:
+        task = getattr(state, "pending_speech_detection_task", None)
+        if task and not task.done():
+            task.cancel()
+        state.pending_speech_detection_task = None
+
     def _clear_pending_speech(self, state: ConversationState) -> None:
         self._cancel_pending_speech_commit(state)
+        self._cancel_pending_speech_detection(state)
+        state.pending_speech_commit_generation = getattr(state, "pending_speech_commit_generation", 0) + 1
         pending_audio = getattr(state, "pending_speech_audio", None)
         if pending_audio is not None:
             pending_audio.clear()
@@ -608,11 +641,109 @@ class WebSocketManager:
 
         self._buffer_pending_speech_segment(state, audio_bytes)
 
-    def _arm_pending_speech_commit(self, client_id: str, state: ConversationState) -> None:
+    def _arm_pending_speech_commit(
+        self,
+        client_id: str,
+        state: ConversationState,
+        delay_ms: Optional[int] = None,
+    ) -> None:
         self._cancel_pending_speech_commit(state)
-        delay_ms = self._speech_commit_delay_ms(state)
+        if delay_ms is None:
+            delay_ms = self._speech_commit_delay_ms(state)
+        delay_ms = max(0, int(delay_ms))
+        state.pending_speech_delay_ms = delay_ms
         state.pending_speech_commit_task = asyncio.create_task(
             self._commit_pending_speech_after_delay(client_id, state, delay_ms)
+        )
+
+    def _arm_adaptive_speech_commit(self, client_id: str, state: ConversationState) -> None:
+        """Arm the long window first, then shorten it if Smart Turn says complete."""
+        get_smart_turn = getattr(state, "get_smart_turn", None)
+        if get_smart_turn is None:
+            # Legacy/unknown state: keep the previous fixed-delay behavior.
+            self._arm_pending_speech_commit(client_id, state)
+            return
+
+        detector = get_smart_turn()
+        config = detector.config
+        state.pending_speech_commit_generation = (
+            getattr(state, "pending_speech_commit_generation", 0) + 1
+        )
+        generation = state.pending_speech_commit_generation
+
+        if not config.enabled or not getattr(detector, "available", True):
+            # Disabled or known-unavailable detector: fixed delay, no inference.
+            delay_ms = resolve_commit_delay_for_turn(
+                config, None, fallback_delay_ms=self._speech_commit_delay_ms(state)
+            )
+            self._arm_pending_speech_commit(client_id, state, delay_ms)
+            return
+
+        self._arm_pending_speech_commit(
+            client_id, state, resolve_commit_delay_for_turn(config, False)
+        )
+        state.pending_speech_infer_started = time.perf_counter()
+        state.pending_speech_detection_task = asyncio.create_task(
+            self._detect_turn_completion(
+                client_id, state, generation, bytes(state.pending_speech_audio)
+            )
+        )
+
+    async def _detect_turn_completion(
+        self,
+        client_id: str,
+        state: ConversationState,
+        generation: int,
+        audio_bytes: bytes,
+    ) -> None:
+        detector = state.get_smart_turn()
+        config = detector.config
+        loop = asyncio.get_running_loop()
+        started = time.perf_counter()
+        try:
+            verdict = await loop.run_in_executor(
+                None, detector.predict, audio_bytes, config.sample_rate
+            )
+        except Exception as exc:
+            verdict = None
+            logger.debug("Smart Turn inference failed: %s", exc)
+        infer_ms = (time.perf_counter() - started) * 1000.0
+
+        if state.pending_speech_commit_generation != generation:
+            return
+        if not state.pending_speech_audio:
+            return
+
+        infer_started = getattr(state, "pending_speech_infer_started", None) or started
+        elapsed_ms = max(0.0, (time.perf_counter() - infer_started) * 1000.0)
+
+        if verdict is None:
+            fallback_delay = max(
+                0, int(self._speech_commit_delay_ms(state) - elapsed_ms)
+            )
+            delay_ms = resolve_commit_delay_for_turn(
+                config, None, fallback_delay_ms=fallback_delay, elapsed_ms=elapsed_ms
+            )
+            self._arm_pending_speech_commit(client_id, state, delay_ms)
+            logger.info(
+                "turn_detection unavailable delay=%sms infer=%sms",
+                delay_ms,
+                round(infer_ms),
+            )
+            return
+
+        is_complete, probability = verdict
+        if is_complete:
+            delay_ms = resolve_commit_delay_for_turn(config, True, elapsed_ms=elapsed_ms)
+            self._arm_pending_speech_commit(client_id, state, delay_ms)
+        else:
+            delay_ms = resolve_commit_delay_for_turn(config, False)
+        logger.info(
+            "turn_detection complete=%s p=%.2f delay=%sms infer=%sms",
+            is_complete,
+            probability,
+            delay_ms,
+            round(infer_ms),
         )
 
     async def _commit_pending_speech_after_delay(
@@ -640,6 +771,8 @@ class WebSocketManager:
             state.pending_speech_end_epoch_ms = None
             return
 
+        self._cancel_pending_speech_detection(state)
+        state.pending_speech_commit_generation = getattr(state, "pending_speech_commit_generation", 0) + 1
         audio_bytes = bytes(state.pending_speech_audio)
         speech_end_epoch_ms = state.pending_speech_end_epoch_ms
         state.pending_speech_audio.clear()
@@ -650,7 +783,9 @@ class WebSocketManager:
             "Committing %s bytes of WebSocket speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),
             audio_ms,
-            self._speech_commit_delay_ms(state),
+            getattr(state, "pending_speech_delay_ms", None)
+            if getattr(state, "pending_speech_delay_ms", None) is not None
+            else self._speech_commit_delay_ms(state),
         )
 
         task = await self._schedule_turn(
@@ -1643,7 +1778,7 @@ class WebSocketManager:
                     state.is_recording = False
                     if state.mode == "pipeline" and state.pending_speech_audio:
                         state.pending_speech_end_epoch_ms = int(time.time() * 1000)
-                        self._arm_pending_speech_commit(client_id, state)
+                        self._arm_adaptive_speech_commit(client_id, state)
                     await self.send_json(client_id, {"type": "vad_end"})
 
                 elif len(event) > 100:
@@ -1937,6 +2072,14 @@ class WebSocketManager:
                         })
                     except Exception as e:
                         logger.warning("VAD load warning for %s: %s", client_id, e)
+
+                try:
+                    smart_turn = state.get_smart_turn()
+                    if smart_turn.config.enabled:
+                        await loop.run_in_executor(None, smart_turn.warmup)
+                        logger.info("Smart Turn ready for %s", client_id)
+                except Exception as e:
+                    logger.warning("Smart Turn warmup warning for %s: %s", client_id, e)
 
                 llm_provider = state.config.get("llm", {}).get("provider", "ollama")
                 if llm_provider == "gemma" and is_connected():
