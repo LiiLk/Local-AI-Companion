@@ -8,6 +8,13 @@ import sys
 import traceback
 from pathlib import Path
 
+# Make the shared, dependency-free padding helper importable when this worker
+# runs as a standalone script (its own directory is sys.path[0], not the repo
+# root). The isolated overlay is still inserted ahead of this entry later.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Persistent RVC worker")
@@ -122,6 +129,8 @@ def run_conversion(rvc, request: dict) -> None:
     import numpy as np
     import soundfile as sf
 
+    from src.rvc_padding import compute_trim_bounds
+
     input_path = Path(request["input_path"]).resolve()
     output_path = Path(request["output_path"]).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,11 +140,14 @@ def run_conversion(rvc, request: dict) -> None:
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
 
+    input_sample_rate = int(sample_rate)
     minimum_duration_sec = (
         float(getattr(getattr(rvc, "config", None), "x_pad", 3)) + 0.05
     )
     current_duration_sec = audio.shape[0] / float(sample_rate)
     padded_input_path = None
+    pad_left = 0
+    pad_right = 0
     if current_duration_sec <= minimum_duration_sec:
         target_samples = int(np.ceil(sample_rate * minimum_duration_sec))
         pad_samples = max(0, target_samples - audio.shape[0])
@@ -171,6 +183,14 @@ def run_conversion(rvc, request: dict) -> None:
             sample_rate,
             request.get("output_freq"),
         )
+        trim_start, trim_end = compute_trim_bounds(
+            pad_left_samples=pad_left,
+            pad_right_samples=pad_right,
+            input_sample_rate=input_sample_rate,
+            output_sample_rate=int(sample_rate),
+            output_length=int(audio.shape[0]),
+        )
+        audio = audio[trim_start:trim_end]
         sf.write(output_path, audio.squeeze(), sample_rate)
         print_json({"status": "ok", "output_path": str(output_path)})
     finally:

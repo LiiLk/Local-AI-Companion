@@ -68,6 +68,37 @@ class TestStripMarkersForTTS:
         assert "[LAUGH]" in result
 
 
+class TestUnknownMarkersArePreserved:
+    """Unknown words inside markers must not be deleted from TTS text."""
+
+    def test_preserves_unknown_bold_word(self):
+        detector = EmotionDetector()
+        result = detector.strip_markers_for_tts("The **Ergosphere** is a region")
+        assert "Ergosphere" in result
+
+    def test_preserves_unknown_parenthetical(self):
+        detector = EmotionDetector()
+        result = detector.strip_markers_for_tts("an electric vehicle (EV) tomorrow")
+        assert "(EV)" in result
+
+    def test_still_strips_known_action_marker(self):
+        detector = EmotionDetector()
+        result = detector.strip_markers_for_tts("Heh *giggles* okay")
+        assert "giggles" not in result
+
+    def test_strip_markers_preserves_unknown_words(self):
+        detector = EmotionDetector()
+        result = detector.strip_markers("Bold **Ergosphere** and (EV)")
+        assert "Ergosphere" in result
+        assert "(EV)" in result
+
+    def test_strip_markers_still_removes_known_emotion(self):
+        detector = EmotionDetector()
+        result = detector.strip_markers("I'm (happy) today")
+        assert "happy" not in result
+        assert "today" in result
+
+
 class TestDetectEmotion:
     """Existing detect/get_expression behavior should not break."""
 

@@ -33,6 +33,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from src.rvc_padding import compute_trim_bounds
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -861,7 +863,12 @@ class RVCConverter:
             return
         raise RuntimeError(f"Unsupported backend selection: {selected_backend}")
 
-    def _write_inferrvc_output(self, audio_tensor, output_path: Path) -> Path:
+    def _write_inferrvc_output(
+        self,
+        audio_tensor,
+        output_path: Path,
+        padding: tuple[int, int, int] | None = None,
+    ) -> Path:
         if hasattr(audio_tensor, "detach"):
             audio_array = audio_tensor.detach().float().cpu().numpy()
         else:
@@ -881,10 +888,22 @@ class RVCConverter:
             sample_rate,
             self.output_freq,
         )
+        if padding is not None:
+            pad_left, pad_right, input_sample_rate = padding
+            trim_start, trim_end = compute_trim_bounds(
+                pad_left_samples=pad_left,
+                pad_right_samples=pad_right,
+                input_sample_rate=input_sample_rate,
+                output_sample_rate=sample_rate,
+                output_length=int(audio_array.shape[0]),
+            )
+            audio_array = audio_array[trim_start:trim_end]
         sf.write(output_path, audio_array, sample_rate)
         return output_path
 
-    def _prepare_inferrvc_input(self, input_path: Path) -> tuple[Path, Path | None]:
+    def _prepare_inferrvc_input(
+        self, input_path: Path
+    ) -> tuple[Path, Path | None, tuple[int, int, int] | None]:
         config = getattr(self._converter, "config", None)
         x_pad = float(getattr(config, "x_pad", 3))
         minimum_duration_sec = x_pad + 0.05
@@ -896,12 +915,12 @@ class RVCConverter:
 
         current_duration_sec = audio.shape[0] / float(sample_rate)
         if current_duration_sec > minimum_duration_sec:
-            return input_path, None
+            return input_path, None, None
 
         target_samples = int(np.ceil(sample_rate * minimum_duration_sec))
         pad_samples = max(0, target_samples - audio.shape[0])
         if pad_samples == 0:
-            return input_path, None
+            return input_path, None, None
 
         pad_left = pad_samples // 2
         pad_right = pad_samples - pad_left
@@ -912,7 +931,7 @@ class RVCConverter:
         temp_file.close()
         temp_path = Path(temp_file.name)
         sf.write(temp_path, padded_audio, sample_rate)
-        return temp_path, temp_path
+        return temp_path, temp_path, (pad_left, pad_right, int(sample_rate))
 
     def _convert_file_with_worker(self, input_path: Path, output_path: Path) -> Path:
         if self._worker_process is None or self._worker_process.poll() is not None:
@@ -981,7 +1000,7 @@ class RVCConverter:
             return output_path
 
         if self._backend_name == "inferrvc":
-            prepared_input_path, temp_input_path = self._prepare_inferrvc_input(
+            prepared_input_path, temp_input_path, padding = self._prepare_inferrvc_input(
                 input_path
             )
             try:
@@ -994,7 +1013,9 @@ class RVCConverter:
                         protect=self.protect,
                         output_volume=getattr(self._converter, "NO_CHANGE", 2),
                     )
-                return self._write_inferrvc_output(audio_tensor, output_path)
+                return self._write_inferrvc_output(
+                    audio_tensor, output_path, padding=padding
+                )
             finally:
                 if temp_input_path:
                     temp_input_path.unlink(missing_ok=True)

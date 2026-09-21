@@ -13,7 +13,6 @@ import asyncio
 import base64
 import binascii
 import re
-import emoji
 import logging
 import tempfile
 import time
@@ -33,6 +32,7 @@ from src.vad import SileroVAD
 from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
+    resolve_pipeline_system_prompt,
 )
 from src.assistant.conversation_memory import (
     ConversationMemoryStore,
@@ -51,6 +51,7 @@ from src.utils.language_detection import (
 from src.tts.tts_task_manager import TTSTaskManager
 from src.utils.sentence_splitter import SentenceSplitter
 from src.utils.turn_latency import get_turn_latency_tracker
+from src.utils.tts_text import has_speakable_content, normalize_text_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +177,7 @@ class ConversationState:
 
         # Initialize conversation with system prompt
         if not self.messages:
-            character = self.config.get("character", {})
-            system_prompt = character.get("system_prompt", "You are a helpful assistant.")
+            system_prompt = resolve_pipeline_system_prompt(self.config)
             self.messages = initial_messages(system_prompt, self.memory_store)
 
     def _get_pipeline_runtime(self):
@@ -703,17 +703,20 @@ class WebSocketManager:
 
     def _clean_text_for_tts(self, text: str) -> str:
         """
-        Clean text before TTS:
-        1. Remove emojis
-        2. Remove markdown symbols (*, #, _, etc.) that TTS reads out loud
-        """
-        text = emoji.replace_emoji(text, replace="")
+        Convert text to plain spoken prose before TTS.
 
-        import re
-        text = re.sub(r'\*[^*]+\*', '', text)
-        text = re.sub(r'[\*\#\_\`\~\>]+', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+        Removes emojis and Markdown syntax (bold, headings, lists, links,
+        backticks) while keeping every word. Shared with the desktop pipeline
+        through :func:`src.utils.tts_text.normalize_text_for_tts`.
+        """
+        return normalize_text_for_tts(text)
+
+    def _prepare_tts_text(self, state: "ConversationState", text: str) -> str:
+        """Strip emotion markers first, then normalize Markdown for TTS."""
+        if state.emotion_detector:
+            text = state.emotion_detector.strip_markers(text)
+        text = self._clean_text_for_tts(text)
+        return text if has_speakable_content(text) else ""
 
     @staticmethod
     def _normalize_supported_language(language: Optional[str]) -> Optional[str]:
@@ -895,9 +898,7 @@ class WebSocketManager:
 
             await self._update_voice_for_language(state, text)
 
-            if state.emotion_detector:
-                text = state.emotion_detector.strip_markers(text)
-            text = self._clean_text_for_tts(text)
+            text = self._prepare_tts_text(state, text)
 
             if not text.strip():
                 return
@@ -1022,10 +1023,7 @@ class WebSocketManager:
                         })
 
             # Synthesize audio via omni model
-            clean_text = full_response
-            if state.emotion_detector:
-                clean_text = state.emotion_detector.strip_markers(clean_text)
-            clean_text = self._clean_text_for_tts(clean_text)
+            clean_text = self._prepare_tts_text(state, full_response)
 
             if clean_text.strip():
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -1413,19 +1411,17 @@ class WebSocketManager:
                                 (time.perf_counter() - llm_started) * 1000,
                             )
                         await self._update_voice_for_language(state, sentence)
-                        clean = self._clean_text_for_tts(sentence)
-                        if clean.strip():
-                            await tts_mgr.submit(clean)
+                        if sentence.strip():
+                            await tts_mgr.submit(sentence)
 
             if single_shot_tts:
-                clean = self._clean_text_for_tts(full_response)
-                if clean.strip():
+                if full_response.strip():
                     if not first_sentence_logged:
                         first_sentence_logged = True
                         trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
                         latency.mark("first_sentence")
-                    await self._update_voice_for_language(state, clean)
-                    await tts_mgr.submit(clean)
+                    await self._update_voice_for_language(state, full_response)
+                    await tts_mgr.submit(full_response)
             else:
                 remaining = splitter.flush()
                 if remaining:
@@ -1438,10 +1434,9 @@ class WebSocketManager:
                             client_id,
                             (time.perf_counter() - llm_started) * 1000,
                         )
-                    clean = self._clean_text_for_tts(remaining)
-                    if clean.strip():
-                        await self._update_voice_for_language(state, clean)
-                        await tts_mgr.submit(clean)
+                    if remaining.strip():
+                        await self._update_voice_for_language(state, remaining)
+                        await tts_mgr.submit(remaining)
 
             logger.debug(
                 "LLM total generation time for %s: %.1f ms",
@@ -1480,13 +1475,13 @@ class WebSocketManager:
 
     async def generate_and_send_audio(self, client_id: str, text: str):
         """Generate TTS audio and send to client."""
-        text = self._clean_text_for_tts(text)
-
-        if not text.strip():
-            return
-
         state = self._get_state(client_id)
         if not state:
+            return
+
+        text = self._prepare_tts_text(state, text)
+
+        if not text.strip():
             return
 
         tts = state.get_tts()
@@ -1780,8 +1775,7 @@ class WebSocketManager:
 
         if state.memory_store:
             state.memory_store.clear()
-        character = state.config.get("character", {})
-        system_prompt = character.get("system_prompt", "You are a helpful assistant.")
+        system_prompt = resolve_pipeline_system_prompt(state.config)
         state.messages = initial_messages(system_prompt, state.memory_store)
 
         active_task = state.response_task
@@ -1816,8 +1810,7 @@ class WebSocketManager:
             return
         if not state.memory_store.append_exchange(user_text, assistant_text):
             return
-        character = state.config.get("character", {})
-        system_prompt = character.get("system_prompt", "You are a helpful assistant.")
+        system_prompt = resolve_pipeline_system_prompt(state.config)
         state.messages = initial_messages(system_prompt, state.memory_store)
 
     async def _curate_pipeline_memory(
@@ -1829,8 +1822,7 @@ class WebSocketManager:
         if not state.memory_store:
             return
         if await state.memory_store.curate_exchange(state.get_llm(), user_text, assistant_text):
-            character = state.config.get("character", {})
-            system_prompt = character.get("system_prompt", "You are a helpful assistant.")
+            system_prompt = resolve_pipeline_system_prompt(state.config)
             state.messages = initial_messages(system_prompt, state.memory_store)
 
     async def _preload_models_progressive(self, client_id: str):

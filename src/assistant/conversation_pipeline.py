@@ -42,6 +42,7 @@ from src.utils.language_detection import (
 )
 from src.utils.sentence_splitter import SentenceSplitter
 from src.utils.turn_latency import get_turn_latency_tracker
+from src.utils.tts_text import has_speakable_content, prepare_text_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -953,7 +954,11 @@ class ConversationPipeline:
         await tts_mgr.start()
 
         async def _queue_sentence(sentence: str) -> None:
-            """Submit a sentence to TTS, marking the first real submission."""
+            """Submit a sentence to TTS, marking the first real submission.
+
+            Emotion detection and text normalization happen in TTSTaskManager,
+            after the raw sentence is available for expression detection.
+            """
             nonlocal first_sentence_submitted
             if not first_sentence_submitted:
                 first_sentence_submitted = True
@@ -1096,8 +1101,8 @@ class ConversationPipeline:
         self._ensure_run_active(run_id)
 
         # 2. Clean text for TTS
-        clean_text = self.emotion_detector.strip_markers(text)
-        if not clean_text.strip():
+        clean_text = prepare_text_for_tts(text, self.emotion_detector)
+        if not has_speakable_content(clean_text):
             return
 
         # 3. Synthesize audio.
