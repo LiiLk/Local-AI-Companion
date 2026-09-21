@@ -50,10 +50,18 @@ from src.utils.language_detection import (
 )
 from src.tts.tts_task_manager import TTSTaskManager
 from src.utils.sentence_splitter import SentenceSplitter
+from src.utils.turn_latency import get_turn_latency_tracker
 
 logger = logging.getLogger(__name__)
 
 websocket_router = APIRouter()
+
+
+def _perf_counter_at_epoch_ms(epoch_ms: Optional[float]) -> Optional[float]:
+    """Map a wall-clock epoch (ms) onto the perf_counter timeline."""
+    if not epoch_ms:
+        return None
+    return time.perf_counter() - max(0.0, (time.time() * 1000.0 - float(epoch_ms)) / 1000.0)
 
 MAX_WEBSOCKET_TEXT_FRAME_CHARS = 1_000_000
 MAX_USER_TEXT_CHARS = 8_000
@@ -1305,6 +1313,9 @@ class WebSocketManager:
         trace_data.setdefault("asr_done_epoch_ms", now_ms)
         state.messages.append(Message(role="user", content=content))
 
+        latency = get_turn_latency_tracker()
+        latency.ensure_started(t0=_perf_counter_at_epoch_ms(trace_data.get("speech_end_epoch_ms")))
+
         await self.send_json(client_id, {"type": "text_start"})
         await self.send_json(client_id, {"type": "audio_start"})
 
@@ -1361,6 +1372,7 @@ class WebSocketManager:
                 "text": payload["text"],
                 "trace": payload_trace,
             })
+            latency.mark("first_audio_out")
 
         tts_obj = state.get_tts()
         rvc_obj = state.get_rvc()
@@ -1380,6 +1392,7 @@ class WebSocketManager:
             async for chunk in llm.chat_stream(llm_messages):
                 if "llm_first_token_epoch_ms" not in trace_data:
                     trace_data["llm_first_token_epoch_ms"] = int(time.time() * 1000)
+                    latency.mark("llm_first_token")
                 full_response += chunk
 
                 await self.send_json(client_id, {
@@ -1393,6 +1406,7 @@ class WebSocketManager:
                         if not first_sentence_logged:
                             first_sentence_logged = True
                             trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
+                            latency.mark("first_sentence")
                             logger.debug(
                                 "LLM first sentence latency for %s: %.1f ms",
                                 client_id,
@@ -1409,6 +1423,7 @@ class WebSocketManager:
                     if not first_sentence_logged:
                         first_sentence_logged = True
                         trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
+                        latency.mark("first_sentence")
                     await self._update_voice_for_language(state, clean)
                     await tts_mgr.submit(clean)
             else:
@@ -1417,6 +1432,7 @@ class WebSocketManager:
                     if not first_sentence_logged:
                         first_sentence_logged = True
                         trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)
+                        latency.mark("first_sentence")
                         logger.debug(
                             "LLM first sentence latency for %s: %.1f ms",
                             client_id,
@@ -1436,6 +1452,8 @@ class WebSocketManager:
         except asyncio.CancelledError:
             await tts_mgr.cancel()
             raise
+        finally:
+            latency.finish()
 
         state.messages.append(Message(role="assistant", content=full_response))
         self._persist_pipeline_exchange(state, content, full_response)
@@ -1549,6 +1567,9 @@ class WebSocketManager:
             wav_path.unlink(missing_ok=True)
 
             if result.text.strip():
+                latency = get_turn_latency_tracker()
+                latency.start(t0=_perf_counter_at_epoch_ms(trace["speech_end_epoch_ms"]))
+                latency.mark("asr_done")
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": result.text,
@@ -1721,6 +1742,9 @@ class WebSocketManager:
             trace["asr_done_epoch_ms"] = int(time.time() * 1000)
 
             if result.text.strip():
+                latency = get_turn_latency_tracker()
+                latency.start(t0=_perf_counter_at_epoch_ms(trace["speech_end_epoch_ms"]))
+                latency.mark("asr_done")
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": result.text,

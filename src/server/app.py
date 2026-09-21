@@ -18,6 +18,7 @@ from .settings import resolve_cors_settings, resolve_server_host, resolve_server
 from .websocket import websocket_router
 from ..utils.character_loader import resolve_character_config, get_available_characters
 from ..utils.config_loader import load_yaml_config
+from ..utils.turn_latency import get_turn_latency_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down server...")
+    get_turn_latency_tracker().log_summary(logger)
 
 
 def create_app() -> FastAPI:

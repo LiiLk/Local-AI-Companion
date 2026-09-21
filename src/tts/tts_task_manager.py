@@ -19,6 +19,8 @@ from typing import Any, Callable, Coroutine, Optional
 
 import numpy as np
 
+from src.utils.turn_latency import get_turn_latency_tracker
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +150,7 @@ class TTSTaskManager:
             self._abort_inflight_tts()
             raise
         synth_elapsed_ms = (time.perf_counter() - synth_started) * 1000
+        get_turn_latency_tracker().mark("tts_first_audio")
 
         if result.metadata:
             metadata.update(result.metadata)
@@ -186,6 +189,7 @@ class TTSTaskManager:
                 rvc_started = time.perf_counter()
                 full_wav, pcm, sr = await self._apply_rvc(full_wav)
                 rvc_ms = (time.perf_counter() - rvc_started) * 1000
+                get_turn_latency_tracker().mark("rvc_done")
 
             volumes = _analyze_volumes(pcm, sr, self._lip_sync_chunk_ms)
             duration_ms = int(len(pcm) / (sr * 2) * 1000)
