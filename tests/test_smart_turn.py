@@ -1,4 +1,7 @@
 import logging
+import re
+import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -12,6 +15,9 @@ from src.vad.smart_turn import (
     prepare_audio,
     resolve_commit_delay_for_turn,
     resolve_turn_commit_delay_ms,
+    resolve_turn_tier,
+    resolve_vad_required_misses,
+    save_debug_wav,
 )
 
 SR = 16000
@@ -110,6 +116,71 @@ def test_turn_delay_disabled_returns_fallback_even_with_verdict():
 
     assert resolve_commit_delay_for_turn(config, True) == config.fallback_delay_ms
     assert resolve_commit_delay_for_turn(config, None) == config.fallback_delay_ms
+
+
+# --------------------------------------------------------------------------
+# Three-tier delay policy (P1)
+# --------------------------------------------------------------------------
+
+
+def test_resolve_turn_tier_classifies_probability():
+    config = SmartTurnConfig(threshold=0.5, uncertain_threshold=0.15)
+
+    assert resolve_turn_tier(config, 0.99) == "complete"
+    assert resolve_turn_tier(config, 0.5) == "complete"
+    assert resolve_turn_tier(config, 0.30) == "uncertain"
+    assert resolve_turn_tier(config, 0.15) == "uncertain"
+    assert resolve_turn_tier(config, 0.01) == "incomplete"
+
+
+def test_turn_delay_uncertain_uses_uncertain_delay():
+    config = SmartTurnConfig(
+        enabled=True,
+        complete_delay_ms=250,
+        uncertain_delay_ms=900,
+        incomplete_delay_ms=2500,
+        uncertain_threshold=0.15,
+        threshold=0.5,
+    )
+
+    assert resolve_commit_delay_for_turn(config, 0.99) == 250
+    assert resolve_commit_delay_for_turn(config, 0.50) == 250
+    assert resolve_commit_delay_for_turn(config, 0.30) == 900
+    assert resolve_commit_delay_for_turn(config, 0.15) == 900
+    assert resolve_commit_delay_for_turn(config, 0.01) == 2500
+
+
+def test_turn_delay_uncertain_does_not_deduct_elapsed_time():
+    config = SmartTurnConfig(enabled=True, uncertain_delay_ms=900, incomplete_delay_ms=2500)
+
+    assert resolve_commit_delay_for_turn(config, 0.30, elapsed_ms=400.0) == 900
+
+
+def test_turn_delay_boolean_verdicts_still_map_to_complete_and_incomplete():
+    config = SmartTurnConfig(
+        enabled=True,
+        complete_delay_ms=250,
+        uncertain_delay_ms=900,
+        incomplete_delay_ms=2500,
+    )
+
+    assert resolve_commit_delay_for_turn(config, True) == 250
+    assert resolve_commit_delay_for_turn(config, False) == 2500
+
+
+# --------------------------------------------------------------------------
+# VAD silence threshold override (P2)
+# --------------------------------------------------------------------------
+
+
+def test_resolve_vad_required_misses_uses_short_threshold_only_when_active():
+    config = SmartTurnConfig(enabled=True, vad_required_misses=8)
+
+    assert resolve_vad_required_misses(config, detector_available=True, default_misses=20) == 8
+    assert resolve_vad_required_misses(config, detector_available=False, default_misses=20) == 20
+
+    disabled = SmartTurnConfig(enabled=False, vad_required_misses=8)
+    assert resolve_vad_required_misses(disabled, detector_available=True, default_misses=20) == 20
 
 
 # --------------------------------------------------------------------------
@@ -317,3 +388,94 @@ def test_config_defaults_when_section_missing():
     assert config.complete_delay_ms == 250
     assert config.incomplete_delay_ms == 2500
     assert config.fallback_delay_ms == 700
+
+
+def test_config_parses_uncertain_vad_misses_and_debug_dir():
+    config = SmartTurnConfig.from_config(
+        {
+            "turn_detection": {
+                "uncertain_threshold": 0.2,
+                "uncertain_delay_ms": 800,
+                "vad_required_misses": 6,
+                "debug_save_dir": "data/turn_debug",
+            }
+        }
+    )
+
+    assert config.uncertain_threshold == pytest.approx(0.2)
+    assert config.uncertain_delay_ms == 800
+    assert config.vad_required_misses == 6
+    assert config.debug_save_dir == "data/turn_debug"
+
+
+def test_config_new_keys_have_safe_defaults():
+    config = SmartTurnConfig.from_config({})
+
+    assert config.uncertain_threshold == pytest.approx(0.15)
+    assert config.uncertain_delay_ms == 900
+    assert config.vad_required_misses == 8
+    assert config.debug_save_dir is None
+
+
+# --------------------------------------------------------------------------
+# Debug WAV capture (P4)
+# --------------------------------------------------------------------------
+
+
+def test_save_debug_wav_writes_mono_16k_pcm(tmp_path):
+    samples = np.zeros(16000, dtype=np.float32)
+
+    path = save_debug_wav(str(tmp_path), samples, 16000, "uncertain", 0.3)
+
+    assert path is not None
+    name = Path(path).name
+    assert re.fullmatch(r"\d{8}-\d{6}_uncertain_p0\.30\.wav", name)
+    with wave.open(path, "rb") as handle:
+        assert handle.getnchannels() == 1
+        assert handle.getsampwidth() == 2
+        assert handle.getframerate() == 16000
+        assert handle.getnframes() == 16000
+
+
+def test_save_debug_wav_is_disabled_without_directory():
+    assert save_debug_wav(None, np.zeros(10, dtype=np.float32), 16000, "complete", 0.9) is None
+    assert save_debug_wav("", np.zeros(10, dtype=np.float32), 16000, "complete", 0.9) is None
+
+
+def test_save_debug_wav_prunes_to_max_files_keeping_newest(tmp_path):
+    for index in range(205):
+        (tmp_path / f"20260101-0000{index:02d}_complete_p0.90.wav").write_bytes(b"x")
+
+    save_debug_wav(str(tmp_path), np.zeros(160, dtype=np.float32), 16000, "complete", 0.9)
+
+    remaining = sorted(p.name for p in tmp_path.glob("*.wav"))
+    assert len(remaining) == 200
+    assert remaining[-1].endswith("_complete_p0.90.wav")
+    assert "20260101-000000_complete_p0.90.wav" not in remaining
+
+
+def test_predict_saves_debug_audio_when_configured(tmp_path):
+    detector = _loaded_detector(0.30, debug_save_dir=str(tmp_path))
+
+    detector.predict(b"\x00\x00" * SR, SR)
+
+    saved = list(tmp_path.glob("*_uncertain_p0.30.wav"))
+    assert len(saved) == 1
+
+
+def test_predict_saves_debug_audio_as_complete_above_threshold(tmp_path):
+    detector = _loaded_detector(0.93, debug_save_dir=str(tmp_path))
+
+    detector.predict(b"\x00\x00" * SR, SR)
+
+    assert len(list(tmp_path.glob("*_complete_p0.93.wav"))) == 1
+
+
+def test_predict_does_not_save_debug_audio_by_default(monkeypatch):
+    calls = []
+    monkeypatch.setattr(smart_turn, "save_debug_wav", lambda *args, **kwargs: calls.append(args))
+    detector = _loaded_detector(0.30)
+
+    detector.predict(b"\x00\x00" * SR, SR)
+
+    assert calls == []

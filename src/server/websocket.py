@@ -29,7 +29,7 @@ from src.tts import ChatterboxTTSProvider, KokoroProvider
 from src.tts.base import prefers_full_response_tts
 from src.asr import WhisperProvider
 from src.vad import SileroVAD
-from src.vad.smart_turn import resolve_commit_delay_for_turn
+from src.vad.smart_turn import resolve_commit_delay_for_turn, resolve_turn_tier
 from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
@@ -225,6 +225,7 @@ class ConversationState:
         """Get or create VAD engine (lazy loading)."""
         if self.vad is None:
             from src.vad.silero_vad import VADConfig
+            from src.vad.smart_turn import SmartTurnConfig, resolve_vad_required_misses
 
             llm_provider = self.config.get("llm", {}).get("provider", "ollama")
             # Read VAD settings: gemma-omni uses gemma config, pipeline uses pipeline config
@@ -235,12 +236,27 @@ class ConversationState:
             pipeline_config = self.config.get("pipeline", {})
             # Pipeline-level vad_required_misses overrides the default 30
             default_misses = pipeline_config.get("vad_required_misses", 30)
+            configured_misses = vad_source.get("vad_required_misses", default_misses)
+            audio_config = self.config.get("audio", {}) if isinstance(self.config, dict) else {}
+            try:
+                fallback_delay = max(0, int(audio_config.get("speech_commit_delay_ms", 700)))
+            except (TypeError, ValueError):
+                fallback_delay = 700
+            turn_detection_config = SmartTurnConfig.from_config(
+                audio_config, fallback_delay_ms=fallback_delay
+            )
+            detector = self.get_smart_turn()
+            required_misses = resolve_vad_required_misses(
+                turn_detection_config,
+                detector_available=getattr(detector, "available", True),
+                default_misses=configured_misses,
+            )
             vad_config = VADConfig(
                 sample_rate=16000,
                 prob_threshold=vad_source.get("vad_prob_threshold", 0.5),
                 db_threshold=vad_source.get("vad_db_threshold", -50),
                 required_hits=vad_source.get("vad_required_hits", 3),
-                required_misses=vad_source.get("vad_required_misses", default_misses),
+                required_misses=required_misses,
             )
             self.vad = SileroVAD(config=vad_config)
         return self.vad
@@ -732,15 +748,16 @@ class WebSocketManager:
             )
             return
 
-        is_complete, probability = verdict
-        if is_complete:
-            delay_ms = resolve_commit_delay_for_turn(config, True, elapsed_ms=elapsed_ms)
+        _is_complete, probability = verdict
+        tier = resolve_turn_tier(config, probability)
+        delay_ms = resolve_commit_delay_for_turn(config, probability, elapsed_ms=elapsed_ms)
+        if tier != "incomplete":
+            # Complete shortens the long window armed at speech end; uncertain
+            # moves it to the middle tier. Incomplete keeps the armed window.
             self._arm_pending_speech_commit(client_id, state, delay_ms)
-        else:
-            delay_ms = resolve_commit_delay_for_turn(config, False)
         logger.info(
-            "turn_detection complete=%s p=%.2f delay=%sms infer=%sms",
-            is_complete,
+            "turn_detection tier=%s p=%.2f delay=%sms infer=%sms",
+            tier,
             probability,
             delay_ms,
             round(infer_ms),

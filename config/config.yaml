@@ -64,8 +64,21 @@ audio:
     enabled: true
     model: "smart-turn-v3.2-cpu"
     threshold: 0.5
+    # Three-tier commit policy: p >= threshold commits fast, threshold > p >=
+    # uncertain_threshold is a hedged wait (hesitation), below that the speaker
+    # is treated as mid-sentence and the long wait applies.
+    uncertain_threshold: 0.15
     complete_delay_ms: 250
+    uncertain_delay_ms: 900
     incomplete_delay_ms: 2500
+    # Shorter VAD end-of-speech silence threshold used only while Smart Turn is
+    # enabled and available (8 frames * 32 ms = ~256 ms) instead of the global
+    # vad_required_misses below.
+    vad_required_misses: 8
+    # Optional tuning aid: save every evaluated turn as 16 kHz mono WAV
+    # (timestamped, tagged with the tier and probability). null = disabled,
+    # nothing is written by default.
+    debug_save_dir: null
   vad_prob_threshold: 0.58
   vad_db_threshold: -47
   vad_required_hits: 4

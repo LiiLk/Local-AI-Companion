@@ -26,7 +26,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import wave
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -40,6 +43,12 @@ SMART_TURN_TARGET_SAMPLE_RATE = 16000
 SMART_TURN_MAX_SECONDS = 8
 # Official decision threshold from inference.py (`prediction = 1 if probability > 0.5`).
 SMART_TURN_THRESHOLD = 0.5
+# Below this probability the turn is treated as a genuine mid-sentence pause
+# instead of merely uncertain. Splitting the old binary policy into three tiers
+# keeps a hesitant "hmm..." from waiting as long as a full stop.
+SMART_TURN_UNCERTAIN_THRESHOLD = 0.15
+# Maximum number of debug WAVs kept when debug_save_dir is enabled.
+SMART_TURN_DEBUG_MAX_FILES = 200
 
 # Optional dependencies are imported lazily so the module stays importable in
 # environments that only run the fixed-delay path. Tests inject fakes here.
@@ -87,9 +96,17 @@ class SmartTurnConfig:
     filename: str = "smart-turn-v3.2-cpu.onnx"
     revision: str = SMART_TURN_REVISION
     threshold: float = SMART_TURN_THRESHOLD
+    uncertain_threshold: float = SMART_TURN_UNCERTAIN_THRESHOLD
     complete_delay_ms: int = 250
+    uncertain_delay_ms: int = 900
     incomplete_delay_ms: int = 2500
     fallback_delay_ms: int = 700
+    # Shorter VAD end-of-speech silence threshold used only while turn detection
+    # is active, so Smart Turn can decide instead of waiting for the long
+    # silence window. Ignored when the detector is disabled or unavailable.
+    vad_required_misses: int = 8
+    # When set, every evaluated turn is written as a 16 kHz mono WAV for tuning.
+    debug_save_dir: Optional[str] = None
     sample_rate: int = SMART_TURN_TARGET_SAMPLE_RATE
     max_seconds: int = SMART_TURN_MAX_SECONDS
     num_threads: int = 1
@@ -118,6 +135,8 @@ class SmartTurnConfig:
             fallback = max(0, int(fallback_delay_ms))
         except (TypeError, ValueError):
             fallback = 700
+        debug_save_dir = section.get("debug_save_dir")
+        debug_save_dir = str(debug_save_dir) if debug_save_dir else None
 
         return cls(
             enabled=bool(section.get("enabled", True)),
@@ -125,9 +144,13 @@ class SmartTurnConfig:
             filename=f"{model}.onnx",
             revision=str(section.get("revision", SMART_TURN_REVISION) or SMART_TURN_REVISION),
             threshold=_float("threshold", SMART_TURN_THRESHOLD),
+            uncertain_threshold=_float("uncertain_threshold", SMART_TURN_UNCERTAIN_THRESHOLD),
             complete_delay_ms=_int("complete_delay_ms", 250),
+            uncertain_delay_ms=_int("uncertain_delay_ms", 900),
             incomplete_delay_ms=_int("incomplete_delay_ms", 2500),
             fallback_delay_ms=fallback,
+            vad_required_misses=_int("vad_required_misses", 8),
+            debug_save_dir=debug_save_dir,
             sample_rate=_int("sample_rate", SMART_TURN_TARGET_SAMPLE_RATE),
             max_seconds=_int("max_seconds", SMART_TURN_MAX_SECONDS),
             num_threads=max(1, _int("num_threads", 1)),
@@ -154,31 +177,66 @@ def resolve_turn_commit_delay_ms(
     return max(0, int(delay))
 
 
+def resolve_turn_tier(config: "SmartTurnConfig", probability: float) -> str:
+    """Classify a detector probability into ``complete``/``uncertain``/``incomplete``."""
+    value = float(probability)
+    if value >= config.threshold:
+        return "complete"
+    if value >= config.uncertain_threshold:
+        return "uncertain"
+    return "incomplete"
+
+
 def resolve_commit_delay_for_turn(
     config: "SmartTurnConfig",
-    verdict: Optional[bool],
+    verdict,
     *,
     fallback_delay_ms: Optional[int] = None,
     elapsed_ms: float = 0.0,
 ) -> int:
     """Single source of truth for the three turn cases.
 
+    ``verdict`` is ``None`` when the detector is disabled or unavailable, a
+    probability float otherwise (``True``/``False`` still work and map to
+    ``1.0``/``0.0`` for backwards compatibility).
+
     * disabled / unavailable (``verdict is None``) -> fallback delay
-    * complete -> ``complete_delay_ms`` minus time already spent
-    * incomplete -> ``incomplete_delay_ms``
+    * probability >= ``threshold`` -> ``complete_delay_ms`` minus time already spent
+    * ``uncertain_threshold`` <= probability < ``threshold`` -> ``uncertain_delay_ms``
+    * probability < ``uncertain_threshold`` -> ``incomplete_delay_ms``
 
     The fallback is clamped to 0 when the elapsed inference time already
     exceeds the configured fixed delay.
     """
     complete_delay = max(0, int(config.complete_delay_ms - max(0.0, elapsed_ms)))
     fallback = config.fallback_delay_ms if fallback_delay_ms is None else fallback_delay_ms
-    return resolve_turn_commit_delay_ms(
-        verdict,
-        enabled=config.enabled,
-        complete_delay_ms=complete_delay,
-        incomplete_delay_ms=config.incomplete_delay_ms,
-        fallback_delay_ms=fallback,
-    )
+    if not config.enabled or verdict is None:
+        return max(0, int(fallback))
+
+    tier = resolve_turn_tier(config, verdict)
+    if tier == "complete":
+        delay = complete_delay
+    elif tier == "uncertain":
+        delay = config.uncertain_delay_ms
+    else:
+        delay = config.incomplete_delay_ms
+    return max(0, int(delay))
+
+
+def resolve_vad_required_misses(
+    config: "SmartTurnConfig",
+    *,
+    detector_available: bool,
+    default_misses: int,
+) -> int:
+    """Effective VAD end-of-speech silence threshold.
+
+    The shorter turn-detection threshold only applies while Smart Turn is both
+    enabled and usable; otherwise the caller's existing value is preserved.
+    """
+    if config.enabled and detector_available:
+        return max(0, int(config.vad_required_misses))
+    return max(0, int(default_misses))
 
 
 def prepare_audio(
@@ -221,6 +279,62 @@ def prepare_audio(
     elif samples.shape[0] < max_samples:
         samples = np.pad(samples, (max_samples - samples.shape[0], 0), mode="constant")
     return np.ascontiguousarray(samples, dtype=np.float32)
+
+
+def save_debug_wav(
+    directory,
+    samples,
+    sample_rate: int,
+    tier: str,
+    probability: float,
+    *,
+    max_files: int = SMART_TURN_DEBUG_MAX_FILES,
+) -> Optional[str]:
+    """Write the evaluated audio as a 16 kHz mono WAV for offline tuning.
+
+    Returns the written path, or ``None`` when disabled. Filenames carry the
+    timestamp, the tier and the probability, e.g.
+    ``20260921-173933_uncertain_p0.30.wav``. Oldest files beyond ``max_files``
+    are deleted so a long session cannot fill the disk.
+    """
+    if not directory:
+        return None
+
+    directory_path = Path(directory)
+    directory_path.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stem = f"{stamp}_{tier}_p{probability:.2f}"
+    path = directory_path / f"{stem}.wav"
+    if path.exists():
+        path = directory_path / f"{stem}_{int(time.time() * 1000) % 1000:03d}.wav"
+
+    audio = np.asarray(samples, dtype=np.float32)
+    if audio.size == 0:
+        return None
+    pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(int(sample_rate))
+        handle.writeframes(pcm16.tobytes())
+
+    _prune_debug_wavs(directory_path, max_files)
+    return str(path)
+
+
+def _prune_debug_wavs(directory: Path, max_files: int) -> None:
+    try:
+        files = sorted(directory.glob("*.wav"), key=lambda item: item.name)
+    except OSError:
+        return
+    if len(files) <= max_files:
+        return
+    for stale in files[: len(files) - max_files]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 class SmartTurnDetector:
@@ -329,7 +443,24 @@ class SmartTurnDetector:
             logger.debug(
                 "Smart Turn inference %.1fms probability=%.4f", infer_ms, probability
             )
+            self._save_debug_audio(prepared, probability)
             return (probability > self.config.threshold, probability)
         except Exception as exc:
             self._disable(exc)
             return None
+
+    def _save_debug_audio(self, samples: np.ndarray, probability: float) -> None:
+        """Persist the evaluated audio when ``debug_save_dir`` is configured."""
+        directory = self.config.debug_save_dir
+        if not directory:
+            return
+        try:
+            save_debug_wav(
+                directory,
+                samples,
+                self.config.sample_rate,
+                resolve_turn_tier(self.config, probability),
+                probability,
+            )
+        except Exception:
+            logger.debug("Smart Turn debug audio save failed", exc_info=True)

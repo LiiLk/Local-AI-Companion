@@ -113,7 +113,7 @@ def test_desktop_complete_verdict_shortens_delay_to_complete_window():
 
 def test_desktop_incomplete_verdict_keeps_long_delay():
     config = _detection_config()
-    detector = FakeDetector((False, 0.2), config)
+    detector = FakeDetector((False, 0.05), config)
     assistant = _make_desktop_assistant(config, detector)
 
     assistant._on_speech_start()
@@ -124,6 +124,55 @@ def test_desktop_incomplete_verdict_keeps_long_delay():
     assert detector.calls == 1
     assert len(assistant._loop.scheduled) == 1
     assert assistant._loop.scheduled[-1][0] == pytest.approx(2.5)
+
+
+def test_desktop_uncertain_verdict_uses_uncertain_delay():
+    config = _detection_config()
+    detector = FakeDetector((False, 0.30), config)
+    assistant = _make_desktop_assistant(config, detector)
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    # Long window armed first, then shortened to the uncertain window.
+    assert assistant._loop.scheduled[0][0] == pytest.approx(2.5)
+
+    assistant._pending_speech_detection_thread.join(timeout=5)
+
+    assert detector.calls == 1
+    assert len(assistant._loop.scheduled) == 2
+    assert 0.5 <= assistant._loop.scheduled[-1][0] <= 0.9
+
+
+def test_desktop_vad_misses_shorten_when_detector_available():
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    calls = []
+    assistant._default_vad_required_misses = 20
+    assistant.audio_service = SimpleNamespace(
+        set_vad_required_misses=lambda misses: calls.append(misses)
+    )
+
+    assistant._sync_vad_turn_detection_misses()
+
+    assert calls == [8]
+
+
+def test_desktop_vad_misses_restore_when_detector_unavailable():
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config, available=False)
+    assistant = _make_desktop_assistant(config, detector)
+    calls = []
+    assistant._default_vad_required_misses = 20
+    assistant.audio_service = SimpleNamespace(
+        set_vad_required_misses=lambda misses: calls.append(misses)
+    )
+
+    assistant._sync_vad_turn_detection_misses()
+
+    assert calls == [20]
 
 
 def test_desktop_unavailable_detector_rearms_on_fallback():
@@ -288,6 +337,37 @@ async def test_websocket_incomplete_verdict_keeps_long_delay():
 
     assert detector.calls == 1
     assert state.pending_speech_delay_ms == 2500
+
+    manager._cancel_pending_speech_commit(state)
+    manager._cancel_pending_speech_detection(state)
+
+
+@pytest.mark.asyncio
+async def test_websocket_uncertain_verdict_uses_uncertain_delay():
+    manager = WebSocketManager()
+    client_id = "ws-uncertain"
+    config = _detection_config()
+    detector = FakeDetector((False, 0.30), config)
+    state = _make_ws_state(config, detector, FakeVAD())
+    manager.states[client_id] = state
+
+    async def fake_transcribe(*args, **kwargs):
+        return None
+
+    async def fake_send_json(*args, **kwargs):
+        return None
+
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    await _stream_once(manager, client_id)
+    assert state.pending_speech_delay_ms == 2500
+
+    await state.pending_speech_detection_task
+
+    assert detector.calls == 1
+    assert state.pending_speech_delay_ms is not None
+    assert 500 <= state.pending_speech_delay_ms <= 900
 
     manager._cancel_pending_speech_commit(state)
     manager._cancel_pending_speech_detection(state)

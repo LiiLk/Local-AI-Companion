@@ -272,6 +272,15 @@ class AudioService:
             self._set_state(self._effective_state())
             self._vad.reset()
 
+    def set_vad_required_misses(self, required_misses: int) -> None:
+        """Update the VAD end-of-speech silence threshold at runtime."""
+        required_misses = max(0, int(required_misses))
+        vad_config = getattr(self._vad, "config", None)
+        if vad_config is None or vad_config.required_misses == required_misses:
+            return
+        vad_config.required_misses = required_misses
+        logger.info("VAD required_misses set to %s", required_misses)
+
     def _list_input_devices(self) -> list[tuple[int, dict]]:
         devices = []
         for index, info in enumerate(sd.query_devices()):
