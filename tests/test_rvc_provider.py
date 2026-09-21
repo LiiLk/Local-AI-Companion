@@ -333,7 +333,10 @@ def test_worker_backend_times_out_and_resets_worker(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError):
         converter.convert_file(input_path, output_path)
 
-    assert converter._worker_process is None
+    assert converter._worker_relaunch_count == 1
+    assert _wait_until(lambda: converter._worker_ready) is True
+    assert converter._worker_process is not None
+    converter.close()
 
 
 def test_worker_startup_times_out_and_resets_worker(tmp_path, monkeypatch):
@@ -365,4 +368,175 @@ def test_worker_startup_times_out_and_resets_worker(tmp_path, monkeypatch):
     with pytest.raises(TimeoutError, match="startup timed out"):
         converter.convert_file(input_path, output_path)
 
+    _wait_until(lambda: not converter._relaunching)
     assert converter._worker_process is None
+    assert converter._worker_ready is False
+
+
+def _wait_until(predicate, timeout: float = 3.0, interval: float = 0.01) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _make_scripted_popen(behaviors, startup_delay: float = 0.0):
+    """Popen stand-in whose per-instance behavior is driven by a list."""
+
+    class _Stdout:
+        def __init__(self, process):
+            self.process = process
+            self._ready_sent = process.behavior != "slow_start"
+            self.queue = (
+                [json.dumps({"status": "ready", "backend": "worker"}) + "\n"]
+                if self._ready_sent
+                else []
+            )
+
+        def readline(self):
+            if self.queue:
+                return self.queue.pop(0)
+            if self.process.behavior == "slow_start" and not self._ready_sent:
+                time.sleep(startup_delay)
+                self._ready_sent = True
+                return json.dumps({"status": "ready", "backend": "worker"}) + "\n"
+            if self.process.behavior == "block":
+                time.sleep(5.0)
+            return ""
+
+    class _Stdin:
+        def __init__(self, process):
+            self.process = process
+            self.last_payload = None
+
+        def write(self, data):
+            self.last_payload = json.loads(data)
+
+        def flush(self):
+            if self.last_payload is None:
+                return
+            command = self.last_payload.get("command")
+            if command == "convert" and self.process.behavior != "block":
+                output_path = Path(self.last_payload["output_path"])
+                output_path.write_bytes(b"worker-output")
+                self.process.stdout.queue.append(
+                    json.dumps({"status": "ok", "output_path": str(output_path)}) + "\n"
+                )
+            elif command == "shutdown":
+                self.process.stdout.queue.append(json.dumps({"status": "bye"}) + "\n")
+
+    class _ScriptedPopen:
+        _instance_count = 0
+
+        def __init__(self, *args, **kwargs):
+            index = _ScriptedPopen._instance_count
+            _ScriptedPopen._instance_count += 1
+            self.behavior = behaviors[min(index, len(behaviors) - 1)]
+            self.stdout = _Stdout(self)
+            self.stdin = _Stdin(self)
+            self.stderr = _FakeEmptyStream()
+            self._terminated = False
+
+        def poll(self):
+            return 0 if self._terminated else None
+
+        def wait(self, timeout=None):
+            self._terminated = True
+            return 0
+
+        def kill(self):
+            self._terminated = True
+
+        def terminate(self):
+            self._terminated = True
+
+    return _ScriptedPopen
+
+
+def test_worker_request_timeout_relaunches_and_serves_again(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    index_path = tmp_path / "March-7th.index"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+    index_path.write_bytes(b"fake index")
+    input_path.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(
+        rvc_provider.subprocess, "Popen", _make_scripted_popen(["block", "ok"])
+    )
+
+    converter = RVCConverter(
+        model_path=model_path,
+        index_path=index_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+        request_timeout_sec=0.05,
+    )
+
+    with pytest.raises(TimeoutError):
+        converter.convert_file(input_path, output_path)
+
+    assert converter._worker_relaunch_count == 1
+    assert _wait_until(lambda: converter._worker_ready) is True
+
+    result = converter.convert_file(input_path, output_path)
+
+    assert result == output_path
+    assert output_path.read_bytes() == b"worker-output"
+    converter.close()
+
+
+def test_worker_is_fast_fail_while_relaunching(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "March-7th.pth"
+    index_path = tmp_path / "March-7th.index"
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "output.wav"
+
+    python_path.write_text("")
+    worker_script.write_text("")
+    model_path.write_bytes(b"fake model")
+    index_path.write_bytes(b"fake index")
+    input_path.write_bytes(b"fake wav")
+
+    monkeypatch.setattr(
+        rvc_provider.subprocess,
+        "Popen",
+        _make_scripted_popen(["block", "slow_start", "ok"], startup_delay=0.4),
+    )
+
+    converter = RVCConverter(
+        model_path=model_path,
+        index_path=index_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / ".rvc-site-packages",
+        request_timeout_sec=0.5,
+    )
+
+    with pytest.raises(TimeoutError):
+        converter.convert_file(input_path, output_path)
+
+    assert converter._relaunching is True
+
+    started = time.perf_counter()
+    with pytest.raises(RuntimeError, match="relaunching|not ready"):
+        converter.convert_file(input_path, output_path)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.2, f"fast-fail call took {elapsed:.3f}s"
+
+    assert _wait_until(lambda: converter._worker_ready) is True
+    assert converter.convert_file(input_path, output_path) == output_path
+    converter.close()
