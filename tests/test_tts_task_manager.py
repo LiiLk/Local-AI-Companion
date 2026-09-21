@@ -93,7 +93,7 @@ async def test_normalizes_markdown_and_drops_marker_only_segments():
     mgr = TTSTaskManager(tts=tts, on_audio_ready=on_audio)
     await mgr.start()
     await mgr.submit("The **Ergosphere** region.")
-    await mgr.submit("**1.")
+    await mgr.submit("#")
     await mgr.finish()
 
     assert delivered == ["The Ergosphere region."]

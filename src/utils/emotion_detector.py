@@ -13,6 +13,13 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _collapse_marker_whitespace(text: str) -> str:
+    """Tidy whitespace left by removed markers without eating line breaks."""
+    text = re.sub(r'[^\S\n]+', ' ', text)
+    text = re.sub(r' *\n *', '\n', text)
+    return text.strip()
+
+
 @dataclass
 class EmotionConfig:
     """Configuration for emotion detection and expression mapping."""
@@ -87,6 +94,7 @@ class EmotionDetector:
         "nod", "nods", "nodding", "wink", "winks", "winking",
         "shrug", "shrugs", "shrugging", "pout", "pouts", "pouting",
         "bounce", "bounces", "bouncing", "tilt", "tilts", "tilting",
+        "bored", "annoyed",
     }
 
     def __init__(self, config: Optional[EmotionConfig] = None):
@@ -185,7 +193,7 @@ class EmotionDetector:
             result = pattern.sub(_replace, result)
 
         # Clean up extra whitespace
-        result = re.sub(r'\s+', ' ', result).strip()
+        result = _collapse_marker_whitespace(result)
         return result
 
     def strip_markers_for_tts(self, text: str) -> str:
@@ -222,7 +230,7 @@ class EmotionDetector:
         # Remove known [brackets] EXCEPT Chatterbox tags, keep unknown words
         result = re.sub(r'\[(\w+)\]', _replace_bracket, result)
         # Clean up extra whitespace
-        result = re.sub(r'\s+', ' ', result).strip()
+        result = _collapse_marker_whitespace(result)
         return result
 
 

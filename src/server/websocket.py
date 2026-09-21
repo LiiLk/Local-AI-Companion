@@ -123,6 +123,21 @@ def _audio_sample_count(value: Any) -> int:
     return 1
 
 
+def resolve_state_system_prompt(state: Any) -> str:
+    """Resolve a conversation's system prompt for its current mode.
+
+    ``pipeline.voice_style_prompt`` is a pipeline-only rule, so omni modes keep
+    just the character prompt. Duck-typed states without a ``mode`` behave like
+    the pipeline (previous default).
+    """
+    config = getattr(state, "config", {}) or {}
+    if getattr(state, "mode", "pipeline") != "pipeline":
+        return config.get("character", {}).get(
+            "system_prompt", "You are a helpful assistant."
+        )
+    return resolve_pipeline_system_prompt(config)
+
+
 @dataclass
 class ConversationState:
     """
@@ -183,7 +198,7 @@ class ConversationState:
 
         # Initialize conversation with system prompt
         if not self.messages:
-            system_prompt = resolve_pipeline_system_prompt(self.config)
+            system_prompt = resolve_state_system_prompt(self)
             self.messages = initial_messages(system_prompt, self.memory_store)
 
     def _get_pipeline_runtime(self):
@@ -1927,7 +1942,7 @@ class WebSocketManager:
 
         if state.memory_store:
             state.memory_store.clear()
-        system_prompt = resolve_pipeline_system_prompt(state.config)
+        system_prompt = resolve_state_system_prompt(state)
         state.messages = initial_messages(system_prompt, state.memory_store)
 
         active_task = state.response_task
@@ -1962,7 +1977,7 @@ class WebSocketManager:
             return
         if not state.memory_store.append_exchange(user_text, assistant_text):
             return
-        system_prompt = resolve_pipeline_system_prompt(state.config)
+        system_prompt = resolve_state_system_prompt(state)
         state.messages = initial_messages(system_prompt, state.memory_store)
 
     async def _curate_pipeline_memory(
@@ -1974,7 +1989,7 @@ class WebSocketManager:
         if not state.memory_store:
             return
         if await state.memory_store.curate_exchange(state.get_llm(), user_text, assistant_text):
-            system_prompt = resolve_pipeline_system_prompt(state.config)
+            system_prompt = resolve_state_system_prompt(state)
             state.messages = initial_messages(system_prompt, state.memory_store)
 
     async def _preload_models_progressive(self, client_id: str):
