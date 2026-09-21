@@ -142,10 +142,17 @@ llm:
     escalate_effort: "medium"
     max_effort: "high"
     escalated_max_completion_tokens: 2048
+    # Waiting phrases can be a plain list (used for every language) or a
+    # mapping keyed by short language code, with "default"/"en" fallbacks.
     filler_phrases:
-      - "Hmm, let me think about that."
-      - "Good question, give me a second."
-      - "Okay, let me work that out."
+      en:
+        - "Hmm, let me think about that."
+        - "Good question, give me a second."
+        - "Okay, let me work that out."
+      fr:
+        - "Hmm, laisse-moi réfléchir."
+        - "Bonne question, une seconde."
+        - "D'accord, je regarde ça."
     routing_prompt: |
       Routing instruction: before answering, decide whether the user's request
       genuinely requires careful multi-step reasoning, a non-trivial calculation,

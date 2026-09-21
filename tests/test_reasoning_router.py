@@ -2,8 +2,10 @@
 
 import pytest
 
+import src.assistant.reasoning_router as reasoning_router
 from src.assistant.reasoning_router import (
     AdaptiveReasoningConfig,
+    DEFAULT_FILLER_PHRASES_BY_LANGUAGE,
     MarkerStrippingFilter,
     ReasoningMarkerRouter,
     THINK_HARD_MARKER,
@@ -14,6 +16,7 @@ from src.assistant.reasoning_router import (
     strip_reasoning_markers,
 )
 from src.llm.base import Message
+from src.llm.gemma_text_vision_llm import GemmaTextVisionLLM
 
 
 class RecordingLLM:
@@ -42,6 +45,25 @@ class NoOverrideLLM:
         index = min(len(self.calls) - 1, len(self._scripts) - 1)
         for chunk in self._scripts[index]:
             yield chunk
+
+
+class CloseTrackingLLM:
+    """Fake provider whose generators record when they are closed."""
+
+    def __init__(self, scripts):
+        self._scripts = scripts
+        self.events = []
+        self.calls = 0
+
+    async def chat_stream(self, messages, options_override=None):
+        index = self.calls
+        self.calls += 1
+        self.events.append(f"start{index}")
+        try:
+            for chunk in self._scripts[index]:
+                yield chunk
+        finally:
+            self.events.append(f"close{index}")
 
 
 def _enabled(**overrides) -> AdaptiveReasoningConfig:
@@ -99,6 +121,34 @@ def test_router_holdback_is_bounded_by_longest_marker():
 
     released = router.feed("This is a normal sentence.")
     assert released == "This is a normal sentence."
+
+
+def test_router_holds_leading_whitespace_until_it_can_classify():
+    router = ReasoningMarkerRouter()
+
+    assert router.feed(" ") == ""
+    assert router.resolved is False
+    assert router.feed("Hello") == " Hello"
+    assert router.decision == "direct"
+
+
+def test_router_classifies_marker_after_leading_whitespace():
+    router = ReasoningMarkerRouter()
+
+    assert router.feed("\n") == ""
+    assert router.feed("<|TH") == ""
+    assert router.feed("INK|>") == ""
+    assert router.decision == "think"
+
+
+def test_router_releases_whitespace_only_stream_without_stalling():
+    router = ReasoningMarkerRouter()
+
+    released = router.feed(" " * 64)
+
+    assert released == " " * 64
+    assert router.resolved is True
+    assert router.decision == "direct"
 
 
 def test_strip_reasoning_markers_removes_embedded_markers():
@@ -174,13 +224,24 @@ def test_from_dict_reads_custom_values():
     assert config.routing_prompt == "Route this."
 
 
-def test_build_routing_messages_appends_system_instruction():
+def test_build_routing_messages_keeps_last_user_message_last():
     messages = [Message(role="system", content="sys"), Message(role="user", content="hi")]
 
     routed = build_routing_messages(messages, "route")
 
-    assert [message.role for message in routed] == ["system", "user", "system"]
-    assert routed[-1].content == "route"
+    assert [message.role for message in routed] == ["system", "system", "user"]
+    assert routed[-1] == Message(role="user", content="hi")
+    assert routed[-2].content == "route"
+
+
+def test_routing_messages_preserve_gemma_current_prompt():
+    messages = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+    routed = build_routing_messages(messages, "route")
+
+    latest, history = GemmaTextVisionLLM._split_messages(None, routed)
+
+    assert latest == "hi"
+    assert any(entry["content"][0]["text"] == "route" for entry in history)
 
 
 def test_accepts_options_override_detects_support():
@@ -205,8 +266,9 @@ async def test_direct_reply_uses_single_call_with_base_effort():
     assert len(llm.calls) == 1
     messages, override = llm.calls[0]
     assert override == {"reasoning": {"effort": "none"}}
-    assert messages[-1].role == "system"
-    assert messages[-1].content == config.routing_prompt
+    assert messages[-1].role == "user"
+    assert messages[-2].role == "system"
+    assert messages[-2].content == config.routing_prompt
 
 
 @pytest.mark.asyncio
@@ -311,3 +373,127 @@ async def test_disabled_config_uses_single_unmodified_call():
     assert len(llm.calls) == 1
     assert llm.calls[0][1] is None
     assert llm.calls[0][0] == [Message(role="user", content="hi")]
+
+
+@pytest.mark.asyncio
+async def test_first_stream_is_closed_before_the_escalated_call():
+    llm = CloseTrackingLLM([["<|THINK|>"], ["The answer."]])
+    config = _enabled()
+
+    chunks = await _collect(
+        stream_llm_with_adaptive_reasoning(
+            llm,
+            [Message(role="user", content="hi")],
+            config,
+        )
+    )
+
+    assert chunks == ["The answer."]
+    assert llm.events.index("close0") < llm.events.index("start1")
+
+
+@pytest.mark.asyncio
+async def test_abandoned_router_stream_closes_the_provider_stream():
+    llm = CloseTrackingLLM([["a", "b", "c"]])
+    config = _enabled()
+    stream = stream_llm_with_adaptive_reasoning(
+        llm,
+        [Message(role="user", content="hi")],
+        config,
+    )
+
+    assert await stream.__anext__() == "a"
+    await stream.aclose()
+
+    assert "close0" in llm.events
+
+
+@pytest.mark.asyncio
+async def test_first_routing_chunk_marks_llm_first_token_before_escalation(monkeypatch):
+    class RecordingTracker:
+        def __init__(self):
+            self.events = []
+
+        def mark(self, stage):
+            self.events.append(stage)
+
+    tracker = RecordingTracker()
+    monkeypatch.setattr(reasoning_router, "get_turn_latency_tracker", lambda: tracker)
+    llm = RecordingLLM([["<|THINK|>"], ["The answer."]])
+    config = _enabled()
+
+    async def on_escalation(decision, effort, filler):
+        tracker.events.append("escalation")
+
+    chunks = await _collect(
+        stream_llm_with_adaptive_reasoning(
+            llm,
+            [Message(role="user", content="hi")],
+            config,
+            on_escalation=on_escalation,
+        )
+    )
+
+    assert chunks == ["The answer."]
+    assert tracker.events == ["llm_first_token", "reasoning_escalated", "escalation"]
+
+
+def test_pick_filler_selects_phrase_by_language():
+    config = AdaptiveReasoningConfig.from_dict(
+        {
+            "enabled": True,
+            "filler_phrases": {
+                "en": ["thinking"],
+                "fr": ["reflexion"],
+                "default": ["fallback"],
+            },
+        }
+    )
+
+    assert config.pick_filler("fr-FR") == "reflexion"
+    assert config.pick_filler("fr") == "reflexion"
+    assert config.pick_filler("de") == "fallback"
+    assert config.pick_filler(None) == "fallback"
+
+
+def test_pick_filler_list_stays_language_agnostic():
+    config = AdaptiveReasoningConfig.from_dict(
+        {"enabled": True, "filler_phrases": ["only"]}
+    )
+
+    assert config.pick_filler("fr") == "only"
+    assert config.pick_filler(None) == "only"
+
+
+def test_default_filler_phrases_are_language_aware():
+    config = AdaptiveReasoningConfig.from_dict({"enabled": True})
+
+    assert config.pick_filler("fr") in DEFAULT_FILLER_PHRASES_BY_LANGUAGE["fr"]
+    assert config.pick_filler("en") in DEFAULT_FILLER_PHRASES_BY_LANGUAGE["en"]
+
+
+@pytest.mark.asyncio
+async def test_escalation_uses_filler_for_the_response_language():
+    config = AdaptiveReasoningConfig.from_dict(
+        {
+            "enabled": True,
+            "filler_phrases": {"en": ["thinking"], "fr": ["reflexion"]},
+        }
+    )
+    llm = RecordingLLM([["<|THINK|>"], ["The answer."]])
+    fillers = []
+
+    async def on_escalation(decision, effort, filler):
+        fillers.append(filler)
+
+    await _collect(
+        stream_llm_with_adaptive_reasoning(
+            llm,
+            [Message(role="user", content="hi")],
+            config,
+            on_escalation=on_escalation,
+            language_code="fr-FR",
+        )
+    )
+
+    assert fillers == ["reflexion"]

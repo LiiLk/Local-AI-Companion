@@ -1560,6 +1560,7 @@ class WebSocketManager:
                 llm_messages,
                 adaptive_reasoning,
                 on_escalation=_on_escalation,
+                language_code=response_language,
             ):
                 if "llm_first_token_epoch_ms" not in trace_data:
                     trace_data["llm_first_token_epoch_ms"] = int(time.time() * 1000)

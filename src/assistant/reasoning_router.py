@@ -17,6 +17,7 @@ import inspect
 import logging
 import random
 import time
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
@@ -35,11 +36,27 @@ _MARKERS: tuple[tuple[str, str], ...] = (
     (THINK_MARKER, "think"),
 )
 
+# How many leading whitespace-only characters the router holds while it waits
+# for the first non-whitespace token. Bounds the holdback for a stream that
+# never produces anything else.
+_MAX_LEADING_WHITESPACE = 16
+
 DEFAULT_FILLER_PHRASES: tuple[str, ...] = (
     "Hmm, let me think about that.",
     "Good question, give me a second.",
     "Okay, let me work that out.",
 )
+
+DEFAULT_FILLER_PHRASES_FR: tuple[str, ...] = (
+    "Hmm, laisse-moi réfléchir.",
+    "Bonne question, une seconde.",
+    "D'accord, je regarde ça.",
+)
+
+DEFAULT_FILLER_PHRASES_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
+    "en": DEFAULT_FILLER_PHRASES,
+    "fr": DEFAULT_FILLER_PHRASES_FR,
+}
 
 DEFAULT_ROUTING_PROMPT = (
     "Routing instruction: before answering, decide whether the user's request "
@@ -112,6 +129,7 @@ class AdaptiveReasoningConfig:
     filler_phrases: list[str] = field(
         default_factory=lambda: list(DEFAULT_FILLER_PHRASES)
     )
+    filler_phrases_by_language: dict[str, list[str]] = field(default_factory=dict)
     routing_prompt: str = DEFAULT_ROUTING_PROMPT
 
     @classmethod
@@ -125,8 +143,18 @@ class AdaptiveReasoningConfig:
             return None
 
         phrases = data.get("filler_phrases")
-        if not isinstance(phrases, (list, tuple)) or not phrases:
-            phrases = list(DEFAULT_FILLER_PHRASES)
+        if isinstance(phrases, dict):
+            by_language = cls._normalize_filler_mapping(phrases)
+            if not by_language:
+                by_language = cls._default_filler_mapping()
+            filler_phrases = by_language.get("en") or list(DEFAULT_FILLER_PHRASES)
+        elif isinstance(phrases, (list, tuple)) and phrases:
+            # A plain list applies to every language (legacy behaviour).
+            by_language = {}
+            filler_phrases = [str(phrase) for phrase in phrases]
+        else:
+            by_language = cls._default_filler_mapping()
+            filler_phrases = list(DEFAULT_FILLER_PHRASES)
 
         routing_prompt = str(data.get("routing_prompt") or DEFAULT_ROUTING_PROMPT)
 
@@ -141,13 +169,46 @@ class AdaptiveReasoningConfig:
             escalate_effort=str(data.get("escalate_effort", "medium") or "medium"),
             max_effort=str(data.get("max_effort", "high") or "high"),
             escalated_max_completion_tokens=max_tokens,
-            filler_phrases=[str(phrase) for phrase in phrases],
+            filler_phrases=filler_phrases,
+            filler_phrases_by_language=by_language,
             routing_prompt=routing_prompt,
         )
 
-    def pick_filler(self) -> str:
-        """Return a waiting phrase to speak while the escalation runs."""
-        return random.choice(self.filler_phrases)
+    @staticmethod
+    def _normalize_filler_mapping(mapping: dict) -> dict[str, list[str]]:
+        normalized: dict[str, list[str]] = {}
+        for language, values in mapping.items():
+            if not isinstance(values, (list, tuple)):
+                continue
+            cleaned = [str(value) for value in values if str(value).strip()]
+            if cleaned:
+                normalized[str(language).strip().lower()] = cleaned
+        return normalized
+
+    @staticmethod
+    def _default_filler_mapping() -> dict[str, list[str]]:
+        return {
+            language: list(phrases)
+            for language, phrases in DEFAULT_FILLER_PHRASES_BY_LANGUAGE.items()
+        }
+
+    def _filler_phrases_for(self, language_code: Optional[str]) -> list[str]:
+        if not self.filler_phrases_by_language:
+            return self.filler_phrases
+        code = (language_code or "").replace("_", "-").split("-")[0].strip().lower()
+        mapping = self.filler_phrases_by_language
+        for key in (code, "default", "en"):
+            phrases = mapping.get(key)
+            if phrases:
+                return phrases
+        return self.filler_phrases
+
+    def pick_filler(self, language_code: Optional[str] = None) -> str:
+        """Return a waiting phrase, preferring the response language."""
+        phrases = self._filler_phrases_for(language_code)
+        if not phrases:
+            phrases = list(DEFAULT_FILLER_PHRASES)
+        return random.choice(phrases)
 
 
 class ReasoningMarkerRouter:
@@ -182,17 +243,30 @@ class ReasoningMarkerRouter:
             return chunk
 
         self._held += chunk
-        decision = self._classify(self._held)
+        candidate = self._held.lstrip()
+        if not candidate:
+            # Only whitespace so far: keep holding, but do not hold forever.
+            if len(self._held) >= _MAX_LEADING_WHITESPACE:
+                self._resolved = True
+                self.decision = "direct"
+                released = self._held
+                self._held = ""
+                return released
+            return ""
+
+        decision = self._classify(candidate)
         if decision is None:
             return ""
 
         self._resolved = True
         self.decision = decision
-        released = self._held
-        self._held = ""
         if decision == "direct":
+            # Leading whitespace is part of a normal answer, so release it too.
+            released = self._held
+            self._held = ""
             return released
         # A marker: the buffered characters are routing noise and are dropped.
+        self._held = ""
         return ""
 
     def flush(self) -> str:
@@ -207,8 +281,17 @@ class ReasoningMarkerRouter:
 
 
 def build_routing_messages(messages: list[Message], routing_prompt: str) -> list[Message]:
-    """Return the first-call messages with the routing instruction appended."""
-    return [*messages, Message(role="system", content=routing_prompt)]
+    """Return the first-call messages with the routing instruction added.
+
+    The instruction is inserted just before the last user message so that
+    provider adapters which treat the final user message as the current prompt
+    (e.g. ``GemmaTextVisionLLM._split_messages``) still see it last. It stays
+    close to the end of the conversation, next to the request being routed.
+    """
+    instruction = Message(role="system", content=routing_prompt)
+    if messages and messages[-1].role == "user":
+        return [*messages[:-1], instruction, messages[-1]]
+    return [*messages, instruction]
 
 
 def accepts_options_override(llm: Any) -> bool:
@@ -239,8 +322,9 @@ async def _chat_stream(
         stream = llm.chat_stream(messages, options_override=options_override)
     else:
         stream = llm.chat_stream(messages)
-    async for chunk in stream:
-        yield chunk
+    async with aclosing(stream) as active:
+        async for chunk in active:
+            yield chunk
 
 
 async def stream_llm_with_adaptive_reasoning(
@@ -249,15 +333,18 @@ async def stream_llm_with_adaptive_reasoning(
     config: Optional[AdaptiveReasoningConfig],
     *,
     on_escalation: Optional[Callable[[str, str, str], Awaitable[None]]] = None,
+    language_code: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream the LLM, escalating the reasoning effort when the model asks.
 
     ``on_escalation`` is awaited with ``(decision, effort, filler)`` just before
     the second call, so the caller can speak the waiting phrase immediately.
+    ``language_code`` selects the filler phrase language when configured.
     """
     if config is None or not config.enabled:
-        async for chunk in _chat_stream(llm, messages, None):
-            yield chunk
+        async with aclosing(_chat_stream(llm, messages, None)) as stream:
+            async for chunk in stream:
+                yield chunk
         return
 
     routing_messages = build_routing_messages(messages, config.routing_prompt)
@@ -267,16 +354,24 @@ async def stream_llm_with_adaptive_reasoning(
     router = ReasoningMarkerRouter()
     stripper = MarkerStrippingFilter()
 
-    async for chunk in _chat_stream(llm, routing_messages, base_override):
-        if first_chunk_ms is None:
-            first_chunk_ms = (time.perf_counter() - started) * 1000.0
-        released = router.feed(chunk)
-        if router.resolved and router.decision != "direct":
-            break
-        if released:
-            cleaned = stripper.feed(released)
-            if cleaned:
-                yield cleaned
+    # ``aclosing`` closes the provider stream deterministically on the marker
+    # ``break`` (and if the consumer abandons this generator) instead of
+    # leaving a live HTTP response behind during the escalated call.
+    async with aclosing(_chat_stream(llm, routing_messages, base_override)) as stream:
+        async for chunk in stream:
+            if first_chunk_ms is None:
+                first_chunk_ms = (time.perf_counter() - started) * 1000.0
+                # The first routing chunk is the first token of the turn; mark
+                # it before any escalation so ``first_sentence`` cannot precede
+                # it in the canonical turn_latency order.
+                get_turn_latency_tracker().mark("llm_first_token")
+            released = router.feed(chunk)
+            if router.resolved and router.decision != "direct":
+                break
+            if released:
+                cleaned = stripper.feed(released)
+                if cleaned:
+                    yield cleaned
 
     if not router.resolved:
         released = router.flush()
@@ -307,17 +402,18 @@ async def stream_llm_with_adaptive_reasoning(
     )
 
     if on_escalation is not None:
-        await on_escalation(decision, effort, config.pick_filler())
+        await on_escalation(decision, effort, config.pick_filler(language_code))
 
     escalated_override = {
         "reasoning": {"effort": effort},
         "max_completion_tokens": config.escalated_max_completion_tokens,
     }
     escalated_stripper = MarkerStrippingFilter()
-    async for chunk in _chat_stream(llm, messages, escalated_override):
-        cleaned = escalated_stripper.feed(chunk)
-        if cleaned:
-            yield cleaned
+    async with aclosing(_chat_stream(llm, messages, escalated_override)) as stream:
+        async for chunk in stream:
+            cleaned = escalated_stripper.feed(chunk)
+            if cleaned:
+                yield cleaned
     tail = escalated_stripper.flush()
     if tail:
         yield tail

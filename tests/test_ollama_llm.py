@@ -151,6 +151,34 @@ async def test_ollama_stream_maps_reasoning_effort_onto_think():
 
 
 @pytest.mark.asyncio
+async def test_ollama_stream_maps_max_completion_tokens_to_num_predict():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, content=b'{"message":{"content":"ok"}}\n')
+
+    llm = await _make_llm(handler, options={"temperature": 0.6})
+    try:
+        chunks = [
+            chunk
+            async for chunk in llm.chat_stream(
+                [Message(role="user", content="Hi")],
+                options_override={
+                    "reasoning": {"effort": "medium"},
+                    "max_completion_tokens": 2048,
+                },
+            )
+        ]
+    finally:
+        await llm.close()
+
+    assert chunks == ["ok"]
+    assert seen_payloads[0]["options"] == {"temperature": 0.6, "num_predict": 2048}
+    assert llm.options == {"temperature": 0.6}
+
+
+@pytest.mark.asyncio
 async def test_ollama_stream_maps_none_effort_onto_think_false():
     seen_payloads = []
 

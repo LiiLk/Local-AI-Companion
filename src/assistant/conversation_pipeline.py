@@ -660,6 +660,7 @@ class ConversationPipeline:
                     run_id,
                     trace,
                     response_language_code=response_language if validate_language else None,
+                    filler_language_code=response_language,
                 )
             else:
                 # Get full response first, then TTS
@@ -668,6 +669,7 @@ class ConversationPipeline:
                     run_id,
                     trace,
                     emit_chunks=not validate_language,
+                    filler_language_code=response_language,
                 )
                 full_response = await self._ensure_response_language(
                     full_response,
@@ -747,6 +749,7 @@ class ConversationPipeline:
                     run_id,
                     trace,
                     response_language_code=response_language if validate_language else None,
+                    filler_language_code=response_language,
                 )
             else:
                 full_response = await self._get_full_response(
@@ -754,6 +757,7 @@ class ConversationPipeline:
                     run_id,
                     trace,
                     emit_chunks=not validate_language,
+                    filler_language_code=response_language,
                 )
                 full_response = await self._ensure_response_language(
                     full_response,
@@ -869,6 +873,7 @@ class ConversationPipeline:
         *,
         emit_chunks: bool = True,
         use_adaptive_reasoning: bool = True,
+        filler_language_code: Optional[str] = None,
     ) -> str:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
@@ -885,6 +890,7 @@ class ConversationPipeline:
             messages,
             reasoning_config,
             on_escalation=_on_escalation,
+            language_code=filler_language_code,
         ):
             self._ensure_run_active(run_id)
             if not first_token_seen:
@@ -905,6 +911,7 @@ class ConversationPipeline:
         run_id: int,
         trace: Optional[dict[str, float | int | str | None]] = None,
         response_language_code: Optional[str] = None,
+        filler_language_code: Optional[str] = None,
     ) -> str:
         """Stream the LLM while TTS runs independently in the background."""
         full_response = ""
@@ -1011,6 +1018,7 @@ class ConversationPipeline:
                 messages,
                 self.config.adaptive_reasoning,
                 on_escalation=_on_escalation,
+                language_code=filler_language_code,
             ):
                 self._ensure_run_active(run_id)
                 full_response += chunk

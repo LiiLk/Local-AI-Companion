@@ -148,6 +148,36 @@ def test_non_streaming_path_speaks_filler_then_answer():
     assert tts.calls[1] == "The hard answer."
 
 
+def test_french_response_escalation_speaks_french_filler():
+    adaptive = AdaptiveReasoningConfig.from_dict(
+        {
+            "enabled": True,
+            "filler_phrases": {"en": ["thinking"], "fr": ["reflexion"]},
+        }
+    )
+    llm = AdaptiveLLM([["<|THINK|>"], ["Paris est la capitale de la France."]])
+    tts = KokoroProvider()
+    payloads, chunks = [], []
+    config = ConversationConfig(
+        stream_tts=True,
+        asr_language="auto",
+        reply_language="fr",
+        adaptive_reasoning=adaptive,
+    )
+    pipeline = ConversationPipeline(llm=llm, tts=tts, asr=FrenchASR(), config=config)
+
+    async def on_audio_ready(payload):
+        payloads.append(payload)
+
+    pipeline.on_audio_ready = on_audio_ready
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result == "Paris est la capitale de la France."
+    assert tts.calls[0] == "reflexion"
+    assert "Paris est la capitale de la France." in " ".join(tts.calls)
+
+
 def test_language_guard_rewrite_bypasses_adaptive_routing():
     adaptive = AdaptiveReasoningConfig.from_dict({"enabled": True})
     llm = AdaptiveLLM(

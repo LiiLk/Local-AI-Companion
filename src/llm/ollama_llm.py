@@ -52,8 +52,9 @@ class OllamaLLM(BaseLLM):
         """Map a per-request override onto Ollama's ``think`` flag.
 
         ``reasoning.effort == "none"`` disables thinking, any other effort
-        enables it. An explicit ``think`` key wins when present. Providers do
-        not support ``max_completion_tokens`` here, so it is ignored.
+        enables it. An explicit ``think`` key wins when present. The token cap
+        from ``max_completion_tokens`` is handled in ``_build_payload`` as
+        Ollama's ``options.num_predict``.
         """
         think = self.think
         if not options_override:
@@ -79,8 +80,15 @@ class OllamaLLM(BaseLLM):
         think = self._resolve_think(options_override)
         if think is not None:
             payload["think"] = think
-        if self.options:
-            payload["options"] = self.options
+        options = dict(self.options)
+        max_tokens = (options_override or {}).get("max_completion_tokens")
+        if max_tokens is not None:
+            try:
+                options["num_predict"] = int(max_tokens)
+            except (TypeError, ValueError):
+                pass
+        if options:
+            payload["options"] = options
         if self.keep_alive is not None:
             payload["keep_alive"] = self.keep_alive
         return payload
