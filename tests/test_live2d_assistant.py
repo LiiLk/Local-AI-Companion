@@ -376,6 +376,104 @@ def test_resumed_speech_cancels_pending_commit_and_merges_segments():
     assert captured["audio"] == first_segment + second_segment
 
 
+def _arm_barge_in(assistant, turn_id):
+    events = []
+    assistant.config["audio"]["allow_barge_in"] = True
+    assistant._assistant_busy = lambda: True
+    assistant._active_turn_id = turn_id
+    assistant._interrupt_current_turn = (
+        lambda reason="interrupt": events.append(("interrupt", reason)) or {}
+    )
+    assistant._dispatch_frontend_event = (
+        lambda event_name, *args: events.append((event_name, args))
+    )
+    return events
+
+
+def test_barge_in_requeues_unspoken_turn_audio():
+    assistant = _make_assistant()
+    _arm_barge_in(assistant, 5)
+    first_turn_audio = b"A" * 3200
+    assistant._inflight_turn_audio = first_turn_audio
+    assistant._inflight_turn_audio_turn_id = 5
+    assistant._pending_speech_audio.extend(b"B" * 1600)
+
+    assistant._on_speech_start()
+
+    assert assistant._pending_speech_audio == bytearray(first_turn_audio + b"B" * 1600)
+    assert assistant._inflight_turn_audio is None
+    assert assistant._inflight_turn_audio_turn_id is None
+
+
+def test_barge_in_does_not_requeue_once_turn_audio_started():
+    assistant = _make_assistant()
+    _arm_barge_in(assistant, 5)
+    # The turn already produced response audio, so its input is not re-merged.
+    assistant._inflight_turn_audio = None
+    assistant._inflight_turn_audio_turn_id = None
+    assistant._pending_speech_audio.extend(b"B" * 1600)
+
+    assistant._on_speech_start()
+
+    assert assistant._pending_speech_audio == bytearray(b"B" * 1600)
+
+
+def test_barge_in_requeue_respects_thirty_second_cap():
+    assistant = _make_assistant()
+    _arm_barge_in(assistant, 5)
+    assistant._inflight_turn_audio = b"A" * (30 * 16000 * 2 + 2)
+    assistant._inflight_turn_audio_turn_id = 5
+    assistant._pending_speech_audio.extend(b"B" * 1600)
+
+    assistant._on_speech_start()
+
+    assert assistant._pending_speech_audio == bytearray(b"B" * 1600)
+    assert assistant._inflight_turn_audio is None
+
+
+def test_commit_retains_audio_until_first_response_audio():
+    assistant = _make_assistant()
+    captured = {}
+
+    assistant.pipeline.process_speech = lambda audio_bytes, **kwargs: None
+    assistant._start_turn = lambda turn_id, runner, source: captured.update(turn_id=turn_id)
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    _delay, handle = assistant._loop.scheduled[-1]
+    handle.callback()
+
+    assert assistant._inflight_turn_audio == b"A" * 3200
+    assert assistant._inflight_turn_audio_turn_id == captured["turn_id"]
+
+
+def test_first_response_audio_clears_retained_turn_audio():
+    assistant = _make_assistant()
+    assistant._inflight_turn_audio = b"A" * 3200
+    assistant._inflight_turn_audio_turn_id = 7
+
+    payload = AudioPayload(
+        audio_bytes=b"\x00\x00" * 240,
+        audio_base64="ZmFrZQ==",
+        wav_bytes=None,
+        volumes=[0.1],
+        duration_ms=200,
+        sample_rate=24000,
+        text="hi",
+    )
+
+    token = CURRENT_DESKTOP_TURN_ID.set(7)
+    try:
+        asyncio.run(assistant._on_audio_ready(payload))
+    finally:
+        CURRENT_DESKTOP_TURN_ID.reset(token)
+
+    assert assistant._inflight_turn_audio is None
+    assert assistant._inflight_turn_audio_turn_id is None
+
+
 def test_on_audio_ready_includes_trace_and_tts_metrics():
     assistant = _make_assistant()
     payload = AudioPayload(

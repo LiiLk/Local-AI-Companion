@@ -64,6 +64,13 @@ from src.utils.logging_setup import (
 )
 from src.utils.startup_profiler import StartupProfiler
 from src.utils.turn_latency import get_turn_latency_tracker
+from src.vad.smart_turn import (
+    SmartTurnConfig,
+    SmartTurnDetector,
+    resolve_commit_delay_for_turn,
+    resolve_turn_tier,
+    resolve_vad_required_misses,
+)
 
 # Conditional imports
 try:
@@ -100,6 +107,8 @@ _ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC = 10.0
 _BRIDGE_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PRELOAD_LOCK_WAIT_TIMEOUT_SEC = 2.0
+# Cap on audio re-merged from a turn interrupted before it produced any reply.
+_MAX_REQUEUED_SPEECH_BYTES = 30 * 16000 * 2  # 30 s of 16 kHz mono PCM16
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -415,7 +424,19 @@ class Live2DAssistant:
         self._pending_speech_end_monotonic: Optional[float] = None
         self._pending_speech_commit_handle: Optional[asyncio.Handle] = None
         self._pending_speech_lock = threading.Lock()
+        # Audio of the turn currently being processed, kept until its first
+        # response audio is sent so a barge-in right after commit can re-merge it.
+        self._inflight_turn_audio: Optional[bytes] = None
+        self._inflight_turn_audio_turn_id: Optional[int] = None
         self._speech_commit_delay_ms = int(self.config.get("audio", {}).get("speech_commit_delay_ms", 700))
+        audio_config = self.config.get("audio", {})
+        self._turn_detection_config = SmartTurnConfig.from_config(
+            audio_config, fallback_delay_ms=self._speech_commit_delay_ms
+        )
+        self._smart_turn: Optional[SmartTurnDetector] = None
+        self._pending_speech_commit_delay_ms = self._speech_commit_delay_ms
+        self._pending_speech_generation = 0
+        self._pending_speech_detection_thread: Optional[threading.Thread] = None
         self._debug_visible = False
         self._backend_state = "warming_up"
         self._degraded_reason: Optional[str] = None
@@ -631,13 +652,24 @@ class Live2DAssistant:
         audio_runtime_config = self.config.get('audio', {})
         default_misses = pipeline_config.get('vad_required_misses', 30)
         start_muted = self._resolve_audio_start_muted()
+        configured_misses = audio_runtime_config.get(
+            'vad_required_misses', gemma_vad_config.get('vad_required_misses', default_misses)
+        )
+        self._default_vad_required_misses = configured_misses
+        # While Smart Turn is active we can end segments earlier: the semantic
+        # detector, not the long VAD silence window, decides the actual turn end.
+        vad_required_misses = resolve_vad_required_misses(
+            self._turn_detection_config,
+            detector_available=True,
+            default_misses=configured_misses,
+        )
         audio_config = AudioServiceConfig(
             sample_rate=16000,
             start_muted=start_muted,
             vad_prob_threshold=audio_runtime_config.get('vad_prob_threshold', gemma_vad_config.get('vad_prob_threshold', 0.5)),
             vad_db_threshold=audio_runtime_config.get('vad_db_threshold', gemma_vad_config.get('vad_db_threshold', -50)),
             vad_required_hits=audio_runtime_config.get('vad_required_hits', gemma_vad_config.get('vad_required_hits', 3)),
-            vad_required_misses=audio_runtime_config.get('vad_required_misses', gemma_vad_config.get('vad_required_misses', default_misses)),
+            vad_required_misses=vad_required_misses,
             vad_min_speech_ms=audio_runtime_config.get('vad_min_speech_ms', 450),
             vad_min_voiced_ms=audio_runtime_config.get('vad_min_voiced_ms', 180),
         )
@@ -726,7 +758,31 @@ class Live2DAssistant:
 
         loop.call_soon_threadsafe(_cancel)
 
-    def _arm_pending_speech_commit(self) -> None:
+    def _get_smart_turn(self) -> SmartTurnDetector:
+        detector = self._smart_turn
+        if detector is None:
+            detector = SmartTurnDetector(self._turn_detection_config)
+            self._smart_turn = detector
+        return detector
+
+    def _sync_vad_turn_detection_misses(self) -> None:
+        """Use the shorter VAD silence window only while Smart Turn is usable."""
+        audio_service = self.audio_service
+        setter = getattr(audio_service, "set_vad_required_misses", None)
+        if not callable(setter):
+            return
+        detector = self._get_smart_turn()
+        misses = resolve_vad_required_misses(
+            self._turn_detection_config,
+            detector_available=detector.available,
+            default_misses=getattr(self, "_default_vad_required_misses", 30),
+        )
+        setter(misses)
+
+    def _arm_pending_speech_commit(self, delay_ms: Optional[int] = None) -> None:
+        if delay_ms is None:
+            delay_ms = self._speech_commit_delay_ms
+        delay_ms = max(0, int(delay_ms))
         loop = self._loop
         if loop is None or loop.is_closed():
             return
@@ -735,10 +791,97 @@ class Live2DAssistant:
             handle = self._pending_speech_commit_handle
             if handle is not None:
                 handle.cancel()
-            delay = max(self._speech_commit_delay_ms, 0) / 1000.0
-            self._pending_speech_commit_handle = loop.call_later(delay, self._commit_pending_speech)
+            self._pending_speech_commit_delay_ms = delay_ms
+            self._pending_speech_commit_handle = loop.call_later(
+                delay_ms / 1000.0, self._commit_pending_speech
+            )
 
         loop.call_soon_threadsafe(_arm)
+
+    def _start_turn_detection(
+        self,
+        generation: int,
+        audio_bytes: bytes,
+        speech_end_monotonic: Optional[float],
+    ) -> None:
+        """Run Smart Turn off the audio thread; never blocks the event loop."""
+        thread = threading.Thread(
+            target=self._run_turn_detection,
+            args=(generation, audio_bytes, speech_end_monotonic),
+            name="smart-turn",
+            daemon=True,
+        )
+        self._pending_speech_detection_thread = thread
+        thread.start()
+
+    def _run_turn_detection(
+        self,
+        generation: int,
+        audio_bytes: bytes,
+        speech_end_monotonic: Optional[float],
+    ) -> None:
+        config = self._turn_detection_config
+        started = time.perf_counter()
+        try:
+            verdict = self._get_smart_turn().predict(audio_bytes, config.sample_rate)
+        except Exception as exc:
+            verdict = None
+            logger.debug("Smart Turn inference failed: %s", exc)
+        infer_ms = (time.perf_counter() - started) * 1000.0
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            self._apply_turn_verdict, generation, verdict, infer_ms, speech_end_monotonic
+        )
+
+    def _apply_turn_verdict(
+        self,
+        generation: int,
+        verdict: Optional[tuple],
+        infer_ms: float,
+        speech_end_monotonic: Optional[float],
+    ) -> None:
+        config = self._turn_detection_config
+        if not config.enabled:
+            return
+        with self._pending_speech_lock:
+            if generation != self._pending_speech_generation:
+                return
+            if not self._pending_speech_audio:
+                return
+
+        elapsed_ms = 0.0
+        if speech_end_monotonic is not None:
+            elapsed_ms = max(0.0, (time.perf_counter() - speech_end_monotonic) * 1000.0)
+
+        if verdict is None:
+            fallback_delay = max(0, int(self._speech_commit_delay_ms - elapsed_ms))
+            delay_ms = resolve_commit_delay_for_turn(
+                config, None, fallback_delay_ms=fallback_delay, elapsed_ms=elapsed_ms
+            )
+            self._arm_pending_speech_commit(delay_ms)
+            logger.info(
+                "turn_detection unavailable delay=%sms infer=%sms",
+                delay_ms,
+                round(infer_ms),
+            )
+            return
+
+        _is_complete, probability = verdict
+        tier = resolve_turn_tier(config, probability)
+        delay_ms = resolve_commit_delay_for_turn(config, probability, elapsed_ms=elapsed_ms)
+        if tier != "incomplete":
+            # Complete shortens the long window armed at speech end; uncertain
+            # moves it to the middle tier. Incomplete keeps the armed window.
+            self._arm_pending_speech_commit(delay_ms)
+        logger.info(
+            "turn_detection tier=%s p=%.2f delay=%sms infer=%sms",
+            tier,
+            probability,
+            delay_ms,
+            round(infer_ms),
+        )
 
     def _queue_pending_speech_segment(self, audio_bytes: bytes) -> None:
         total_audio_bytes = 0
@@ -763,10 +906,17 @@ class Live2DAssistant:
 
         with self._pending_speech_lock:
             if self._speech_active:
-                self._arm_pending_speech_commit()
+                config = getattr(self, "_turn_detection_config", None)
+                long_delay = (
+                    config.incomplete_delay_ms
+                    if config is not None and config.enabled
+                    else self._speech_commit_delay_ms
+                )
+                self._arm_pending_speech_commit(long_delay)
                 return
             if not self._pending_speech_audio:
                 return
+            self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
             audio_bytes = bytes(self._pending_speech_audio)
             self._pending_speech_audio.clear()
             speech_end_monotonic = self._pending_speech_end_monotonic
@@ -777,7 +927,7 @@ class Live2DAssistant:
             "Committing %s bytes of buffered speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),
             audio_ms,
-            self._speech_commit_delay_ms,
+            getattr(self, "_pending_speech_commit_delay_ms", self._speech_commit_delay_ms),
         )
 
         active_pipeline = self._get_active_pipeline()
@@ -786,6 +936,10 @@ class Live2DAssistant:
             return
 
         turn_id = self._next_turn_id()
+        # Keep the input around until this turn produces audio (or ends): a
+        # barge-in before then re-merges it with the next utterance.
+        self._inflight_turn_audio = audio_bytes
+        self._inflight_turn_audio_turn_id = turn_id
         if isinstance(active_pipeline, ConversationPipeline):
             self._start_turn(
                 turn_id,
@@ -959,6 +1113,8 @@ class Live2DAssistant:
         self._cancel_pending_speech_commit()
         with self._pending_speech_lock:
             self._pending_speech_audio.clear()
+        self._inflight_turn_audio = None
+        self._inflight_turn_audio_turn_id = None
         self._playback_deadline = 0.0
         self._latest_audio_turn_id = None
 
@@ -1135,6 +1291,9 @@ class Live2DAssistant:
             finally:
                 if self._active_response_future is f:
                     self._active_response_future = None
+                if getattr(self, "_inflight_turn_audio_turn_id", None) == turn_id:
+                    self._inflight_turn_audio = None
+                    self._inflight_turn_audio_turn_id = None
                 self._sync_audio_capture_mode()
                 self._schedule_playback_release()
 
@@ -1174,6 +1333,7 @@ class Live2DAssistant:
                 interrupted_turn_id = self._active_turn_id if self._active_turn_id is not None else self._latest_audio_turn_id
                 if interrupted_turn_id is not None:
                     self._interrupt_current_turn("barge-in")
+                    self._requeue_interrupted_turn_audio(interrupted_turn_id)
             else:
                 self._drop_current_speech = True
                 logger.info("Ignoring speech start while assistant is busy (barge-in disabled)")
@@ -1181,8 +1341,40 @@ class Live2DAssistant:
         self._drop_current_speech = False
         with self._pending_speech_lock:
             self._speech_active = True
+            self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
         self._cancel_pending_speech_commit()
         self._dispatch_frontend_event("onSpeechStart", interrupted_turn_id)
+
+    def _requeue_interrupted_turn_audio(self, turn_id: int) -> None:
+        """Re-buffer a turn's input when barge-in cuts it before any reply audio.
+
+        The transcription of an interrupted turn can land after the turn was
+        cancelled and would otherwise be thrown away. Prepending its audio to
+        the new speech makes the next ASR pass transcribe the whole utterance.
+        """
+        with self._pending_speech_lock:
+            audio = getattr(self, "_inflight_turn_audio", None)
+            if not audio or getattr(self, "_inflight_turn_audio_turn_id", None) != turn_id:
+                return
+            self._inflight_turn_audio = None
+            self._inflight_turn_audio_turn_id = None
+            if self._speech_active:
+                return
+            combined = bytes(audio) + bytes(self._pending_speech_audio)
+            if len(combined) > _MAX_REQUEUED_SPEECH_BYTES:
+                logger.warning(
+                    "Not re-merging interrupted turn %s: %s bytes exceed the %s-byte cap",
+                    turn_id,
+                    len(combined),
+                    _MAX_REQUEUED_SPEECH_BYTES,
+                )
+                return
+            self._pending_speech_audio = bytearray(combined)
+        logger.info(
+            "Re-merged %s bytes from interrupted turn %s into the pending speech buffer",
+            len(audio),
+            turn_id,
+        )
 
     def _on_speech_end(self):
         """Called when VAD confirms speech end."""
@@ -1192,17 +1384,44 @@ class Live2DAssistant:
             return
         should_arm_commit = False
         pending_audio_bytes = 0
+        audio_snapshot = b""
+        generation = 0
         with self._pending_speech_lock:
             self._speech_active = False
             self._pending_speech_end_monotonic = time.perf_counter()
             should_arm_commit = bool(self._pending_speech_audio)
             pending_audio_bytes = len(self._pending_speech_audio)
+            if should_arm_commit:
+                self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
+                generation = self._pending_speech_generation
+                audio_snapshot = bytes(self._pending_speech_audio)
+
+        config = getattr(self, "_turn_detection_config", None)
+        detection_enabled = bool(config.enabled) if config is not None else False
+        detector_available = detection_enabled and self._get_smart_turn().available
         if should_arm_commit:
             logger.info(
                 "Speech ended; arming end-of-turn commit window for %s buffered bytes",
                 pending_audio_bytes,
             )
-            self._arm_pending_speech_commit()
+            if detector_available:
+                # Long window first so the user is not cut off, then shorten
+                # once the verdict arrives.
+                self._arm_pending_speech_commit(resolve_commit_delay_for_turn(config, False))
+                self._start_turn_detection(
+                    generation, audio_snapshot, self._pending_speech_end_monotonic
+                )
+            else:
+                # Disabled or known-unavailable detector: fixed delay, no inference.
+                fallback_delay = self._speech_commit_delay_ms
+                delay_ms = (
+                    resolve_commit_delay_for_turn(
+                        config, None, fallback_delay_ms=fallback_delay
+                    )
+                    if config is not None
+                    else fallback_delay
+                )
+                self._arm_pending_speech_commit(delay_ms)
         self._dispatch_frontend_event("onSpeechEnd", self._active_turn_id)
 
     def _on_speech_detected(self, audio_bytes: bytes):
@@ -1272,6 +1491,11 @@ class Live2DAssistant:
         turn_id = self._resolve_turn_id()
         if turn_id is not None:
             self._latest_audio_turn_id = turn_id
+            if getattr(self, "_inflight_turn_audio_turn_id", None) == turn_id:
+                # The turn has started speaking; its input no longer needs to
+                # be re-merged if a barge-in arrives.
+                self._inflight_turn_audio = None
+                self._inflight_turn_audio_turn_id = None
         duration_sec = max(payload.duration_ms, 0) / 1000.0
         playback_base = max(self._playback_deadline, time.monotonic())
         self._playback_deadline = playback_base + duration_sec
@@ -1400,6 +1624,15 @@ class Live2DAssistant:
                         return
                     self.pipeline.rvc = runtime.rvc
                 logger.info("✅ Pipeline models ready")
+
+            if self.pipeline is not None and self._turn_detection_config.enabled:
+                if not preload_step("Smart Turn", self._get_smart_turn().warmup):
+                    logger.info("Model preload finished after shutdown began; skipping audio start")
+                    close_partial_pipeline_runtime()
+                    self._finish_startup_profile("shutdown")
+                    return
+                # Detector availability is now known: pick the VAD silence window.
+                self._sync_vad_turn_detection_misses()
 
             if not self._running:
                 logger.info("Model preload finished after shutdown began; skipping audio start")

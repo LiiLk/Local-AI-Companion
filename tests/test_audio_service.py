@@ -288,3 +288,21 @@ def test_audio_service_resample_falls_back_to_linear_interpolation(monkeypatch):
 
     assert result.dtype == np.float32
     assert result.shape == (3,)
+
+
+def test_audio_service_set_vad_required_misses_updates_vad_config():
+    service = make_audio_service_state()
+    service._vad = SimpleNamespace(config=SimpleNamespace(required_misses=20))
+
+    service.set_vad_required_misses(8)
+
+    assert service._vad.config.required_misses == 8
+
+
+def test_audio_service_set_vad_required_misses_is_idempotent():
+    service = make_audio_service_state()
+    service._vad = SimpleNamespace(config=SimpleNamespace(required_misses=8))
+
+    service.set_vad_required_misses(8)
+
+    assert service._vad.config.required_misses == 8

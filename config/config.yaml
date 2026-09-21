@@ -53,7 +53,32 @@ audio:
   # Extra grace period after a VAD segment ends before we commit the user turn.
   # This lets short pauses stay in the same utterance instead of triggering an
   # immediate response.
+  # Used as the fallback delay when semantic turn detection is disabled or
+  # unavailable.
   speech_commit_delay_ms: 700
+  # Semantic end-of-turn detection (Smart Turn v3.2, CPU int8).
+  # When enabled, a short pause commits quickly if the model judges the turn
+  # complete, and waits longer when the speaker is likely still thinking.
+  # Set enabled: false for the previous strictly fixed-delay behavior.
+  turn_detection:
+    enabled: true
+    model: "smart-turn-v3.2-cpu"
+    threshold: 0.5
+    # Three-tier commit policy: p >= threshold commits fast, threshold > p >=
+    # uncertain_threshold is a hedged wait (hesitation), below that the speaker
+    # is treated as mid-sentence and the long wait applies.
+    uncertain_threshold: 0.15
+    complete_delay_ms: 250
+    uncertain_delay_ms: 900
+    incomplete_delay_ms: 2500
+    # Shorter VAD end-of-speech silence threshold used only while Smart Turn is
+    # enabled and available (8 frames * 32 ms = ~256 ms) instead of the global
+    # vad_required_misses below.
+    vad_required_misses: 8
+    # Optional tuning aid: save every evaluated turn as 16 kHz mono WAV
+    # (timestamped, tagged with the tier and probability). null = disabled,
+    # nothing is written by default.
+    debug_save_dir: null
   vad_prob_threshold: 0.58
   vad_db_threshold: -47
   vad_required_hits: 4
