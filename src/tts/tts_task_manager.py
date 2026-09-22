@@ -152,7 +152,6 @@ class TTSTaskManager:
             self._abort_inflight_tts()
             raise
         synth_elapsed_ms = (time.perf_counter() - synth_started) * 1000
-        get_turn_latency_tracker().mark("tts_first_audio")
 
         if result.metadata:
             metadata.update(result.metadata)
@@ -185,6 +184,8 @@ class TTSTaskManager:
 
             if not full_wav or pcm is None:
                 return
+
+            get_turn_latency_tracker().mark("tts_first_audio")
 
             rvc_ms = 0.0
             if self._rvc:

@@ -1124,7 +1124,6 @@ class ConversationPipeline:
             except asyncio.CancelledError:
                 self._abort_inflight_tts()
                 raise
-            get_turn_latency_tracker().mark("tts_first_audio")
 
             if tts_result and tts_result.audio_data:
                 full_wav_bytes = tts_result.audio_data
@@ -1145,6 +1144,7 @@ class ConversationPipeline:
         if not full_wav_bytes or audio_bytes is None:
             return
         self._ensure_run_active(run_id)
+        get_turn_latency_tracker().mark("tts_first_audio")
 
         full_wav_bytes, audio_bytes, sample_rate = await self._maybe_apply_rvc(
             full_wav_bytes, audio_bytes, sample_rate

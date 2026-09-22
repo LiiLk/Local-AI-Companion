@@ -949,7 +949,32 @@ class Live2DAssistant:
                 source="speech",
             )
         else:
-            self._start_turn(turn_id, lambda: active_pipeline.process_speech(audio_bytes), source="speech")
+            self._start_turn(
+                turn_id,
+                lambda: self._run_omni_speech_turn(
+                    active_pipeline, audio_bytes, speech_end_monotonic, turn_id
+                ),
+                source="speech",
+            )
+
+    async def _run_omni_speech_turn(
+        self,
+        pipeline,
+        audio_bytes: bytes,
+        speech_end_monotonic: Optional[float],
+        turn_id: int,
+    ) -> Optional[str]:
+        """Run an omni/gemma speech turn with latency instrumentation.
+
+        Those pipelines do not instrument latency themselves, so only the
+        speech_end -> first_audio_out portion is recorded.
+        """
+        latency = get_turn_latency_tracker()
+        latency.start(turn_id=turn_id, t0=speech_end_monotonic)
+        try:
+            return await pipeline.process_speech(audio_bytes)
+        finally:
+            latency.finish()
 
     def _finalize_playback_window(self) -> None:
         self._playback_release_handle = None

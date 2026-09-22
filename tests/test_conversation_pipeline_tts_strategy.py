@@ -192,6 +192,34 @@ def test_streaming_tts_does_not_block_llm_stream():
     assert chunk_times["second_chunk_s"] < 0.1
 
 
+def test_non_streaming_invalid_synthesis_does_not_mark_tts_first_audio(monkeypatch):
+    """A synthesis with no usable audio must not count as the first audio."""
+
+    class EmptyTTS:
+        async def synthesize(self, text, output_path=None):
+            return TTSResult()
+
+    from src.utils.turn_latency import TurnLatencyTracker
+
+    tracker = TurnLatencyTracker()
+    monkeypatch.setattr(
+        "src.assistant.conversation_pipeline.get_turn_latency_tracker",
+        lambda: tracker,
+    )
+
+    pipeline = ConversationPipeline(
+        llm=FakeLLM(["Hello."]),
+        tts=EmptyTTS(),
+        asr=FakeASR(),
+        config=ConversationConfig(stream_tts=False),
+    )
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result == "Hello."
+    assert tracker.summary()["count"] == 0
+
+
 def test_process_text_streams_tts_in_desktop_pipeline_mode():
     tts = KokoroProvider()
     payloads = []
