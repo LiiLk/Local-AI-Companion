@@ -917,6 +917,7 @@ class ConversationPipeline:
         reasoning_config = (
             self.config.adaptive_reasoning if use_adaptive_reasoning else None
         )
+        completed = False
         try:
             async for chunk in stream_llm_with_adaptive_reasoning(
                 self.llm,
@@ -935,11 +936,18 @@ class ConversationPipeline:
                 if emit_chunks and self.on_response_chunk:
                     await self._call_async(self.on_response_chunk, chunk)
                 self._ensure_run_active(run_id)
+            completed = True
         finally:
-            # Never leave the filler task orphaned: on cancellation it is
-            # cancelled, otherwise it is awaited before the caller synthesizes
-            # the final answer (filler audio -> answer audio ordering).
-            await _drain_filler_task()
+            if filler_task is not None:
+                if completed:
+                    # Normal exit: keep filler audio ordered before the answer.
+                    await _drain_filler_task()
+                else:
+                    # Aborted turn (barge-in/error): drop the filler now instead
+                    # of waiting seconds for TTS+RVC, without masking the
+                    # original exception or leaving a pending task behind.
+                    filler_task.cancel()
+                    await asyncio.gather(filler_task, return_exceptions=True)
 
         return full_response
     

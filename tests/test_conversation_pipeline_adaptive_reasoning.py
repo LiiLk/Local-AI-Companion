@@ -105,6 +105,18 @@ class TimedAdaptiveLLM(AdaptiveLLM):
             yield chunk
 
 
+class CancelSecondCallLLM(AdaptiveLLM):
+    """Escalates, then aborts the turn by raising on the second call."""
+
+    async def chat_stream(self, messages, options_override=None):
+        self.calls.append((messages, options_override))
+        index = min(len(self.calls) - 1, len(self._scripts) - 1)
+        if index >= 1:
+            raise asyncio.CancelledError()
+        for chunk in self._scripts[index]:
+            yield chunk
+
+
 def _run(llm, tts, payloads, chunks, *, stream_tts=True, adaptive=None):
     config = ConversationConfig(
         stream_tts=stream_tts,
@@ -323,3 +335,35 @@ def test_non_streaming_filler_synthesis_does_not_block_escalated_llm_call():
     # Filler audio is delivered before the answer audio.
     assert payloads[0].text == filler_text
     assert payloads[-1].text == "The hard answer."
+
+
+def test_non_streaming_escalation_cancel_drops_slow_filler_synthesis():
+    adaptive = AdaptiveReasoningConfig.from_dict({"enabled": True})
+    llm = CancelSecondCallLLM([["<|THINK|>"], ["unused"]])
+    tts = SlowSynthTTS(delay=1.0)
+    payloads, chunks = [], []
+    config = ConversationConfig(
+        stream_tts=False,
+        asr_language="auto",
+        reply_language=None,
+        adaptive_reasoning=adaptive,
+    )
+    pipeline = ConversationPipeline(llm=llm, tts=tts, asr=EnglishASR(), config=config)
+
+    async def on_audio_ready(payload):
+        payloads.append(payload)
+
+    pipeline.on_audio_ready = on_audio_ready
+
+    started = time.perf_counter()
+    raised = False
+    try:
+        asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+    except asyncio.CancelledError:
+        raised = True
+    elapsed = time.perf_counter() - started
+
+    assert raised is True
+    # Must not wait out the 1 s filler synthesis once the turn is aborted.
+    assert elapsed < 0.5
+    assert pipeline.is_processing is False
