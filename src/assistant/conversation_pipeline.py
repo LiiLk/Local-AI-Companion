@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 # negatives, which used to trigger a full-response fallback for the whole turn.
 MIN_LANGUAGE_CHECK_CHARS = 24
 
+# A segment ending more than this many seconds past the real audio duration is
+# treated as a Whisper hallucination and the whole turn is discarded.
+MAX_SEGMENT_OVERHANG_SECONDS = 1.0
+
 
 def _describe_exception(exc: BaseException) -> str:
     message = str(exc).strip()
@@ -79,6 +83,8 @@ class ConversationConfig:
     auto_detect_language: bool = True
     asr_language: Optional[str] = None
     reply_language: Optional[str] = None
+    # Speech-only guidance: injected per spoken turn, never for typed messages.
+    transcription_hint_prompt: Optional[str] = None
 
     # Adaptive reasoning ("fast by default, think when needed")
     adaptive_reasoning: Optional[AdaptiveReasoningConfig] = None
@@ -432,10 +438,43 @@ class ConversationPipeline:
         audio_float = audio_int16.astype(np.float32) / 32767.0
 
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        result = await loop.run_in_executor(
             None,
             lambda: self.asr.transcribe(audio_float, language=language),
         )
+        return self._reject_segment_overrun(result, audio_bytes)
+
+    @staticmethod
+    def _reject_segment_overrun(result: ASRResult, audio_bytes: bytes) -> ASRResult:
+        """Discard a transcription whose segment outlives the real audio.
+
+        Whisper occasionally emits a generic segment that ends far beyond the
+        clip (e.g. [0.0s-30.0s] for 2 s of audio). This runs on every pass,
+        including retries, so a rejected retry can never be accepted.
+        """
+        if not result or not getattr(result, "text", "").strip():
+            return result
+
+        max_segment_end = 0.0
+        for segment in getattr(result, "segments", None) or []:
+            try:
+                max_segment_end = max(max_segment_end, float(segment.get("end", 0.0)))
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+        if not max_segment_end:
+            return result
+
+        audio_duration = len(audio_bytes) / 32000.0
+        if max_segment_end > audio_duration + MAX_SEGMENT_OVERHANG_SECONDS:
+            logger.warning(
+                "Rejecting ASR transcription: segment ends at %.1fs for %.1fs of audio",
+                max_segment_end,
+                audio_duration,
+            )
+            result.text = ""
+            result.segments = []
+        return result
 
     def _resolve_user_language(self, transcription: str, asr_language: Optional[str]) -> str:
         asr_code = self._normalize_supported_language(asr_language)
@@ -486,6 +525,23 @@ class ConversationPipeline:
             )
 
         llm_messages[-1] = Message(role="user", content=f"{instruction}\n\n{last_user.content}")
+        return llm_messages
+
+    def _apply_transcription_hint(self, llm_messages: list[Message]) -> list[Message]:
+        """Prefix the speech transcription hint on a spoken turn only.
+
+        Typed messages never pass through here, so a deliberate "GI" stays a
+        literal request instead of being reinterpreted as an ASR error.
+        """
+        hint = (self.config.transcription_hint_prompt or "").strip()
+        if not hint or not llm_messages or llm_messages[-1].role != "user":
+            return llm_messages
+
+        last_user = llm_messages[-1]
+        llm_messages[-1] = Message(
+            role="user",
+            content=f"(System: {hint})\n\n{last_user.content}",
+        )
         return llm_messages
 
     def _should_validate_response_language(
@@ -643,6 +699,7 @@ class ConversationPipeline:
             # 2. Add to conversation history
             self.messages.append(Message(role="user", content=transcription))
             llm_messages = self._build_llm_messages(response_language, user_language)
+            llm_messages = self._apply_transcription_hint(llm_messages)
             
             # 3. Generate response
             if self.on_response_start:
@@ -796,6 +853,7 @@ class ConversationPipeline:
             return None
 
         retried_languages: set[str] = set()
+        retry_rejected = False
         detected_lang = self._normalize_supported_language(getattr(result, "language", None))
         if (
             self._normalize_supported_language(self.config.asr_language) is None
@@ -813,6 +871,9 @@ class ConversationPipeline:
             retry_result = await self._transcribe_once(audio_bytes, retry_language)
             if self._asr_retry_is_better(result, retry_result):
                 result = retry_result
+                retry_rejected = False
+            elif not (retry_result.text and retry_result.text.strip()):
+                retry_rejected = True
 
         if self._should_retry_with_language_hint(result):
             retry_language = self._last_user_language_code
@@ -831,6 +892,9 @@ class ConversationPipeline:
                     retry_result.text.strip()[:80],
                 )
                 result = retry_result
+                retry_rejected = False
+            elif not (retry_result.text and retry_result.text.strip()):
+                retry_rejected = True
 
         if self._should_retry_detected_language(result):
             retry_language = self._normalize_supported_language(getattr(result, "language", None))
@@ -848,6 +912,19 @@ class ConversationPipeline:
                         retry_result.text.strip()[:80],
                     )
                     result = retry_result
+                    retry_rejected = False
+                elif not (retry_result.text and retry_result.text.strip()):
+                    retry_rejected = True
+
+        if retry_rejected:
+            logger.warning(
+                "ASR retry produced no usable transcript; abandoning turn instead of "
+                "accepting language=%s confidence=%s text=%r",
+                getattr(result, "language", None),
+                getattr(result, "confidence", None),
+                result.text.strip()[:120],
+            )
+            return None
 
         if self._asr_result_is_low_confidence(result):
             logger.warning(

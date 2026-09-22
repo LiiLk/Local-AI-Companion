@@ -229,19 +229,52 @@ def resolve_initial_tts_language(
 
 
 def resolve_pipeline_system_prompt(config: dict) -> str:
-    """Return the character system prompt plus the generic voice-style rule.
+    """Return the character system prompt plus the pipeline-only rules.
 
-    ``pipeline.voice_style_prompt`` is appended only when configured, so an
-    empty string disables it and the character personality is left untouched.
+    ``pipeline.voice_style_prompt`` is appended only when configured, so an empty
+    string disables it and the character personality is left untouched. It only
+    applies in ``pipeline`` mode; omni paths build their own system prompt.
+    ``pipeline.transcription_hint_prompt`` is intentionally NOT part of the
+    permanent system prompt: it only makes sense for spoken turns and is
+    injected per-turn via :func:`resolve_transcription_hint_prompt`.
     """
     character = config.get("character", {})
     base_prompt = character.get("system_prompt", "You are a helpful assistant.")
-    voice_style = str(
-        config.get("pipeline", {}).get("voice_style_prompt", "") or ""
-    ).strip()
+    if str(config.get("mode", "pipeline")) != "pipeline":
+        return base_prompt
+
+    pipeline_config = config.get("pipeline", {}) or {}
+    voice_style = str(pipeline_config.get("voice_style_prompt", "") or "").strip()
     if not voice_style:
         return base_prompt
     return f"{base_prompt}\n\n{voice_style}"
+
+
+def resolve_transcription_hint_prompt(config: dict) -> str:
+    """Return the speech-only transcription hint for pipeline-mode speech turns.
+
+    Empty when unconfigured or outside ``pipeline`` mode, so text turns never
+    receive it.
+    """
+    if str(config.get("mode", "pipeline")) != "pipeline":
+        return ""
+    pipeline_config = config.get("pipeline", {}) or {}
+    return str(pipeline_config.get("transcription_hint_prompt", "") or "").strip()
+
+
+DEFAULT_MIN_ASR_AUDIO_MS = 700
+
+
+def resolve_min_asr_audio_ms(config: dict) -> int:
+    """Return the minimum audio length (ms) required to run ASR for a turn."""
+    asr_config = (config or {}).get("asr", {}) or {}
+    value = asr_config.get("min_audio_ms", DEFAULT_MIN_ASR_AUDIO_MS)
+    if value is None:
+        return DEFAULT_MIN_ASR_AUDIO_MS
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_ASR_AUDIO_MS
 
 
 def build_pipeline_conversation_config(config: dict) -> ConversationConfig:
@@ -259,6 +292,7 @@ def build_pipeline_conversation_config(config: dict) -> ConversationConfig:
         adaptive_reasoning=AdaptiveReasoningConfig.from_dict(
             config.get("llm", {}).get("adaptive_reasoning")
         ),
+        transcription_hint_prompt=resolve_transcription_hint_prompt(config),
     )
 
 

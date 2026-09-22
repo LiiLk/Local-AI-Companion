@@ -33,7 +33,9 @@ from src.vad.smart_turn import resolve_commit_delay_for_turn, resolve_turn_tier
 from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
+    resolve_min_asr_audio_ms,
     resolve_pipeline_system_prompt,
+    resolve_transcription_hint_prompt,
 )
 from src.assistant.conversation_memory import (
     ConversationMemoryStore,
@@ -628,6 +630,18 @@ class WebSocketManager:
             return 700
 
     @staticmethod
+    def _below_min_asr_duration(
+        state: ConversationState,
+        pcm_bytes: bytes,
+        sample_rate: int = 16000,
+    ) -> bool:
+        """Whether a turn is too short to run ASR, using asr.min_audio_ms."""
+        min_audio_ms = resolve_min_asr_audio_ms(getattr(state, "config", {}) or {})
+        if min_audio_ms <= 0 or not pcm_bytes:
+            return False
+        return calculate_audio_duration_ms(pcm_bytes, sample_rate) < min_audio_ms
+
+    @staticmethod
     def _cancel_pending_speech_commit(state: ConversationState) -> None:
         task = getattr(state, "pending_speech_commit_task", None)
         if task and not task.done():
@@ -824,6 +838,18 @@ class WebSocketManager:
         state.pending_speech_end_epoch_ms = None
 
         audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        min_audio_ms = resolve_min_asr_audio_ms(getattr(state, "config", {}) or {})
+        if (
+            audio_bytes
+            and min_audio_ms > 0
+            and calculate_audio_duration_ms(audio_bytes, 16000) < min_audio_ms
+        ):
+            logger.info(
+                "Ignoring %s ms of WebSocket speech below asr.min_audio_ms=%s; no ASR run",
+                audio_ms,
+                min_audio_ms,
+            )
+            return
         logger.info(
             "Committing %s bytes of WebSocket speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),
@@ -940,6 +966,27 @@ class WebSocketManager:
         )
         return llm_messages
 
+    @staticmethod
+    def _apply_transcription_hint(
+        state: ConversationState,
+        llm_messages: list[Message],
+    ) -> list[Message]:
+        """Prefix the speech transcription hint on a spoken turn only.
+
+        Typed messages never pass through here, so a deliberate "GI" stays a
+        literal request instead of being reinterpreted as an ASR error.
+        """
+        hint = resolve_transcription_hint_prompt(getattr(state, "config", {}) or {})
+        if not hint or not llm_messages or llm_messages[-1].role != "user":
+            return llm_messages
+
+        last_msg = llm_messages[-1]
+        llm_messages[-1] = Message(
+            role="user",
+            content=f"(System: {hint})\n\n{last_msg.content}",
+        )
+        return llm_messages
+
     def _resolve_turn_language(
         self,
         state: ConversationState,
@@ -982,8 +1029,14 @@ class WebSocketManager:
                     retry_language,
                 )
                 retry = await loop.run_in_executor(None, lambda: _do_transcribe(retry_language))
-                if retry.text and retry.text.strip():
-                    result = retry
+                if not (retry.text and retry.text.strip()):
+                    logger.warning(
+                        "ASR forced-language retry=%s returned no usable transcript; "
+                        "dropping turn instead of keeping out-of-scope language=%s",
+                        retry_language,
+                        getattr(result, "language", None),
+                    )
+                result = retry
 
         normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
         if normalized_lang:
@@ -1468,8 +1521,13 @@ class WebSocketManager:
         content: str,
         language: str | None = None,
         trace: Optional[dict[str, Any]] = None,
+        speech_origin: bool = False,
     ):
-        """Handle a text message from the client."""
+        """Handle a text message from the client.
+
+        ``speech_origin`` is True when the text came from ASR; the transcription
+        hint is only added then, never for messages the user typed.
+        """
         state = self._get_state(client_id)
         if not state:
             return
@@ -1505,6 +1563,8 @@ class WebSocketManager:
         response_language = self._resolve_turn_language(state, content, explicit_language=language)
         self._apply_language_hint(state, response_language)
         llm_messages = self._build_llm_messages(state.messages, response_language)
+        if speech_origin:
+            llm_messages = self._apply_transcription_hint(state, llm_messages)
         trace_data["llm_start_epoch_ms"] = int(time.time() * 1000)
 
         # --- Decoupled TTS pipeline ---
@@ -1728,7 +1788,6 @@ class WebSocketManager:
         if not state:
             return
 
-        asr = state.get_asr()
         trace = {
             "turn_start_epoch_ms": int(time.time() * 1000),
             "speech_end_epoch_ms": int(time.time() * 1000),
@@ -1763,6 +1822,19 @@ class WebSocketManager:
 
             webm_path.unlink(missing_ok=True)
 
+            pcm_data, sample_rate = read_wav_pcm(wav_path)
+            if self._below_min_asr_duration(state, pcm_data, sample_rate):
+                logger.info(
+                    "Ignoring uploaded audio below asr.min_audio_ms; no ASR run",
+                )
+                wav_path.unlink(missing_ok=True)
+                await self.send_json(client_id, {
+                    "type": "transcription",
+                    "text": "",
+                    "message": "Audio too short"
+                })
+                return
+
             await self.send_json(client_id, {"type": "transcribing"})
             result = await self._transcribe_with_guard(state, wav_path)
             trace["asr_done_epoch_ms"] = int(time.time() * 1000)
@@ -1783,6 +1855,7 @@ class WebSocketManager:
                     result.text,
                     language=result.language,
                     trace=trace,
+                    speech_origin=True,
                 )
             else:
                 await self.send_json(client_id, {
@@ -1913,7 +1986,6 @@ class WebSocketManager:
         if not state:
             return
 
-        asr = state.get_asr()
         trace = {
             "turn_start_epoch_ms": int(time.time() * 1000),
             "speech_end_epoch_ms": speech_end_epoch_ms or int(time.time() * 1000),
@@ -1931,8 +2003,11 @@ class WebSocketManager:
                 len(audio_int16),
             )
 
-            if duration_sec < 0.5:
-                logger.debug("Audio too short (< 0.5s), ignored")
+            if self._below_min_asr_duration(state, audio_bytes):
+                logger.debug(
+                    "Audio too short (%.2fs) below asr.min_audio_ms, ignored",
+                    duration_sec,
+                )
                 await self.send_json(client_id, {
                     "type": "transcription",
                     "text": "",
@@ -1958,6 +2033,7 @@ class WebSocketManager:
                     result.text,
                     language=result.language,
                     trace=trace,
+                    speech_origin=True,
                 )
             else:
                 await self.send_json(client_id, {
