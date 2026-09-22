@@ -431,6 +431,169 @@ async def test_websocket_known_unavailable_detector_arms_fallback_without_infere
     manager._cancel_pending_speech_commit(state)
 
 
+# --------------------------------------------------------------------------
+# VAD silence window vs. mode (P2/P3)
+# --------------------------------------------------------------------------
+
+
+class FakeVADConfig:
+    def __init__(self, required_misses):
+        self.required_misses = required_misses
+
+
+class FakeSileroVAD:
+    def __init__(self, config=None):
+        self.config = config
+
+
+def _make_ws_state_for_vad(mode, detector, config=None):
+    import src.server.websocket as websocket_module
+
+    state = websocket_module.ConversationState.__new__(websocket_module.ConversationState)
+    state.mode = mode
+    state.config = config or {}
+    state.vad = None
+    state.smart_turn = detector
+    return state
+
+
+def _vad_detector(available=True):
+    return FakeDetector((True, 0.9), _detection_config(), available=available)
+
+
+def test_websocket_pipeline_uses_short_vad_window(monkeypatch):
+    import src.server.websocket as websocket_module
+
+    monkeypatch.setattr(websocket_module, "SileroVAD", FakeSileroVAD)
+    state = _make_ws_state_for_vad(
+        "pipeline", _vad_detector(), {"pipeline": {"vad_required_misses": 30}}
+    )
+
+    vad = state.get_vad()
+
+    assert vad.config.required_misses == 8
+
+
+def test_websocket_omni_mode_keeps_default_vad_window(monkeypatch):
+    import src.server.websocket as websocket_module
+
+    monkeypatch.setattr(websocket_module, "SileroVAD", FakeSileroVAD)
+    state = _make_ws_state_for_vad(
+        "omni", _vad_detector(), {"pipeline": {"vad_required_misses": 30}}
+    )
+
+    vad = state.get_vad()
+
+    assert vad.config.required_misses == 30
+
+
+def test_websocket_gemma_omni_mode_keeps_gemma_vad_window(monkeypatch):
+    import src.server.websocket as websocket_module
+
+    monkeypatch.setattr(websocket_module, "SileroVAD", FakeSileroVAD)
+    state = _make_ws_state_for_vad(
+        "gemma-omni", _vad_detector(), {"gemma": {"vad_required_misses": 25}}
+    )
+
+    vad = state.get_vad()
+
+    assert vad.config.required_misses == 25
+
+
+def test_websocket_resyncs_vad_window_after_warmup_failure(monkeypatch):
+    import src.server.websocket as websocket_module
+
+    monkeypatch.setattr(websocket_module, "SileroVAD", FakeSileroVAD)
+    detector = _vad_detector(available=True)
+    state = _make_ws_state_for_vad(
+        "pipeline", detector, {"pipeline": {"vad_required_misses": 30}}
+    )
+    vad = state.get_vad()
+    assert vad.config.required_misses == 8
+
+    # Smart Turn warmup failed after the VAD was created.
+    detector.available = False
+    state.sync_vad_required_misses()
+
+    assert vad.config.required_misses == 30
+
+
+def test_desktop_pipeline_uses_short_vad_misses():
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config, available=True)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": "pipeline"}
+    assistant._default_vad_required_misses = 20
+    calls = []
+    assistant.audio_service = SimpleNamespace(
+        set_vad_required_misses=lambda misses: calls.append(misses)
+    )
+
+    assistant._sync_vad_turn_detection_misses()
+
+    assert calls == [8]
+
+
+def test_desktop_omni_mode_keeps_default_vad_misses():
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config, available=True)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": "omni"}
+    assistant._default_vad_required_misses = 20
+    calls = []
+    assistant.audio_service = SimpleNamespace(
+        set_vad_required_misses=lambda misses: calls.append(misses)
+    )
+
+    assistant._sync_vad_turn_detection_misses()
+
+    assert calls == [20]
+
+
+@pytest.mark.parametrize("mode", ["omni", "gemma-omni"])
+def test_desktop_omni_modes_use_fixed_delay_without_inference(mode):
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": mode}
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    assert detector.calls == 0
+    assert assistant._pending_speech_detection_thread is None
+    assert len(assistant._loop.scheduled) == 1
+    assert assistant._loop.scheduled[-1][0] == pytest.approx(0.7)
+
+
+def test_desktop_pipeline_mode_still_starts_inference():
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": "pipeline"}
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+    assistant._pending_speech_detection_thread.join(timeout=5)
+
+    assert detector.calls == 1
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [("pipeline", True), ("omni", False), ("gemma-omni", False)],
+)
+def test_desktop_turn_detection_active_requires_pipeline_mode(mode, expected):
+    config = _detection_config()
+    detector = FakeDetector((True, 0.99), config)
+    assistant = _make_desktop_assistant(config, detector)
+    assistant.config = {"mode": mode}
+
+    assert assistant._turn_detection_active() is expected
+
+
 @pytest.mark.asyncio
 async def test_websocket_disabled_turn_detection_uses_fixed_delay():
     manager = WebSocketManager()

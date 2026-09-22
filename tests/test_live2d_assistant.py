@@ -1,6 +1,7 @@
 import asyncio
 from concurrent.futures import Future
 import json
+import logging
 import threading
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -431,6 +432,41 @@ def test_barge_in_requeue_respects_thirty_second_cap():
     assert assistant._inflight_turn_audio is None
 
 
+def test_barge_in_requeues_audio_when_real_future_cancel_runs_done_callback(monkeypatch):
+    assistant = _make_assistant()
+    assistant.config["audio"]["allow_barge_in"] = True
+    assistant._assistant_busy = lambda: True
+    assistant._active_turn_id = 5
+    assistant._latest_audio_turn_id = 5
+    assistant._turn_timeout_sec = 5
+    assistant._dispatch_frontend_event = lambda *args: None
+
+    first_turn_audio = b"A" * 3200
+    assistant._inflight_turn_audio = first_turn_audio
+    assistant._inflight_turn_audio_turn_id = 5
+    assistant._pending_speech_audio.extend(b"B" * 1600)
+
+    pending = Future()
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        return pending
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+
+    assistant._start_turn(5, lambda: asyncio.sleep(0), source="speech")
+    assert assistant._active_response_future is pending
+
+    assistant._on_speech_start()
+
+    # A real concurrent.futures.Future runs its done callback synchronously on
+    # cancel; the re-merge must still see the turn's input buffered.
+    assert pending.cancelled() is True
+    assert assistant._pending_speech_audio == bytearray(first_turn_audio + b"B" * 1600)
+    assert assistant._inflight_turn_audio is None
+    assert assistant._inflight_turn_audio_turn_id is None
+
+
 def test_commit_retains_audio_until_first_response_audio():
     assistant = _make_assistant()
     captured = {}
@@ -447,6 +483,37 @@ def test_commit_retains_audio_until_first_response_audio():
 
     assert assistant._inflight_turn_audio == b"A" * 3200
     assert assistant._inflight_turn_audio_turn_id == captured["turn_id"]
+
+
+def test_commit_pending_speech_records_latency_for_omni_pipeline(monkeypatch):
+    """Omni/gemma turns must start and finish a latency turn like the pipeline."""
+    from src.utils.turn_latency import TurnLatencyTracker
+
+    assistant = _make_assistant()
+    tracker = TurnLatencyTracker()
+    monkeypatch.setattr(
+        "src.assistant.app.get_turn_latency_tracker", lambda: tracker
+    )
+
+    async def process_speech(audio_bytes):
+        tracker.mark("first_audio_out")
+        return "ok"
+
+    assistant.pipeline = SimpleNamespace(process_speech=process_speech)
+    captured = {}
+    assistant._start_turn = lambda turn_id, runner, source: captured.update(
+        turn_id=turn_id, runner=runner
+    )
+
+    assistant._on_speech_start()
+    assistant._on_speech_detected(b"A" * 3200)
+    assistant._on_speech_end()
+
+    _delay, handle = assistant._loop.scheduled[-1]
+    handle.callback()
+
+    assert asyncio.run(captured["runner"]()) == "ok"
+    assert tracker.summary()["count"] == 1
 
 
 def test_first_response_audio_clears_retained_turn_audio():

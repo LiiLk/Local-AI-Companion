@@ -1,5 +1,7 @@
 """Tests for per-turn latency instrumentation (src/utils/turn_latency.py)."""
 
+import asyncio
+import contextvars
 import logging
 
 import pytest
@@ -211,3 +213,55 @@ def test_ensure_started_starts_when_idle():
     tracker.mark("asr_done")
 
     assert tracker.finish()["asr_done"] == pytest.approx(250.0)
+
+
+def test_overlapping_turns_are_isolated_per_context():
+    """Two concurrent turns (one per context) must not clobber each other."""
+    clock = FakeClock()
+    tracker = TurnLatencyTracker(clock=clock)
+
+    context_a = contextvars.copy_context()
+    context_b = contextvars.copy_context()
+
+    context_a.run(lambda: tracker.start(turn_id="A"))
+
+    def _run_b():
+        tracker.start(turn_id="B")
+        clock.advance(0.2)
+        tracker.mark("asr_done")
+        return tracker.finish()
+
+    result_b = context_b.run(_run_b)
+
+    def _mark_a():
+        clock.advance(0.1)
+        tracker.mark("asr_done")
+
+    context_a.run(_mark_a)
+    result_a = context_a.run(tracker.finish)
+
+    assert result_a["asr_done"] == pytest.approx(300.0)
+    assert result_b["asr_done"] == pytest.approx(200.0)
+
+
+def test_mark_from_child_task_targets_the_starting_turn():
+    """A mark emitted from a child asyncio task belongs to the parent turn."""
+    clock = FakeClock()
+    tracker = TurnLatencyTracker(clock=clock)
+
+    async def main():
+        tracker.start(turn_id="desktop")
+
+        async def worker():
+            clock.advance(0.3)
+            tracker.mark("tts_first_audio")
+
+        await asyncio.create_task(worker())
+        clock.advance(0.2)
+        tracker.mark("first_audio_out")
+        return tracker.finish()
+
+    result = asyncio.run(main())
+
+    assert result["tts_first_audio"] == pytest.approx(300.0)
+    assert result["first_audio_out"] == pytest.approx(500.0)

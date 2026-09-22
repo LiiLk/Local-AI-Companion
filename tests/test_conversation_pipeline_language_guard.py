@@ -10,6 +10,7 @@ import asyncio
 import io
 import wave
 
+from src.assistant import conversation_pipeline
 from src.assistant.conversation_pipeline import ConversationConfig, ConversationPipeline
 from src.tts.base import TTSResult
 
@@ -200,3 +201,66 @@ def test_english_reply_when_user_speaks_english_is_not_rewritten():
     assert result == "Sure! An electric vehicle works by storing energy."
     assert len(llm.calls) == 1
     assert tts.calls == ["Sure!", "An electric vehicle works by storing energy."]
+
+
+class _RecordingTTSManager:
+    instances: list["_RecordingTTSManager"] = []
+
+    def __init__(self, **kwargs):
+        self.finish_calls = 0
+        self.cancel_calls = 0
+        self.submitted: list[str] = []
+        _RecordingTTSManager.instances.append(self)
+
+    async def start(self):
+        return None
+
+    async def submit(self, text, expression=None):
+        self.submitted.append(text)
+
+    async def finish(self):
+        self.finish_calls += 1
+
+    async def cancel(self):
+        self.cancel_calls += 1
+
+
+def test_fallback_rewrite_failure_cancels_tts_manager(monkeypatch):
+    """Regression for LIL-67: a non-cancel exception during the full-response
+    rewrite must still cancel the TTSTaskManager, otherwise its worker task is
+    left blocked on the queue forever.
+    """
+
+    _RecordingTTSManager.instances = []
+    monkeypatch.setattr(
+        conversation_pipeline, "TTSTaskManager", _RecordingTTSManager
+    )
+
+    llm = ScriptedLLM([["Les etoiles sont magnifiques et tres brillantes."]])
+    tts = KokoroProvider()
+    payloads = []
+    pipeline = ConversationPipeline(
+        llm=llm,
+        tts=tts,
+        asr=FrenchASR(),
+        config=ConversationConfig(
+            stream_tts=True, asr_language="auto", reply_language="en"
+        ),
+    )
+
+    async def on_audio_ready(payload):
+        payloads.append(payload)
+
+    pipeline.on_audio_ready = on_audio_ready
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("rewrite boom")
+
+    monkeypatch.setattr(pipeline, "_ensure_response_language", _boom)
+
+    result = asyncio.run(pipeline.process_speech(b"\x00\x00" * 1600))
+
+    assert result is None
+    manager = _RecordingTTSManager.instances[-1]
+    assert manager.cancel_calls == 1
+    assert manager.finish_calls == 0

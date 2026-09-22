@@ -73,6 +73,46 @@ async def test_conversation_state_initialize_loads_pipeline_memory(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_conversation_state_pipeline_mode_includes_voice_style(monkeypatch):
+    voice_style = "Speak in short, natural sentences."
+
+    state = ConversationState()
+    state.config = {
+        "mode": "pipeline",
+        "character": {"system_prompt": "You are Juri."},
+        "pipeline": {"voice_style_prompt": voice_style},
+        "llm": {"provider": "ollama"},
+    }
+    state.mode = "pipeline"
+
+    runtime = SimpleNamespace(ensure_llm=lambda: SimpleNamespace(name="ollama"))
+    monkeypatch.setattr(
+        "src.server.websocket.create_pipeline_runtime",
+        lambda config, *, initial_tts_language=None: runtime,
+    )
+
+    await state.initialize()
+
+    assert voice_style in state.messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_conversation_state_omni_mode_excludes_pipeline_voice_style():
+    state = ConversationState()
+    state.config = {
+        "mode": "omni",
+        "character": {"system_prompt": "You are Juri."},
+        "pipeline": {"voice_style_prompt": "Speak in short, natural sentences."},
+    }
+    state.mode = "omni"
+
+    await state.initialize()
+
+    assert "You are Juri." in state.messages[0].content
+    assert "Speak in short, natural sentences." not in state.messages[0].content
+
+
 def test_conversation_state_preload_tts_falls_back_to_kokoro(monkeypatch):
     class FakeKokoroProvider:
         def __init__(self, voice: str):
