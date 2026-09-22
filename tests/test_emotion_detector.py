@@ -1,5 +1,8 @@
 """Tests for EmotionDetector — especially Chatterbox tag preservation."""
 
+import re
+from pathlib import Path
+
 from src.utils.emotion_detector import EmotionDetector, get_emotion_detector
 
 
@@ -97,6 +100,27 @@ class TestUnknownMarkersArePreserved:
         result = detector.strip_markers("I'm (happy) today")
         assert "happy" not in result
         assert "today" in result
+
+
+class TestCharacterPresetMarkers:
+    """Every single-word marker cited by the shipped presets must be known."""
+
+    _MARKER_RE = re.compile(r"[(\[*<]([A-Za-z]+)[)\]*>]")
+
+    def test_character_presets_only_cite_known_markers(self):
+        known = EmotionDetector()._known_marker_words()
+        presets_dir = Path(__file__).resolve().parent.parent / "config" / "characters"
+
+        missing = sorted(
+            f"{preset.name}: ({match.group(1).lower()})"
+            for preset in presets_dir.glob("*.yaml")
+            for match in self._MARKER_RE.finditer(
+                preset.read_text(encoding="utf-8")
+            )
+            if match.group(1).lower() not in known
+        )
+
+        assert not missing, f"Uncovered markers in character presets: {missing}"
 
 
 class TestDetectEmotion:
