@@ -228,19 +228,42 @@ def resolve_initial_tts_language(
 
 
 def resolve_pipeline_system_prompt(config: dict) -> str:
-    """Return the character system prompt plus the generic voice-style rule.
+    """Return the character system prompt plus the pipeline-only rules.
 
-    ``pipeline.voice_style_prompt`` is appended only when configured, so an
-    empty string disables it and the character personality is left untouched.
+    ``pipeline.voice_style_prompt`` and ``pipeline.transcription_hint_prompt``
+    are appended only when configured, so an empty string disables them and the
+    character personality is left untouched. They only apply in ``pipeline``
+    mode; omni paths build their own system prompt.
     """
     character = config.get("character", {})
     base_prompt = character.get("system_prompt", "You are a helpful assistant.")
-    voice_style = str(
-        config.get("pipeline", {}).get("voice_style_prompt", "") or ""
-    ).strip()
-    if not voice_style:
+    if str(config.get("mode", "pipeline")) != "pipeline":
         return base_prompt
-    return f"{base_prompt}\n\n{voice_style}"
+
+    pipeline_config = config.get("pipeline", {}) or {}
+    extras = [
+        str(pipeline_config.get(key, "") or "").strip()
+        for key in ("voice_style_prompt", "transcription_hint_prompt")
+    ]
+    extras = [extra for extra in extras if extra]
+    if not extras:
+        return base_prompt
+    return f"{base_prompt}\n\n" + "\n\n".join(extras)
+
+
+DEFAULT_MIN_ASR_AUDIO_MS = 700
+
+
+def resolve_min_asr_audio_ms(config: dict) -> int:
+    """Return the minimum audio length (ms) required to run ASR for a turn."""
+    asr_config = (config or {}).get("asr", {}) or {}
+    value = asr_config.get("min_audio_ms", DEFAULT_MIN_ASR_AUDIO_MS)
+    if value is None:
+        return DEFAULT_MIN_ASR_AUDIO_MS
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_ASR_AUDIO_MS
 
 
 def build_pipeline_conversation_config(config: dict) -> ConversationConfig:

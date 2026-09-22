@@ -148,3 +148,48 @@ def test_whisper_provider_rejects_repeated_clause_loop():
     result = provider.transcribe(np.zeros(16000, dtype=np.float32), language=None)
 
     assert result.text == ""
+
+
+def test_whisper_provider_rejects_segment_ending_past_real_audio_duration():
+    provider = WhisperProvider(model_size="small")
+
+    class FakeModel:
+        def transcribe(self, *_args, **_kwargs):
+            segment = SimpleNamespace(
+                start=0.0,
+                end=30.0,
+                text="C'est parti.",
+                avg_logprob=-0.22,
+                no_speech_prob=0.10,
+            )
+            info = SimpleNamespace(language="fr", language_probability=0.92, duration=2.0)
+            return iter([segment]), info
+
+    provider._model = FakeModel()
+
+    result = provider.transcribe(np.zeros(32000, dtype=np.float32), language="fr")
+
+    assert result.text == ""
+    assert result.segments == []
+
+
+def test_whisper_provider_keeps_segment_within_overhang_tolerance():
+    provider = WhisperProvider(model_size="small")
+
+    class FakeModel:
+        def transcribe(self, *_args, **_kwargs):
+            segment = SimpleNamespace(
+                start=0.0,
+                end=2.5,
+                text="Bonjour tout le monde",
+                avg_logprob=-0.22,
+                no_speech_prob=0.10,
+            )
+            info = SimpleNamespace(language="fr", language_probability=0.92, duration=2.0)
+            return iter([segment]), info
+
+    provider._model = FakeModel()
+
+    result = provider.transcribe(np.zeros(32000, dtype=np.float32), language="fr")
+
+    assert result.text == "Bonjour tout le monde"

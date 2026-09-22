@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 # negatives, which used to trigger a full-response fallback for the whole turn.
 MIN_LANGUAGE_CHECK_CHARS = 24
 
+# A segment ending more than this many seconds past the real audio duration is
+# treated as a Whisper hallucination and the whole turn is discarded.
+MAX_SEGMENT_OVERHANG_SECONDS = 1.0
+
 
 def _describe_exception(exc: BaseException) -> str:
     message = str(exc).strip()
@@ -425,10 +429,43 @@ class ConversationPipeline:
         audio_float = audio_int16.astype(np.float32) / 32767.0
 
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
+        result = await loop.run_in_executor(
             None,
             lambda: self.asr.transcribe(audio_float, language=language),
         )
+        return self._reject_segment_overrun(result, audio_bytes)
+
+    @staticmethod
+    def _reject_segment_overrun(result: ASRResult, audio_bytes: bytes) -> ASRResult:
+        """Discard a transcription whose segment outlives the real audio.
+
+        Whisper occasionally emits a generic segment that ends far beyond the
+        clip (e.g. [0.0s-30.0s] for 2 s of audio). This runs on every pass,
+        including retries, so a rejected retry can never be accepted.
+        """
+        if not result or not getattr(result, "text", "").strip():
+            return result
+
+        max_segment_end = 0.0
+        for segment in getattr(result, "segments", None) or []:
+            try:
+                max_segment_end = max(max_segment_end, float(segment.get("end", 0.0)))
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+        if not max_segment_end:
+            return result
+
+        audio_duration = len(audio_bytes) / 32000.0
+        if max_segment_end > audio_duration + MAX_SEGMENT_OVERHANG_SECONDS:
+            logger.warning(
+                "Rejecting ASR transcription: segment ends at %.1fs for %.1fs of audio",
+                max_segment_end,
+                audio_duration,
+            )
+            result.text = ""
+            result.segments = []
+        return result
 
     def _resolve_user_language(self, transcription: str, asr_language: Optional[str]) -> str:
         asr_code = self._normalize_supported_language(asr_language)

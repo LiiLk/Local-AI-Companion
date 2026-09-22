@@ -33,6 +33,7 @@ from src.vad.smart_turn import resolve_commit_delay_for_turn, resolve_turn_tier
 from src.assistant.pipeline_runtime import (
     close_pipeline_runtime_services,
     create_pipeline_runtime,
+    resolve_min_asr_audio_ms,
     resolve_pipeline_system_prompt,
 )
 from src.assistant.conversation_memory import (
@@ -796,6 +797,18 @@ class WebSocketManager:
         state.pending_speech_end_epoch_ms = None
 
         audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        min_audio_ms = resolve_min_asr_audio_ms(getattr(state, "config", {}) or {})
+        if (
+            audio_bytes
+            and min_audio_ms > 0
+            and calculate_audio_duration_ms(audio_bytes, 16000) < min_audio_ms
+        ):
+            logger.info(
+                "Ignoring %s ms of WebSocket speech below asr.min_audio_ms=%s; no ASR run",
+                audio_ms,
+                min_audio_ms,
+            )
+            return
         logger.info(
             "Committing %s bytes of WebSocket speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),

@@ -299,7 +299,7 @@ async def test_pipeline_audio_stream_merges_segments_before_commit_window():
 
     state = SimpleNamespace(
         mode="pipeline",
-        config={"audio": {"speech_commit_delay_ms": 700}},
+        config={"audio": {"speech_commit_delay_ms": 700}, "asr": {"min_audio_ms": 0}},
         is_recording=False,
         pending_speech_audio=bytearray(),
         pending_speech_commit_task=None,
@@ -367,7 +367,7 @@ async def test_pipeline_audio_stream_committed_pause_stays_separate_turns():
 
     state = SimpleNamespace(
         mode="pipeline",
-        config={"audio": {"speech_commit_delay_ms": 700}},
+        config={"audio": {"speech_commit_delay_ms": 700}, "asr": {"min_audio_ms": 0}},
         is_recording=False,
         pending_speech_audio=bytearray(),
         pending_speech_commit_task=None,
@@ -422,7 +422,7 @@ async def test_pipeline_audio_stream_force_commits_when_pending_buffer_reaches_c
 
     state = SimpleNamespace(
         mode="pipeline",
-        config={"audio": {"speech_commit_delay_ms": 700}},
+        config={"audio": {"speech_commit_delay_ms": 700}, "asr": {"min_audio_ms": 0}},
         is_recording=False,
         pending_speech_audio=bytearray(),
         pending_speech_commit_task=None,
@@ -487,7 +487,7 @@ async def test_pipeline_audio_stream_rejects_single_segment_over_pending_cap(mon
 
     state = SimpleNamespace(
         mode="pipeline",
-        config={"audio": {"speech_commit_delay_ms": 700}},
+        config={"audio": {"speech_commit_delay_ms": 700}, "asr": {"min_audio_ms": 0}},
         is_recording=False,
         pending_speech_audio=bytearray(),
         pending_speech_commit_task=None,
@@ -522,7 +522,7 @@ async def test_pipeline_audio_stream_force_commit_merges_pending_audio():
 
     state = SimpleNamespace(
         mode="pipeline",
-        config={"audio": {"speech_commit_delay_ms": 700}},
+        config={"audio": {"speech_commit_delay_ms": 700}, "asr": {"min_audio_ms": 0}},
         is_recording=True,
         pending_speech_audio=bytearray(b"A" * 3200),
         pending_speech_commit_task=None,
@@ -558,7 +558,7 @@ async def test_pipeline_mic_stop_commits_pending_audio_when_vad_force_end_is_emp
 
     state = SimpleNamespace(
         mode="pipeline",
-        config={"audio": {"speech_commit_delay_ms": 700}},
+        config={"audio": {"speech_commit_delay_ms": 700}, "asr": {"min_audio_ms": 0}},
         is_recording=False,
         vad=FakeVAD(),
         pending_speech_audio=bytearray(b"A" * 3200),
@@ -593,6 +593,7 @@ async def test_audio_upload_clears_pending_pipeline_speech_before_scheduling_tur
         return None
 
     state = SimpleNamespace(
+        config={"asr": {"min_audio_ms": 0}},
         pending_speech_audio=bytearray(b"A" * 3200),
         pending_speech_commit_task=pending_task,
         pending_speech_end_epoch_ms=123,
@@ -652,3 +653,73 @@ async def test_handle_clear_clears_pending_pipeline_speech():
     assert sent_messages == [
         {"type": "cleared", "message": "Conversation history cleared"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_commit_pending_speech_ignores_audio_below_min_duration():
+    manager = WebSocketManager()
+    client_id = "client-short-clip"
+    scheduled_audio: list[bytes] = []
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={
+            "audio": {"speech_commit_delay_ms": 700},
+            "asr": {"min_audio_ms": 700},
+        },
+        is_recording=False,
+        # 400 ms of 16 kHz mono PCM16.
+        pending_speech_audio=bytearray(b"A" * 12800),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+    )
+    manager.states[client_id] = state
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager._commit_pending_speech(client_id, state)
+
+    assert scheduled_audio == []
+    assert state.pending_speech_audio == bytearray()
+
+
+@pytest.mark.asyncio
+async def test_commit_pending_speech_runs_asr_above_min_duration():
+    manager = WebSocketManager()
+    client_id = "client-long-enough-clip"
+    scheduled_audio: list[bytes] = []
+
+    async def fake_transcribe(_client_id, audio_bytes, speech_end_epoch_ms=None):
+        scheduled_audio.append(audio_bytes)
+
+    async def fake_schedule(_client_id, turn_coro):
+        await turn_coro
+        return None
+
+    state = SimpleNamespace(
+        mode="pipeline",
+        config={
+            "audio": {"speech_commit_delay_ms": 700},
+            "asr": {"min_audio_ms": 700},
+        },
+        is_recording=False,
+        # 1000 ms of 16 kHz mono PCM16.
+        pending_speech_audio=bytearray(b"A" * 32000),
+        pending_speech_commit_task=None,
+        pending_speech_end_epoch_ms=None,
+    )
+    manager.states[client_id] = state
+    manager._schedule_turn = fake_schedule  # type: ignore[method-assign]
+    manager._transcribe_and_respond_turn = fake_transcribe  # type: ignore[method-assign]
+
+    await manager._commit_pending_speech(client_id, state)
+
+    assert scheduled_audio == [b"A" * 32000]
+    assert state.pending_speech_audio == bytearray()

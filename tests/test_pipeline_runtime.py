@@ -82,6 +82,45 @@ def test_voice_style_prompt_is_omitted_when_empty():
     assert conversation_config.system_prompt == "You are March 7th."
 
 
+def test_transcription_hint_prompt_is_appended_when_configured():
+    config = {
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {
+            "transcription_hint_prompt": "Transcriptions may contain recognition errors.",
+        },
+    }
+
+    conversation_config = build_pipeline_conversation_config(config)
+
+    assert conversation_config.system_prompt.startswith("You are March 7th.")
+    assert "Transcriptions may contain recognition errors." in conversation_config.system_prompt
+
+
+def test_transcription_hint_prompt_is_omitted_when_empty():
+    config = {
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {"transcription_hint_prompt": ""},
+    }
+
+    conversation_config = build_pipeline_conversation_config(config)
+
+    assert conversation_config.system_prompt == "You are March 7th."
+
+
+def test_transcription_hint_prompt_is_omitted_in_omni_mode():
+    config = {
+        "mode": "omni",
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {
+            "transcription_hint_prompt": "Transcriptions may contain recognition errors.",
+        },
+    }
+
+    conversation_config = build_pipeline_conversation_config(config)
+
+    assert conversation_config.system_prompt == "You are March 7th."
+
+
 def test_preload_pipeline_asr_uses_get_model_fallback():
     class FakeASR:
         def __init__(self):

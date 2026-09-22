@@ -29,6 +29,16 @@ pipeline:
     abbreviations in parentheses. Write numbers and symbols the way they are
     pronounced. Emotion markers requested by your character instructions are
     still allowed.
+  # Interpretation hint appended to the character system prompt in pipeline mode
+  # only: it tells the LLM that user turns are automatic speech transcripts and
+  # may contain recognition errors. Set to "" to disable it. Not used in omni
+  # modes.
+  transcription_hint_prompt: |
+    The user's messages are automatic speech transcriptions and may contain
+    recognition errors, especially acronyms, numbers, years and proper names
+    (for example 'GI' for 'AGI', 'W27' for '2027'). Interpret them charitably
+    from context and answer the most likely intended question. Only ask for
+    clarification if the meaning is truly ambiguous.
 
 memory:
   enabled: true
@@ -217,7 +227,17 @@ asr:
   # Power users can still override asr.model_size / asr.beam_size directly.
   profile: "balanced"
   language: "auto"
-  prompt: null
+  # Optional transcription bias passed to Whisper as initial_prompt. Whisper
+  # imitates the STYLE of this text, so keep it as natural transcription prose
+  # rather than a bare keyword list; it noticeably improves acronyms, years and
+  # proper nouns (e.g. AGI, 2027, Nvidia). Add your own names/jargon here. It is
+  # ignored by providers that do not support an initial prompt. Set to "" to
+  # disable.
+  prompt: "Discussion sur l'IA, l'AGI, les LLM, le CPU, le GPU et la VRAM, l'API, le RVC et le TTS, Python, C++, Linux, Windows et GitHub, Nvidia, OpenAI, Anthropic et DeepSeek, en 2026, 2027 et 2030."
+  # Minimum committed audio length before ASR runs (16 kHz mono PCM16).
+  # Shorter turns are ignored before the model runs, so no LLM response is
+  # produced. Distinct from vad_min_speech_ms, which tunes VAD segmentation.
+  min_audio_ms: 700
   compute_type: "float16"
   device: "cuda"
 

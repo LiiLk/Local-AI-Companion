@@ -94,6 +94,10 @@ class WhisperProvider(BaseASR):
     DEFAULT_LOG_PROB_THRESHOLD = -1.0
     MIN_AUTO_LANGUAGE_CONFIDENCE = 0.35
     REPETITIVE_HALLUCINATION_LANGUAGE_CONFIDENCE = 0.55
+    # Whisper sometimes emits a segment that ends far beyond the real audio
+    # (e.g. [0.0s-30.0s] for a 2 s clip). Any segment overhang larger than this
+    # tolerance marks the whole transcription as a hallucination.
+    MAX_SEGMENT_OVERHANG_SECONDS = 1.0
     
     def __init__(
         self,
@@ -173,7 +177,20 @@ class WhisperProvider(BaseASR):
                         previous = current
 
         return False
-        
+
+    @staticmethod
+    def _input_duration_seconds(audio_input: Union[str, Path, np.ndarray]) -> Optional[float]:
+        """Best-effort real duration of the ASR input, in seconds."""
+        if isinstance(audio_input, np.ndarray):
+            return len(audio_input) / 16000.0
+        try:
+            import wave
+
+            with wave.open(str(audio_input), "rb") as wf:
+                return wf.getnframes() / float(wf.getframerate() or 1)
+        except Exception:
+            return None
+
     def _download_french_model(self, model_config: dict) -> Path:
         """
         Download French-optimized model from HuggingFace to local cache.
@@ -367,12 +384,14 @@ class WhisperProvider(BaseASR):
         all_segments = []
         full_text_parts = []
         no_speech_values: list[float] = []
+        max_segment_end = 0.0
 
         for segment in segments:
             # Log each segment for debugging
             avg_logprob = getattr(segment, 'avg_logprob', 0)
             no_speech_prob = getattr(segment, 'no_speech_prob', 0)
             no_speech_values.append(float(no_speech_prob))
+            max_segment_end = max(max_segment_end, float(getattr(segment, 'end', 0.0)))
             logger.info(
                 "Segment [%.1fs-%.1fs] '%s' (logprob=%.2f, no_speech=%.2f)",
                 segment.start,
@@ -405,6 +424,22 @@ class WhisperProvider(BaseASR):
             if no_speech_values
             else 0.0
         )
+
+        audio_duration = getattr(info, "duration", None)
+        if audio_duration is None:
+            audio_duration = self._input_duration_seconds(audio_input)
+        if (
+            max_segment_end
+            and audio_duration is not None
+            and max_segment_end > float(audio_duration) + self.MAX_SEGMENT_OVERHANG_SECONDS
+        ):
+            logger.warning(
+                "Rejecting Whisper hallucination: segment ends at %.1fs for %.1fs of audio",
+                max_segment_end,
+                float(audio_duration),
+            )
+            full_text = ""
+            all_segments = []
 
         if (
             effective_language is None

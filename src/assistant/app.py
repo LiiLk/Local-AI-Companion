@@ -50,7 +50,9 @@ from src.assistant.audio_service import AudioService, AudioServiceConfig, MicSta
 from src.assistant.conversation_pipeline import ConversationPipeline, ConversationConfig, AudioPayload
 from src.assistant.pipeline_runtime import (
     create_pipeline_runtime,
+    resolve_min_asr_audio_ms,
 )
+from src.utils.audio_analysis import calculate_audio_duration_ms
 from src.utils.character_loader import (
     resolve_character_config,
     resolve_live2d_desktop_model,
@@ -923,6 +925,18 @@ class Live2DAssistant:
             self._pending_speech_end_monotonic = None
 
         audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
+        min_audio_ms = resolve_min_asr_audio_ms(self.config)
+        if (
+            audio_bytes
+            and min_audio_ms > 0
+            and calculate_audio_duration_ms(audio_bytes, 16000) < min_audio_ms
+        ):
+            logger.info(
+                "Ignoring %s ms of speech below asr.min_audio_ms=%s; no ASR run",
+                audio_ms,
+                min_audio_ms,
+            )
+            return
         logger.info(
             "Committing %s bytes of buffered speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),
