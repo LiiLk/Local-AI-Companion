@@ -139,6 +139,41 @@ llm:
       reasoning:
         effort: "high"
 
+  # Adaptive reasoning ("fast by default, think when needed").
+  # The first call always runs with base_effort (which replaces
+  # llm.openrouter.options.reasoning.effort for that call). A short routing
+  # instruction lets the model ask for a deeper pass by replying with a marker
+  # only; when it does, the pipeline speaks a filler phrase and re-runs the same
+  # conversation with the escalated effort and a larger token budget.
+  # enabled: false restores the previous single-call behavior exactly.
+  adaptive_reasoning:
+    enabled: true
+    base_effort: "none"
+    escalate_effort: "medium"
+    max_effort: "high"
+    escalated_max_completion_tokens: 2048
+    # Waiting phrases can be a plain list (used for every language, replacing
+    # the built-in phrases) or a mapping keyed by short language code. A
+    # mapping is merged over the built-in per-language defaults: entries here
+    # win language by language, and built-ins cover the languages omitted
+    # below. "default" is the fallback for an unknown language.
+    filler_phrases:
+      en:
+        - "Hmm, let me think about that."
+        - "Good question, give me a second."
+        - "Okay, let me work that out."
+      fr:
+        - "Hmm, laisse-moi réfléchir."
+        - "Bonne question, une seconde."
+        - "D'accord, je regarde ça."
+    routing_prompt: |
+      Routing instruction: before answering, decide whether the user's request
+      genuinely requires careful multi-step reasoning, a non-trivial calculation,
+      planning, or writing code. If it does, reply with exactly <|THINK|> and
+      nothing else, or <|THINK_HARD|> if it is especially difficult. Otherwise,
+      answer the user normally. Never output these markers unless you are asking
+      for deeper reasoning.
+
 character:
   preset: "march7th"
 
