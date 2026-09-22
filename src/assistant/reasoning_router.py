@@ -56,6 +56,50 @@ DEFAULT_FILLER_PHRASES_FR: tuple[str, ...] = (
 DEFAULT_FILLER_PHRASES_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
     "en": DEFAULT_FILLER_PHRASES,
     "fr": DEFAULT_FILLER_PHRASES_FR,
+    "es": (
+        "Un momento, déjame pensarlo.",
+        "Buena pregunta, dame un segundo.",
+    ),
+    "de": (
+        "Moment, lass mich kurz nachdenken.",
+        "Gute Frage, einen Augenblick.",
+    ),
+    "it": (
+        "Un attimo, fammi pensare.",
+        "Bella domanda, dammi un secondo.",
+    ),
+    "pt": (
+        "Um momento, deixa eu pensar.",
+        "Boa pergunta, só um segundo.",
+    ),
+    "ja": (
+        "ちょっと考えさせて。",
+        "いい質問だね、少し待って。",
+    ),
+    "zh": (
+        "让我想一想。",
+        "好问题，稍等一下。",
+    ),
+    "ko": (
+        "잠깐 생각해 볼게요.",
+        "좋은 질문이네요, 잠시만요.",
+    ),
+    "ru": (
+        "Секунду, дай подумать.",
+        "Хороший вопрос, минутку.",
+    ),
+    "ar": (
+        "لحظة، دعني أفكر.",
+        "سؤال جيد، أمهلني ثانية.",
+    ),
+    "hi": (
+        "एक पल, मुझे सोचने दो।",
+        "अच्छा सवाल है, एक सेकंड।",
+    ),
+    "tr": (
+        "Bir saniye, düşüneyim.",
+        "Güzel soru, bir saniye.",
+    ),
 }
 
 DEFAULT_ROUTING_PROMPT = (
@@ -138,18 +182,30 @@ class AdaptiveReasoningConfig:
 
         A missing mapping means "feature off" and returns ``None`` so the
         pipeline keeps its previous single-call behaviour untouched.
+
+        ``filler_phrases`` accepts two shapes:
+        - a mapping ``{language: [phrases]}``: merged over the built-in
+          per-language defaults, so the config wins language by language and
+          built-ins cover the languages it omits;
+        - a plain list ``[phrases]``: applied to every language and replaces
+          the built-in mapping entirely (legacy behaviour).
         """
         if not isinstance(data, dict):
             return None
 
         phrases = data.get("filler_phrases")
         if isinstance(phrases, dict):
-            by_language = cls._normalize_filler_mapping(phrases)
-            if not by_language:
-                by_language = cls._default_filler_mapping()
+            # Merge the configured mapping over the built-in defaults: the
+            # config wins language by language, and built-ins fill the
+            # languages it does not mention. A per-language list therefore no
+            # longer silently re-enables the English fallback for every
+            # supported language it omits.
+            by_language = cls._default_filler_mapping()
+            by_language.update(cls._normalize_filler_mapping(phrases))
             filler_phrases = by_language.get("en") or list(DEFAULT_FILLER_PHRASES)
         elif isinstance(phrases, (list, tuple)) and phrases:
-            # A plain list applies to every language (legacy behaviour).
+            # A plain list applies to every language (legacy behaviour) and
+            # deliberately replaces the built-in mapping.
             by_language = {}
             filler_phrases = [str(phrase) for phrase in phrases]
         else:

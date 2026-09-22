@@ -17,6 +17,7 @@ from src.assistant.reasoning_router import (
 )
 from src.llm.base import Message
 from src.llm.gemma_text_vision_llm import GemmaTextVisionLLM
+from src.utils.language_detection import LANGUAGE_NAMES
 
 
 class RecordingLLM:
@@ -558,8 +559,44 @@ def test_pick_filler_selects_phrase_by_language():
 
     assert config.pick_filler("fr-FR") == "reflexion"
     assert config.pick_filler("fr") == "reflexion"
-    assert config.pick_filler("de") == "fallback"
+    # Built-in phrases now fill languages the config does not override, so
+    # "de" is no longer an unknown language falling back to "default".
+    assert config.pick_filler("de") in DEFAULT_FILLER_PHRASES_BY_LANGUAGE["de"]
+    # An unknown language still uses the configured "default" fallback.
+    assert config.pick_filler("xx") == "fallback"
     assert config.pick_filler(None) == "fallback"
+
+
+def test_config_mapping_falls_back_to_builtin_filler_per_language():
+    config = AdaptiveReasoningConfig.from_dict(
+        {"enabled": True, "filler_phrases": {"en": ["thinking"], "fr": ["reflexion"]}}
+    )
+
+    assert config.pick_filler("es") in DEFAULT_FILLER_PHRASES_BY_LANGUAGE["es"]
+    assert config.pick_filler("ja") in DEFAULT_FILLER_PHRASES_BY_LANGUAGE["ja"]
+    # An unknown language still falls back to the (possibly overridden) English.
+    assert config.pick_filler("xx") == "thinking"
+
+
+def test_config_mapping_overrides_builtin_per_language():
+    config = AdaptiveReasoningConfig.from_dict(
+        {"enabled": True, "filler_phrases": {"es": ["Custom"]}}
+    )
+
+    assert config.pick_filler("es") == "Custom"
+    assert config.pick_filler("fr") in DEFAULT_FILLER_PHRASES_BY_LANGUAGE["fr"]
+
+
+def test_default_filler_phrases_cover_all_supported_languages():
+    languages = set(LANGUAGE_NAMES)
+    config = AdaptiveReasoningConfig.from_dict({"enabled": True})
+
+    assert languages <= set(DEFAULT_FILLER_PHRASES_BY_LANGUAGE)
+    for language in languages:
+        assert (
+            config.pick_filler(language)
+            in DEFAULT_FILLER_PHRASES_BY_LANGUAGE[language]
+        )
 
 
 def test_pick_filler_list_stays_language_agnostic():
