@@ -189,7 +189,12 @@ def _make_assistant() -> Live2DAssistant:
     assistant._microphone_degraded_reason = None
     assistant._runtime_error = None
     assistant.audio_service = FakeAudioService()
-    assistant.config = {"mode": "pipeline", "character": {"name": "Starling"}, "audio": {}}
+    assistant.config = {
+        "mode": "pipeline",
+        "character": {"name": "Starling"},
+        "audio": {},
+        "asr": {"min_audio_ms": 0},
+    }
     assistant.pipeline = SimpleNamespace(
         llm=SimpleNamespace(model="test-llm", degraded_reason=None),
         tts=SimpleNamespace(active_provider_name="qwen3", degraded_reason=None),

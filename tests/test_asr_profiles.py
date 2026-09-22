@@ -56,3 +56,33 @@ def test_voice_cli_rejects_pipeline_only_asr_provider():
 
     with pytest.raises(ValueError, match="run_assistant.py"):
         create_asr({"provider": "parakeet"})
+
+
+def test_prompt_is_passed_to_whisper_for_every_profile():
+    from src.assistant.pipeline_runtime import create_pipeline_asr
+
+    prompt = "Discussion sur l'IA, l'AGI et les LLM en 2027."
+
+    for profile in ("balanced", "quality-local"):
+        asr, _summary = create_pipeline_asr(
+            {"asr": {"profile": profile, "device": "cpu", "prompt": prompt}}
+        )
+        assert asr.initial_prompt == prompt
+
+
+def test_empty_prompt_disables_whisper_initial_prompt():
+    from src.assistant.pipeline_runtime import create_pipeline_asr
+
+    asr, _summary = create_pipeline_asr(
+        {"asr": {"profile": "balanced", "device": "cpu", "prompt": ""}}
+    )
+
+    assert not asr.initial_prompt
+
+
+def test_resolve_min_asr_audio_ms_default_and_override():
+    from src.assistant.pipeline_runtime import resolve_min_asr_audio_ms
+
+    assert resolve_min_asr_audio_ms({}) == 700
+    assert resolve_min_asr_audio_ms({"asr": {"min_audio_ms": 1200}}) == 1200
+    assert resolve_min_asr_audio_ms({"asr": {"min_audio_ms": 0}}) == 0
