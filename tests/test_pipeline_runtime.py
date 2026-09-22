@@ -11,6 +11,8 @@ from src.assistant.pipeline_runtime import (
     preload_pipeline_rvc,
     preload_pipeline_tts,
     resolve_initial_tts_language,
+    resolve_pipeline_system_prompt,
+    resolve_transcription_hint_prompt,
 )
 import pytest
 
@@ -82,7 +84,7 @@ def test_voice_style_prompt_is_omitted_when_empty():
     assert conversation_config.system_prompt == "You are March 7th."
 
 
-def test_transcription_hint_prompt_is_appended_when_configured():
+def test_transcription_hint_prompt_is_not_in_permanent_system_prompt():
     config = {
         "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
         "pipeline": {
@@ -92,8 +94,38 @@ def test_transcription_hint_prompt_is_appended_when_configured():
 
     conversation_config = build_pipeline_conversation_config(config)
 
-    assert conversation_config.system_prompt.startswith("You are March 7th.")
-    assert "Transcriptions may contain recognition errors." in conversation_config.system_prompt
+    assert conversation_config.system_prompt == "You are March 7th."
+    assert "Transcriptions may contain recognition errors." not in conversation_config.system_prompt
+
+
+def test_transcription_hint_prompt_is_exposed_for_speech_turns_only():
+    config = {
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {
+            "transcription_hint_prompt": "Transcriptions may contain recognition errors.",
+        },
+    }
+
+    assert (
+        resolve_transcription_hint_prompt(config)
+        == "Transcriptions may contain recognition errors."
+    )
+
+    conversation_config = build_pipeline_conversation_config(config)
+    assert (
+        conversation_config.transcription_hint_prompt
+        == "Transcriptions may contain recognition errors."
+    )
+
+
+def test_transcription_hint_prompt_is_omitted_for_text_only_system_prompt():
+    config = {
+        "character": {"name": "March 7th", "system_prompt": "You are March 7th."},
+        "pipeline": {"voice_style_prompt": "Speak naturally."},
+    }
+
+    assert resolve_pipeline_system_prompt(config) == "You are March 7th.\n\nSpeak naturally."
+    assert resolve_transcription_hint_prompt(config) == ""
 
 
 def test_transcription_hint_prompt_is_omitted_when_empty():

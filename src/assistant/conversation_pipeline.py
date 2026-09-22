@@ -79,6 +79,8 @@ class ConversationConfig:
     auto_detect_language: bool = True
     asr_language: Optional[str] = None
     reply_language: Optional[str] = None
+    # Speech-only guidance: injected per spoken turn, never for typed messages.
+    transcription_hint_prompt: Optional[str] = None
 
     # Omni mode (MiniCPM-o)
     omni_use_single_pass: bool = True  # Single omni call for speech -> response
@@ -518,6 +520,23 @@ class ConversationPipeline:
         llm_messages[-1] = Message(role="user", content=f"{instruction}\n\n{last_user.content}")
         return llm_messages
 
+    def _apply_transcription_hint(self, llm_messages: list[Message]) -> list[Message]:
+        """Prefix the speech transcription hint on a spoken turn only.
+
+        Typed messages never pass through here, so a deliberate "GI" stays a
+        literal request instead of being reinterpreted as an ASR error.
+        """
+        hint = (self.config.transcription_hint_prompt or "").strip()
+        if not hint or not llm_messages or llm_messages[-1].role != "user":
+            return llm_messages
+
+        last_user = llm_messages[-1]
+        llm_messages[-1] = Message(
+            role="user",
+            content=f"(System: {hint})\n\n{last_user.content}",
+        )
+        return llm_messages
+
     def _should_validate_response_language(
         self,
         user_language_code: Optional[str],
@@ -672,6 +691,7 @@ class ConversationPipeline:
             # 2. Add to conversation history
             self.messages.append(Message(role="user", content=transcription))
             llm_messages = self._build_llm_messages(response_language, user_language)
+            llm_messages = self._apply_transcription_hint(llm_messages)
             
             # 3. Generate response
             if self.on_response_start:
@@ -821,6 +841,7 @@ class ConversationPipeline:
             return None
 
         retried_languages: set[str] = set()
+        retry_rejected = False
         detected_lang = self._normalize_supported_language(getattr(result, "language", None))
         if (
             self._normalize_supported_language(self.config.asr_language) is None
@@ -838,6 +859,9 @@ class ConversationPipeline:
             retry_result = await self._transcribe_once(audio_bytes, retry_language)
             if self._asr_retry_is_better(result, retry_result):
                 result = retry_result
+                retry_rejected = False
+            elif not (retry_result.text and retry_result.text.strip()):
+                retry_rejected = True
 
         if self._should_retry_with_language_hint(result):
             retry_language = self._last_user_language_code
@@ -856,6 +880,9 @@ class ConversationPipeline:
                     retry_result.text.strip()[:80],
                 )
                 result = retry_result
+                retry_rejected = False
+            elif not (retry_result.text and retry_result.text.strip()):
+                retry_rejected = True
 
         if self._should_retry_detected_language(result):
             retry_language = self._normalize_supported_language(getattr(result, "language", None))
@@ -873,6 +900,19 @@ class ConversationPipeline:
                         retry_result.text.strip()[:80],
                     )
                     result = retry_result
+                    retry_rejected = False
+                elif not (retry_result.text and retry_result.text.strip()):
+                    retry_rejected = True
+
+        if retry_rejected:
+            logger.warning(
+                "ASR retry produced no usable transcript; abandoning turn instead of "
+                "accepting language=%s confidence=%s text=%r",
+                getattr(result, "language", None),
+                getattr(result, "confidence", None),
+                result.text.strip()[:120],
+            )
+            return None
 
         if self._asr_result_is_low_confidence(result):
             logger.warning(

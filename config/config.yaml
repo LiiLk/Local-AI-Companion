@@ -29,10 +29,10 @@ pipeline:
     abbreviations in parentheses. Write numbers and symbols the way they are
     pronounced. Emotion markers requested by your character instructions are
     still allowed.
-  # Interpretation hint appended to the character system prompt in pipeline mode
-  # only: it tells the LLM that user turns are automatic speech transcripts and
-  # may contain recognition errors. Set to "" to disable it. Not used in omni
-  # modes.
+  # Interpretation hint injected per spoken turn in pipeline mode only: it
+  # tells the LLM that the user's speech turns are automatic transcriptions and
+  # may contain recognition errors. Never applied to messages the user types.
+  # Set to "" to disable it. Not used in omni modes.
   transcription_hint_prompt: |
     The user's messages are automatic speech transcriptions and may contain
     recognition errors, especially acronyms, numbers, years and proper names

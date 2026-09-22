@@ -1,12 +1,15 @@
 import asyncio
+import base64
 import threading
 import time
+import wave
 from types import SimpleNamespace
 
 import pytest
 
 from src.server import websocket as websocket_module
 from src.server.websocket import WebSocketManager
+from src.asr.base import ASRResult
 
 
 @pytest.mark.asyncio
@@ -723,3 +726,230 @@ async def test_commit_pending_speech_runs_asr_above_min_duration():
 
     assert scheduled_audio == [b"A" * 32000]
     assert state.pending_speech_audio == bytearray()
+
+
+@pytest.mark.asyncio
+async def test_direct_audio_segment_below_min_duration_skips_asr():
+    manager = WebSocketManager()
+    client_id = "client-direct-short-clip"
+    asr_calls: list[bytes] = []
+    sent: list[dict] = []
+
+    async def fake_transcribe(*_args, **_kwargs):
+        asr_calls.append(b"called")
+        raise AssertionError("ASR should not run for a clip below asr.min_audio_ms")
+
+    async def fake_send_json(_client_id, data):
+        sent.append(data)
+
+    state = SimpleNamespace(
+        config={"asr": {"min_audio_ms": 700}},
+        get_asr=lambda: SimpleNamespace(),
+    )
+    manager.states[client_id] = state
+    manager._transcribe_with_guard = fake_transcribe  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    # 600 ms of 16 kHz mono PCM16: above the old hardcoded 500 ms threshold
+    # but below the configured asr.min_audio_ms=700.
+    await manager._transcribe_and_respond_turn(client_id, b"\x00\x00" * 9600)
+
+    assert asr_calls == []
+    assert {"type": "transcription", "text": "", "message": "Audio too short"} in sent
+
+
+@pytest.mark.asyncio
+async def test_direct_audio_segment_above_min_duration_runs_asr():
+    manager = WebSocketManager()
+    client_id = "client-direct-long-clip"
+    asr_calls: list[bytes] = []
+
+    async def fake_transcribe(_state, _audio_input):
+        asr_calls.append(b"called")
+        return SimpleNamespace(text="", language="en", confidence=0.9)
+
+    async def fake_send_json(_client_id, _data):
+        return None
+
+    state = SimpleNamespace(
+        config={"asr": {"min_audio_ms": 700}},
+        get_asr=lambda: SimpleNamespace(),
+    )
+    manager.states[client_id] = state
+    manager._transcribe_with_guard = fake_transcribe  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    # 1000 ms of 16 kHz mono PCM16.
+    await manager._transcribe_and_respond_turn(client_id, b"\x00\x00" * 16000)
+
+    assert asr_calls == [b"called"]
+
+
+def _write_silence_wav(path, seconds: float) -> None:
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * int(16000 * seconds))
+
+
+@pytest.mark.asyncio
+async def test_webm_audio_upload_below_min_duration_skips_asr(monkeypatch):
+    manager = WebSocketManager()
+    client_id = "client-webm-short-clip"
+    asr_calls: list[bytes] = []
+    sent: list[dict] = []
+
+    async def fake_transcribe(*_args, **_kwargs):
+        asr_calls.append(b"called")
+        raise AssertionError("ASR should not run for a clip below asr.min_audio_ms")
+
+    async def fake_send_json(_client_id, data):
+        sent.append(data)
+
+    def fake_run(command, capture_output=False, timeout=None):
+        output_path = command[-1]
+        _write_silence_wav(output_path, 0.4)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    state = SimpleNamespace(
+        config={"asr": {"min_audio_ms": 700}},
+        get_asr=lambda: SimpleNamespace(),
+    )
+    manager.states[client_id] = state
+    manager._transcribe_with_guard = fake_transcribe  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    audio_data = base64.b64encode(b"fake-webm-blob").decode("ascii")
+    await manager._handle_audio_message_turn(client_id, audio_data)
+
+    assert asr_calls == []
+    assert {"type": "transcription", "text": "", "message": "Audio too short"} in sent
+
+
+@pytest.mark.asyncio
+async def test_webm_audio_upload_above_min_duration_runs_asr(monkeypatch):
+    manager = WebSocketManager()
+    client_id = "client-webm-long-clip"
+    asr_calls: list[bytes] = []
+
+    async def fake_transcribe(_state, _audio_input):
+        asr_calls.append(b"called")
+        return SimpleNamespace(text="", language="en", confidence=0.9)
+
+    async def fake_send_json(_client_id, _data):
+        return None
+
+    def fake_run(command, capture_output=False, timeout=None):
+        output_path = command[-1]
+        _write_silence_wav(output_path, 1.5)
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    state = SimpleNamespace(
+        config={"asr": {"min_audio_ms": 700}},
+        get_asr=lambda: SimpleNamespace(),
+    )
+    manager.states[client_id] = state
+    manager._transcribe_with_guard = fake_transcribe  # type: ignore[method-assign]
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+
+    audio_data = base64.b64encode(b"fake-webm-blob").decode("ascii")
+    await manager._handle_audio_message_turn(client_id, audio_data)
+
+    assert asr_calls == [b"called"]
+
+
+@pytest.mark.asyncio
+async def test_forced_language_retry_returning_empty_drops_turn():
+    manager = WebSocketManager()
+    client_id = "client-empty-retry-drops-turn"
+    turn_calls: list[str] = []
+    sent: list[dict] = []
+
+    class FakeASR:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, audio_input, language=None):
+            self.calls += 1
+            if self.calls == 1:
+                # Out-of-scope detected language (normalizes to None) with text.
+                return ASRResult(text="Salut", language="auto")
+            # Forced-language retry rejected by the provider (overrun).
+            return ASRResult(text="", language="fr")
+
+    class FakeState:
+        config = {"asr": {"min_audio_ms": 0}}
+        current_language = "fr"
+        asr_language = ""
+
+        def __init__(self):
+            self.asr = FakeASR()
+
+        def get_asr(self):
+            return self.asr
+
+    async def fake_send_json(_client_id, data):
+        sent.append(data)
+
+    async def fake_text_turn(*_args, **_kwargs):
+        turn_calls.append(b"called")
+
+    state = FakeState()
+    manager.states[client_id] = state
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+    manager._handle_text_message_turn = fake_text_turn  # type: ignore[method-assign]
+
+    await manager._transcribe_and_respond_turn(client_id, b"\x00\x00" * 32000)
+
+    assert state.asr.calls == 2
+    assert turn_calls == []
+    assert {"type": "transcription", "text": "", "message": "No speech detected"} in sent
+
+
+@pytest.mark.asyncio
+async def test_forced_language_retry_with_text_is_used():
+    manager = WebSocketManager()
+    client_id = "client-nonempty-retry-used"
+    turn_texts: list[str] = []
+
+    class FakeASR:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, audio_input, language=None):
+            self.calls += 1
+            if self.calls == 1:
+                return ASRResult(text="Salut", language="auto")
+            return ASRResult(text="Bonjour", language="fr")
+
+    class FakeState:
+        config = {"asr": {"min_audio_ms": 0}}
+        current_language = "fr"
+        asr_language = ""
+
+        def __init__(self):
+            self.asr = FakeASR()
+
+        def get_asr(self):
+            return self.asr
+
+    async def fake_send_json(_client_id, _data):
+        return None
+
+    async def fake_text_turn(_client_id, content, **_kwargs):
+        turn_texts.append(content)
+
+    state = FakeState()
+    manager.states[client_id] = state
+    manager.send_json = fake_send_json  # type: ignore[method-assign]
+    manager._handle_text_message_turn = fake_text_turn  # type: ignore[method-assign]
+
+    await manager._transcribe_and_respond_turn(client_id, b"\x00\x00" * 32000)
+
+    assert state.asr.calls == 2
+    assert turn_texts == ["Bonjour"]
