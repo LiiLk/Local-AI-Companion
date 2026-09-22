@@ -245,13 +245,13 @@ class ReasoningMarkerRouter:
         self._held += chunk
         candidate = self._held.lstrip()
         if not candidate:
-            # Only whitespace so far: keep holding, but do not hold forever.
-            if len(self._held) >= _MAX_LEADING_WHITESPACE:
-                self._resolved = True
-                self.decision = "direct"
-                released = self._held
-                self._held = ""
-                return released
+            # Only whitespace so far: keep holding and keep waiting for the
+            # first non-whitespace character, but drop the excess beyond the
+            # memory bound. Resolving here as "direct" would swallow a marker
+            # that arrives afterwards (the stripper removes it, leaving the
+            # user with an empty answer).
+            if len(self._held) > _MAX_LEADING_WHITESPACE:
+                self._held = self._held[-_MAX_LEADING_WHITESPACE:]
             return ""
 
         decision = self._classify(candidate)
@@ -283,15 +283,29 @@ class ReasoningMarkerRouter:
 def build_routing_messages(messages: list[Message], routing_prompt: str) -> list[Message]:
     """Return the first-call messages with the routing instruction added.
 
-    The instruction is inserted just before the last user message so that
-    provider adapters which treat the final user message as the current prompt
-    (e.g. ``GemmaTextVisionLLM._split_messages``) still see it last. It stays
-    close to the end of the conversation, next to the request being routed.
+    The instruction is merged into the *content* of the last user message
+    (prefixed), the same per-turn pattern used by
+    ``ConversationPipeline._build_llm_messages``. Inserting a second
+    ``role="system"`` message mid-conversation breaks providers whose chat
+    templates require a single leading system message followed by strict
+    user/assistant alternation (e.g. the Gemma adapter's ``_split_messages``
+    plus ``apply_chat_template``), so the instruction travels with the user
+    turn instead.
+
+    A new list and a new final ``Message`` are returned; the caller's message
+    objects are never mutated. When the last message is not a user turn (not
+    the case for the normal pipeline, which always ends on a user message) the
+    routing instruction is appended as a trailing system message as a
+    documented fallback, rather than being dropped.
     """
-    instruction = Message(role="system", content=routing_prompt)
     if messages and messages[-1].role == "user":
-        return [*messages[:-1], instruction, messages[-1]]
-    return [*messages, instruction]
+        last_user = messages[-1]
+        merged = Message(
+            role="user",
+            content=f"{routing_prompt}\n\n{last_user.content}",
+        )
+        return [*messages[:-1], merged]
+    return [*messages, Message(role="system", content=routing_prompt)]
 
 
 def accepts_options_override(llm: Any) -> bool:

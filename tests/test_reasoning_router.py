@@ -141,12 +141,40 @@ def test_router_classifies_marker_after_leading_whitespace():
     assert router.decision == "think"
 
 
-def test_router_releases_whitespace_only_stream_without_stalling():
+def test_router_bounds_whitespace_only_stream_without_resolving():
     router = ReasoningMarkerRouter()
 
     released = router.feed(" " * 64)
 
-    assert released == " " * 64
+    assert released == ""
+    assert router.resolved is False
+    # The holdback is bounded; the excess whitespace may be dropped.
+    assert len(router.flush()) <= reasoning_router._MAX_LEADING_WHITESPACE
+    assert router.decision == "direct"
+
+
+def test_router_does_not_resolve_whitespace_cap_then_detects_marker():
+    router = ReasoningMarkerRouter()
+
+    released = ""
+    for _ in range(20):
+        released += router.feed(" ")
+
+    assert released == ""
+    assert router.resolved is False
+    assert router.feed("<|THINK|>") == ""
+    assert router.decision == "think"
+
+
+def test_router_does_not_resolve_whitespace_cap_then_releases_direct():
+    router = ReasoningMarkerRouter()
+
+    for _ in range(20):
+        router.feed(" ")
+
+    released = router.feed("Hello")
+
+    assert released.strip() == "Hello"
     assert router.resolved is True
     assert router.decision == "direct"
 
@@ -224,14 +252,48 @@ def test_from_dict_reads_custom_values():
     assert config.routing_prompt == "Route this."
 
 
-def test_build_routing_messages_keeps_last_user_message_last():
+def test_build_routing_messages_merges_instruction_into_last_user():
     messages = [Message(role="system", content="sys"), Message(role="user", content="hi")]
 
     routed = build_routing_messages(messages, "route")
 
-    assert [message.role for message in routed] == ["system", "system", "user"]
-    assert routed[-1] == Message(role="user", content="hi")
-    assert routed[-2].content == "route"
+    assert [message.role for message in routed] == ["system", "user"]
+    assert routed[-1].content == "route\n\nhi"
+    # The caller's message objects are never mutated.
+    assert messages[-1].content == "hi"
+
+
+def test_build_routing_messages_keeps_single_system_with_full_history():
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="user", content="hi"),
+        Message(role="assistant", content="hello"),
+        Message(role="user", content="again"),
+    ]
+
+    routed = build_routing_messages(messages, "route")
+
+    assert sum(1 for message in routed if message.role == "system") == 1
+    assert [message.role for message in routed] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert routed[-1].content == "route\n\nagain"
+    assert messages[-1].content == "again"
+
+
+def test_build_routing_messages_appends_system_when_no_trailing_user():
+    messages = [
+        Message(role="system", content="sys"),
+        Message(role="assistant", content="a"),
+    ]
+
+    routed = build_routing_messages(messages, "route")
+
+    assert [message.role for message in routed] == ["system", "assistant", "system"]
+    assert routed[-1].content == "route"
 
 
 def test_routing_messages_preserve_gemma_current_prompt():
@@ -240,8 +302,8 @@ def test_routing_messages_preserve_gemma_current_prompt():
 
     latest, history = GemmaTextVisionLLM._split_messages(None, routed)
 
-    assert latest == "hi"
-    assert any(entry["content"][0]["text"] == "route" for entry in history)
+    assert latest == "route\n\nhi"
+    assert [entry["role"] for entry in history] == ["system"]
 
 
 def test_accepts_options_override_detects_support():
@@ -266,9 +328,9 @@ async def test_direct_reply_uses_single_call_with_base_effort():
     assert len(llm.calls) == 1
     messages, override = llm.calls[0]
     assert override == {"reasoning": {"effort": "none"}}
+    assert len(messages) == 1
     assert messages[-1].role == "user"
-    assert messages[-2].role == "system"
-    assert messages[-2].content == config.routing_prompt
+    assert messages[-1].content == f"{config.routing_prompt}\n\nhi"
 
 
 @pytest.mark.asyncio

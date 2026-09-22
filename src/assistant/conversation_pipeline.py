@@ -878,6 +878,7 @@ class ConversationPipeline:
         """Get full LLM response (non-streaming TTS mode)."""
         full_response = ""
         first_token_seen = False
+        filler_task: Optional[asyncio.Task] = None
 
         async def _on_escalation(
             decision: str,
@@ -885,35 +886,61 @@ class ConversationPipeline:
             filler: str,
             first_token_epoch_ms: Optional[int] = None,
         ) -> None:
+            nonlocal filler_task
             if (
                 first_token_epoch_ms is not None
                 and trace is not None
                 and "llm_first_token_epoch_ms" not in trace
             ):
                 trace["llm_first_token_epoch_ms"] = first_token_epoch_ms
-            await self._synthesize_and_send(filler, run_id, trace)
+            # Speak the filler while the escalated call runs. Awaiting the
+            # synthesis here would serialize the slow TTS (and RVC) ahead of
+            # the second LLM call instead of overlapping them.
+            if filler_task is None:
+                filler_task = asyncio.create_task(
+                    self._synthesize_and_send(filler, run_id, trace)
+                )
+
+        async def _drain_filler_task() -> None:
+            """Wait for the filler audio so it stays ordered before the answer."""
+            if filler_task is None:
+                return
+            try:
+                await filler_task
+            except asyncio.CancelledError:
+                if not filler_task.cancelled():
+                    filler_task.cancel()
+                raise
+            except Exception:
+                logger.warning("Filler synthesis failed", exc_info=True)
 
         reasoning_config = (
             self.config.adaptive_reasoning if use_adaptive_reasoning else None
         )
-        async for chunk in stream_llm_with_adaptive_reasoning(
-            self.llm,
-            messages,
-            reasoning_config,
-            on_escalation=_on_escalation,
-            language_code=filler_language_code,
-        ):
-            self._ensure_run_active(run_id)
-            if not first_token_seen:
-                first_token_seen = True
-                get_turn_latency_tracker().mark("llm_first_token")
-                if trace is not None and "llm_first_token_epoch_ms" not in trace:
-                    trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
-            full_response += chunk
-            if emit_chunks and self.on_response_chunk:
-                await self._call_async(self.on_response_chunk, chunk)
-            self._ensure_run_active(run_id)
-        
+        try:
+            async for chunk in stream_llm_with_adaptive_reasoning(
+                self.llm,
+                messages,
+                reasoning_config,
+                on_escalation=_on_escalation,
+                language_code=filler_language_code,
+            ):
+                self._ensure_run_active(run_id)
+                if not first_token_seen:
+                    first_token_seen = True
+                    get_turn_latency_tracker().mark("llm_first_token")
+                    if trace is not None and "llm_first_token_epoch_ms" not in trace:
+                        trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
+                full_response += chunk
+                if emit_chunks and self.on_response_chunk:
+                    await self._call_async(self.on_response_chunk, chunk)
+                self._ensure_run_active(run_id)
+        finally:
+            # Never leave the filler task orphaned: on cancellation it is
+            # cancelled, otherwise it is awaited before the caller synthesizes
+            # the final answer (filler audio -> answer audio ordering).
+            await _drain_filler_task()
+
         return full_response
     
     async def _stream_response_with_tts(

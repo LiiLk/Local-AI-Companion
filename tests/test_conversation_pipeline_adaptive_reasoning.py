@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import time
 import wave
 
 from src.assistant.conversation_pipeline import ConversationConfig, ConversationPipeline
@@ -49,6 +50,22 @@ class KokoroProvider:
         pass
 
 
+class SlowSynthTTS(KokoroProvider):
+    """Records synthesis timing; each synth takes ``delay`` seconds."""
+
+    def __init__(self, delay: float = 0.1):
+        super().__init__()
+        self.delay = delay
+        self.intervals = []
+
+    async def synthesize(self, text, output_path=None):
+        started = time.perf_counter()
+        await asyncio.sleep(self.delay)
+        finished = time.perf_counter()
+        self.intervals.append((text, started, finished))
+        return await super().synthesize(text, output_path)
+
+
 class AdaptiveLLM:
     """Fake LLM that records messages and per-request overrides."""
 
@@ -72,6 +89,19 @@ class SlowSecondCallLLM(AdaptiveLLM):
         if index >= 1:
             await asyncio.sleep(0.05)
         for chunk in self._scripts[index]:
+            yield chunk
+
+
+class TimedAdaptiveLLM(AdaptiveLLM):
+    """Records the wall-clock start time of every ``chat_stream`` call."""
+
+    def __init__(self, scripts):
+        super().__init__(scripts)
+        self.call_started = []
+
+    async def chat_stream(self, messages, options_override=None):
+        self.call_started.append(time.perf_counter())
+        async for chunk in super().chat_stream(messages, options_override):
             yield chunk
 
 
@@ -268,3 +298,28 @@ def test_direct_reply_trace_keeps_llm_first_token_before_tts():
     assert (
         trace["llm_first_token_epoch_ms"] <= trace["tts_first_chunk_epoch_ms"]
     )
+
+
+def test_non_streaming_filler_synthesis_does_not_block_escalated_llm_call():
+    adaptive = AdaptiveReasoningConfig.from_dict({"enabled": True})
+    llm = TimedAdaptiveLLM([["<|THINK|>"], ["The hard answer."]])
+    tts = SlowSynthTTS(delay=0.1)
+    payloads, chunks = [], []
+
+    _pipeline, result = _run(
+        llm, tts, payloads, chunks, stream_tts=False, adaptive=adaptive
+    )
+
+    assert result == "The hard answer."
+    assert len(llm.call_started) == 2
+    filler_text = tts.calls[0]
+    filler_end = next(
+        finished
+        for text, _started, finished in tts.intervals
+        if text == filler_text
+    )
+    # The escalated LLM call starts while the filler is still synthesizing.
+    assert llm.call_started[1] < filler_end
+    # Filler audio is delivered before the answer audio.
+    assert payloads[0].text == filler_text
+    assert payloads[-1].text == "The hard answer."
