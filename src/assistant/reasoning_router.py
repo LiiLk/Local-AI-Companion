@@ -312,6 +312,23 @@ def accepts_options_override(llm: Any) -> bool:
     )
 
 
+def accepts_first_token_kwarg(callback: Any) -> bool:
+    """Return True when ``callback`` can take ``first_token_epoch_ms``."""
+    if not callable(callback):
+        return False
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return False
+    parameters = signature.parameters
+    if "first_token_epoch_ms" in parameters:
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 async def _chat_stream(
     llm: Any,
     messages: list[Message],
@@ -351,6 +368,7 @@ async def stream_llm_with_adaptive_reasoning(
     base_override = {"reasoning": {"effort": config.base_effort}}
     started = time.perf_counter()
     first_chunk_ms: Optional[float] = None
+    first_token_epoch_ms: Optional[int] = None
     router = ReasoningMarkerRouter()
     stripper = MarkerStrippingFilter()
 
@@ -361,6 +379,7 @@ async def stream_llm_with_adaptive_reasoning(
         async for chunk in stream:
             if first_chunk_ms is None:
                 first_chunk_ms = (time.perf_counter() - started) * 1000.0
+                first_token_epoch_ms = int(time.time() * 1000)
                 # The first routing chunk is the first token of the turn; mark
                 # it before any escalation so ``first_sentence`` cannot precede
                 # it in the canonical turn_latency order.
@@ -402,7 +421,16 @@ async def stream_llm_with_adaptive_reasoning(
     )
 
     if on_escalation is not None:
-        await on_escalation(decision, effort, config.pick_filler(language_code))
+        filler = config.pick_filler(language_code)
+        if accepts_first_token_kwarg(on_escalation):
+            await on_escalation(
+                decision,
+                effort,
+                filler,
+                first_token_epoch_ms=first_token_epoch_ms,
+            )
+        else:
+            await on_escalation(decision, effort, filler)
 
     escalated_override = {
         "reasoning": {"effort": effort},

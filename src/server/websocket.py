@@ -1569,8 +1569,18 @@ class WebSocketManager:
             state.config.get("llm", {}).get("adaptive_reasoning")
         )
 
-        async def _on_escalation(decision: str, effort: str, filler: str) -> None:
+        async def _on_escalation(
+            decision: str,
+            effort: str,
+            filler: str,
+            first_token_epoch_ms: Optional[int] = None,
+        ) -> None:
             nonlocal first_sentence_logged
+            if (
+                first_token_epoch_ms is not None
+                and "llm_first_token_epoch_ms" not in trace_data
+            ):
+                trace_data["llm_first_token_epoch_ms"] = first_token_epoch_ms
             if not first_sentence_logged:
                 first_sentence_logged = True
                 trace_data["tts_first_chunk_epoch_ms"] = int(time.time() * 1000)

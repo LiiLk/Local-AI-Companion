@@ -879,7 +879,18 @@ class ConversationPipeline:
         full_response = ""
         first_token_seen = False
 
-        async def _on_escalation(decision: str, effort: str, filler: str) -> None:
+        async def _on_escalation(
+            decision: str,
+            effort: str,
+            filler: str,
+            first_token_epoch_ms: Optional[int] = None,
+        ) -> None:
+            if (
+                first_token_epoch_ms is not None
+                and trace is not None
+                and "llm_first_token_epoch_ms" not in trace
+            ):
+                trace["llm_first_token_epoch_ms"] = first_token_epoch_ms
             await self._synthesize_and_send(filler, run_id, trace)
 
         reasoning_config = (
@@ -1007,9 +1018,20 @@ class ConversationPipeline:
             for queued in sentences:
                 await _queue_sentence(queued)
 
-        async def _on_escalation(decision: str, effort: str, filler: str) -> None:
+        async def _on_escalation(
+            decision: str,
+            effort: str,
+            filler: str,
+            first_token_epoch_ms: Optional[int] = None,
+        ) -> None:
             # Speak the waiting phrase right away; it is never part of the
             # recorded response or of the routing marker stream.
+            if (
+                first_token_epoch_ms is not None
+                and trace is not None
+                and "llm_first_token_epoch_ms" not in trace
+            ):
+                trace["llm_first_token_epoch_ms"] = first_token_epoch_ms
             await _queue_sentence(filler)
 
         try:
@@ -1026,7 +1048,7 @@ class ConversationPipeline:
                 if not first_llm_chunk_logged:
                     first_llm_chunk_logged = True
                     get_turn_latency_tracker().mark("llm_first_token")
-                    if trace is not None:
+                    if trace is not None and "llm_first_token_epoch_ms" not in trace:
                         trace["llm_first_token_epoch_ms"] = int(time.time() * 1000)
                     logger.info(
                         "First LLM chunk after %.1f ms: %r",

@@ -63,6 +63,18 @@ class AdaptiveLLM:
             yield chunk
 
 
+class SlowSecondCallLLM(AdaptiveLLM):
+    """Escalated call delays its first chunk so the filler audio wins the race."""
+
+    async def chat_stream(self, messages, options_override=None):
+        self.calls.append((messages, options_override))
+        index = min(len(self.calls) - 1, len(self._scripts) - 1)
+        if index >= 1:
+            await asyncio.sleep(0.05)
+        for chunk in self._scripts[index]:
+            yield chunk
+
+
 def _run(llm, tts, payloads, chunks, *, stream_tts=True, adaptive=None):
     config = ConversationConfig(
         stream_tts=stream_tts,
@@ -208,3 +220,51 @@ def test_language_guard_rewrite_bypasses_adaptive_routing():
     # The internal rewrite must not receive the routing instruction.
     assert llm.calls[1][0][-1].role == "user"
     assert llm.calls[1][1] is None
+
+
+def test_escalation_filler_payload_carries_llm_first_token_before_tts():
+    adaptive = AdaptiveReasoningConfig.from_dict({"enabled": True})
+    llm = SlowSecondCallLLM([["<|THINK|>"], ["Paris is the capital of France."]])
+    tts = KokoroProvider()
+    payloads, chunks = [], []
+
+    _pipeline, result = _run(llm, tts, payloads, chunks, adaptive=adaptive)
+
+    assert result == "Paris is the capital of France."
+    assert tts.calls[0] in adaptive.filler_phrases
+    assert len(payloads) >= 2
+    filler_trace = payloads[0].trace
+    answer_trace = payloads[-1].trace
+
+    assert "llm_first_token_epoch_ms" in filler_trace
+    assert "tts_first_chunk_epoch_ms" in filler_trace
+    assert (
+        filler_trace["llm_first_token_epoch_ms"]
+        <= filler_trace["tts_first_chunk_epoch_ms"]
+    )
+    # The second call must not overwrite the routing timestamp.
+    assert (
+        answer_trace["llm_first_token_epoch_ms"]
+        == filler_trace["llm_first_token_epoch_ms"]
+    )
+    assert (
+        answer_trace["llm_first_token_epoch_ms"]
+        <= answer_trace["tts_first_chunk_epoch_ms"]
+    )
+
+
+def test_direct_reply_trace_keeps_llm_first_token_before_tts():
+    adaptive = AdaptiveReasoningConfig.from_dict({"enabled": True})
+    llm = AdaptiveLLM([["The stars are bright tonight."]])
+    tts = KokoroProvider()
+    payloads, chunks = [], []
+
+    _pipeline, result = _run(llm, tts, payloads, chunks, adaptive=adaptive)
+
+    assert result == "The stars are bright tonight."
+    assert len(llm.calls) == 1
+    assert len(payloads) == 1
+    trace = payloads[0].trace
+    assert (
+        trace["llm_first_token_epoch_ms"] <= trace["tts_first_chunk_epoch_ms"]
+    )

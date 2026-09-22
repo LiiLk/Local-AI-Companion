@@ -438,6 +438,50 @@ async def test_first_routing_chunk_marks_llm_first_token_before_escalation(monke
     assert tracker.events == ["llm_first_token", "reasoning_escalated", "escalation"]
 
 
+@pytest.mark.asyncio
+async def test_escalation_passes_preexisting_first_token_epoch_ms_to_callback():
+    llm = RecordingLLM([["<|THINK|>"], ["The answer."]])
+    config = _enabled()
+    received = {}
+
+    async def on_escalation(decision, effort, filler, first_token_epoch_ms=None):
+        received["value"] = first_token_epoch_ms
+
+    chunks = await _collect(
+        stream_llm_with_adaptive_reasoning(
+            llm,
+            [Message(role="user", content="hi")],
+            config,
+            on_escalation=on_escalation,
+        )
+    )
+
+    assert chunks == ["The answer."]
+    assert isinstance(received["value"], int)
+
+
+@pytest.mark.asyncio
+async def test_positional_three_arg_escalation_callback_still_supported():
+    llm = RecordingLLM([["<|THINK|>"], ["The answer."]])
+    config = _enabled()
+    events = []
+
+    async def on_escalation(decision, effort, filler):
+        events.append((decision, effort, filler))
+
+    chunks = await _collect(
+        stream_llm_with_adaptive_reasoning(
+            llm,
+            [Message(role="user", content="hi")],
+            config,
+            on_escalation=on_escalation,
+        )
+    )
+
+    assert chunks == ["The answer."]
+    assert len(events) == 1
+
+
 def test_pick_filler_selects_phrase_by_language():
     config = AdaptiveReasoningConfig.from_dict(
         {
