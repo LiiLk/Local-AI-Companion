@@ -20,6 +20,10 @@ faster-whisper>=1.0.0  # Optimized Whisper (4x faster)
 sounddevice>=0.4.0     # Microphone audio capture
 huggingface_hub>=0.20.0  # For downloading optimized French models
 
+# Semantic end-of-turn detection (Smart Turn v3.2)
+onnxruntime>=1.18.0    # ONNX CPU inference for Smart Turn (also pulled by silero-vad)
+transformers>=4.51.0   # WhisperFeatureExtractor for Smart Turn
+
 # Web Server
 fastapi>=0.136.1       # Async web framework
 uvicorn>=0.24.0        # ASGI server

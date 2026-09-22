@@ -1,5 +1,6 @@
 import logging
 import re
+import sys
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -308,6 +309,48 @@ def test_detector_disables_once_when_download_fails(monkeypatch, caplog):
     assert sum("disabled" in r.message for r in caplog.records) == 1
 
 
+def test_missing_optional_dependencies_logs_single_install_hint(monkeypatch, caplog):
+    monkeypatch.setattr(smart_turn, "_missing_deps_warned", False, raising=False)
+    monkeypatch.setattr(smart_turn, "onnxruntime", None)
+    monkeypatch.setattr(smart_turn, "WhisperFeatureExtractor", None)
+    monkeypatch.setattr(smart_turn, "hf_hub_download", lambda **kwargs: "model.onnx")
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
+    monkeypatch.setitem(sys.modules, "transformers", None)
+
+    detector_one = SmartTurnDetector(SmartTurnConfig(enabled=True))
+    detector_two = SmartTurnDetector(SmartTurnConfig(enabled=True))
+
+    with caplog.at_level(logging.WARNING):
+        assert detector_one.warmup() is False
+        assert detector_two.warmup() is False
+
+    hints = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "pip install" in record.getMessage()
+    ]
+    assert len(hints) == 1
+    assert "onnxruntime" in hints[0]
+    assert "transformers" in hints[0]
+
+
+def test_requirements_declare_smart_turn_dependencies():
+    requirements = (
+        Path(__file__).resolve().parents[1] / "requirements.txt"
+    ).read_text(encoding="utf-8")
+    packages = [
+        line.strip().lower()
+        for line in requirements.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "-"))
+    ]
+
+    def declares(package: str) -> bool:
+        return any(re.match(rf"^{package}\s*>=", line) for line in packages)
+
+    assert declares("transformers"), "transformers must be a base runtime dependency"
+    assert declares("onnxruntime"), "onnxruntime must be a base runtime dependency"
+
+
 def test_detector_loads_via_huggingface_hub_and_uses_cpu_provider(monkeypatch):
     created = {}
 
@@ -444,7 +487,7 @@ def test_save_debug_wav_is_disabled_without_directory():
 
 def test_save_debug_wav_prunes_to_max_files_keeping_newest(tmp_path):
     for index in range(205):
-        (tmp_path / f"20260101-0000{index:02d}_complete_p0.90.wav").write_bytes(b"x")
+        (tmp_path / f"20260101-{index:06d}_complete_p0.90.wav").write_bytes(b"x")
 
     save_debug_wav(str(tmp_path), np.zeros(160, dtype=np.float32), 16000, "complete", 0.9)
 
@@ -452,6 +495,28 @@ def test_save_debug_wav_prunes_to_max_files_keeping_newest(tmp_path):
     assert len(remaining) == 200
     assert remaining[-1].endswith("_complete_p0.90.wav")
     assert "20260101-000000_complete_p0.90.wav" not in remaining
+
+
+def test_save_debug_wav_prunes_only_detector_generated_files(tmp_path):
+    foreign = []
+    for name in ("000_custom.wav", "00_custom.wav", "0_custom.wav"):
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        foreign.append(path)
+    for index in range(205):
+        (tmp_path / f"20260101-{index:06d}_complete_p0.90.wav").write_bytes(b"x")
+
+    save_debug_wav(str(tmp_path), np.zeros(160, dtype=np.float32), 16000, "complete", 0.9)
+
+    detector_pattern = re.compile(
+        r"\d{8}-\d{6}_(?:complete|uncertain|incomplete)_p\d\.\d{2}(?:_\d{3})?\.wav"
+    )
+    remaining_detector = sorted(
+        p.name for p in tmp_path.glob("*.wav") if detector_pattern.fullmatch(p.name)
+    )
+    assert len(remaining_detector) == 200
+    for path in foreign:
+        assert path.exists(), f"{path.name} should not be pruned"
 
 
 def test_predict_saves_debug_audio_when_configured(tmp_path):

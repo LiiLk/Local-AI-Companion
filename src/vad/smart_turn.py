@@ -24,6 +24,7 @@ fixed ``speech_commit_delay_ms`` delay.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import wave
@@ -49,41 +50,55 @@ SMART_TURN_THRESHOLD = 0.5
 SMART_TURN_UNCERTAIN_THRESHOLD = 0.15
 # Maximum number of debug WAVs kept when debug_save_dir is enabled.
 SMART_TURN_DEBUG_MAX_FILES = 200
+# Only files the detector itself writes (see ``save_debug_wav``) may be pruned.
+_DEBUG_WAV_NAME_PATTERN = re.compile(
+    r"\d{8}-\d{6}_(?:complete|uncertain|incomplete)_p\d\.\d{2}(?:_\d{3})?\.wav"
+)
 
 # Optional dependencies are imported lazily so the module stays importable in
 # environments that only run the fixed-delay path. Tests inject fakes here.
 onnxruntime = None
 hf_hub_download = None
 WhisperFeatureExtractor = None
+# The missing-dependency WARNING is emitted at most once per process.
+_missing_deps_warned = False
 
 
 def _ensure_optional_deps() -> bool:
-    global onnxruntime, hf_hub_download, WhisperFeatureExtractor
+    global onnxruntime, hf_hub_download, WhisperFeatureExtractor, _missing_deps_warned
 
+    missing = []
     if onnxruntime is None:
         try:
             import onnxruntime as _onnxruntime
 
             onnxruntime = _onnxruntime
         except Exception:
-            logger.debug("onnxruntime unavailable for Smart Turn", exc_info=True)
-            return False
+            missing.append("onnxruntime")
     if hf_hub_download is None:
         try:
             from huggingface_hub import hf_hub_download as _hf_hub_download
 
             hf_hub_download = _hf_hub_download
         except Exception:
-            logger.debug("huggingface_hub unavailable for Smart Turn", exc_info=True)
-            return False
+            missing.append("huggingface_hub")
     if WhisperFeatureExtractor is None:
         try:
             from transformers import WhisperFeatureExtractor as _feature_extractor
 
             WhisperFeatureExtractor = _feature_extractor
         except Exception:
-            logger.debug("transformers unavailable for Smart Turn", exc_info=True)
-            return False
+            missing.append("transformers")
+    if missing:
+        if not _missing_deps_warned:
+            _missing_deps_warned = True
+            logger.warning(
+                "Smart Turn (turn_detection) is enabled but its optional "
+                "dependencies are missing (%s); falling back to the fixed speech "
+                "commit delay. Install them with: pip install -r requirements.txt",
+                ", ".join(missing),
+            )
+        return False
     return True
 
 
@@ -325,7 +340,10 @@ def save_debug_wav(
 
 def _prune_debug_wavs(directory: Path, max_files: int) -> None:
     try:
-        files = sorted(directory.glob("*.wav"), key=lambda item: item.name)
+        files = sorted(
+            (item for item in directory.glob("*.wav") if _DEBUG_WAV_NAME_PATTERN.fullmatch(item.name)),
+            key=lambda item: item.name,
+        )
     except OSError:
         return
     if len(files) <= max_files:
