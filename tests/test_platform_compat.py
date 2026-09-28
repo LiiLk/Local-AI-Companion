@@ -275,8 +275,10 @@ def test_kill_process_tree_uses_taskkill_on_windows(monkeypatch):
 
 def test_resolve_python_converts_absolute_windows_drive_before_join(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_compat, "is_windows", lambda: False)
+    project_root = tmp_path / "project"
+    project_root.mkdir()
     linux_python = _executable(
-        Path("/tmp") / "codex-mnt-c" / "Users" / "Ada" / "Local-AI-Companion" / "venv" / "bin" / "python"
+        tmp_path / "external" / "Users" / "Ada" / "Local-AI-Companion" / "venv" / "bin" / "python"
     )
     monkeypatch.setattr(
         platform_compat,
@@ -286,8 +288,32 @@ def test_resolve_python_converts_absolute_windows_drive_before_join(tmp_path, mo
 
     resolved = platform_compat.resolve_python_executable(
         r"C:\Users\Ada\Local-AI-Companion\venv\Scripts\python.exe",
-        project_root=tmp_path,
+        project_root=project_root,
     )
 
     assert resolved == linux_python.absolute()
-    assert not str(resolved).startswith(str(tmp_path))
+    assert not resolved.is_relative_to(project_root)
+
+
+@pytest.mark.parametrize("force_kill", [False, True])
+def test_kill_process_tree_falls_back_when_taskkill_fails(monkeypatch, force_kill):
+    process = _FakeProcess()
+    monkeypatch.setattr(platform_compat, "is_windows", lambda: True)
+    monkeypatch.setattr(
+        platform_compat.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "failed"),
+    )
+
+    def wait(timeout):
+        process.wait_calls.append(timeout)
+        if force_kill and not process.killed:
+            raise subprocess.TimeoutExpired("test-worker", timeout)
+        return 0
+
+    process.wait = wait
+    platform_compat.kill_process_tree(process, timeout=0.1)
+
+    assert process.terminated
+    assert process.killed is force_kill
+    assert process.wait_calls == ([0.1, 0.1] if force_kill else [0.1])
