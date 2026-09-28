@@ -7,7 +7,7 @@ Allows easy switching between different AI personalities (March 7th, Juri, Clipp
 
 import yaml
 import logging
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -30,14 +30,14 @@ def resolve_live2d_model_config(config: dict) -> tuple[str | None, str | None]:
         return None, None
     if (
         "://" in model_path
-        or Path(model_path).is_absolute()
+        or PurePosixPath(model_path).is_absolute()
         or PureWindowsPath(model_path).is_absolute()
     ):
         logger.warning("Live2D model path must be relative to the project: %s", model_path)
         return None, None
     if (
         "://" in model_name
-        or Path(model_name).is_absolute()
+        or PurePosixPath(model_name).is_absolute()
         or PureWindowsPath(model_name).is_absolute()
     ):
         logger.warning(
