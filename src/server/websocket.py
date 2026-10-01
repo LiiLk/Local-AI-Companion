@@ -242,6 +242,15 @@ class ConversationState:
         self.rvc = self._get_pipeline_runtime().preload_rvc()
         return self.rvc
 
+    def spawn_rvc_worker(self):
+        """Start RVC early through the shared runtime; defer ready and warmup."""
+        return self._get_pipeline_runtime().spawn_rvc_worker()
+
+    def discard_rvc(self):
+        """Discard the converter owned by an aborted pipeline preload."""
+        self._get_pipeline_runtime().discard_rvc()
+        self.rvc = None
+
     def get_vad(self):
         """Get or create VAD engine (lazy loading)."""
         if self.vad is None:
@@ -2203,6 +2212,8 @@ class WebSocketManager:
 
             else:
                 # Pipeline mode: load VAD, brain, TTS, ASR
+                if state.config.get("tts", {}).get("rvc", {}).get("enabled", False):
+                    await loop.run_in_executor(None, state.spawn_rvc_worker)
                 if not state.vad and is_connected():
                     await safe_send({
                         "type": "model_loading",
@@ -2311,14 +2322,15 @@ class WebSocketManager:
                         "progress": 90
                     })
                     try:
-                        await loop.run_in_executor(None, state.preload_rvc)
-                        logger.info("RVC loaded for %s", client_id)
-                        await safe_send({
-                            "type": "model_loaded",
-                            "model": "rvc",
-                            "message": "RVC ready!",
-                            "progress": 98
-                        })
+                        rvc = await loop.run_in_executor(None, state.preload_rvc)
+                        if rvc is not None:
+                            logger.info("RVC loaded for %s", client_id)
+                            await safe_send({
+                                "type": "model_loaded",
+                                "model": "rvc",
+                                "message": "RVC ready!",
+                                "progress": 98
+                            })
                     except Exception as e:
                         logger.warning("RVC load warning for %s: %s", client_id, e)
 
@@ -2329,6 +2341,7 @@ class WebSocketManager:
                     "progress": 100
                 })
                 logger.info("All models preloaded for %s", client_id)
+                await self._send_pipeline_degraded_status(client_id, state)
 
         except asyncio.CancelledError:
             logger.info("Preloading cancelled for %s", client_id)
@@ -2343,6 +2356,14 @@ class WebSocketManager:
             self._preloading.pop(client_id, None)
             if self._preload_tasks.get(client_id) is asyncio.current_task():
                 self._preload_tasks.pop(client_id, None)
+
+    async def _send_pipeline_degraded_status(self, client_id: str, state: ConversationState):
+        runtime = getattr(state, "pipeline_runtime", None)
+        reason = runtime.collect_degraded_reason() if runtime is not None else None
+        if reason:
+            # Existing error notifications preserve readiness of the base voice.
+            # Send after models_ready so the desktop does not hide the warning.
+            await self.send_json(client_id, {"type": "error", "message": reason})
 
     async def preload_models(self, client_id: str):
         """Preload all models when user clicks mic."""
@@ -2373,6 +2394,7 @@ class WebSocketManager:
                     "type": "models_ready",
                     "message": "Models already loaded"
                 })
+                await self._send_pipeline_degraded_status(client_id, state)
                 return
 
         self._preloading[client_id] = True
@@ -2398,6 +2420,8 @@ class WebSocketManager:
                     await loop.run_in_executor(None, state.get_vad)
 
             else:
+                if state.config.get("tts", {}).get("rvc", {}).get("enabled", False):
+                    await loop.run_in_executor(None, state.spawn_rvc_worker)
                 if not state.vad:
                     await loop.run_in_executor(None, state.get_vad)
                 if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
@@ -2413,8 +2437,11 @@ class WebSocketManager:
                 "type": "models_ready",
                 "message": "Voice models loaded!"
             })
+            await self._send_pipeline_degraded_status(client_id, state)
 
         except Exception as e:
+            if state.mode == "pipeline":
+                state.discard_rvc()
             logger.exception("Model preloading error for %s", client_id)
             await self.send_json(client_id, {
                 "type": "error",

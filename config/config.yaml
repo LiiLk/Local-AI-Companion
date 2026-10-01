@@ -251,6 +251,10 @@ tts:
     index_rate: 0.0
     protect: 0.33
     output_freq: null
+    # Worker ready handshake (Python imports, CUDA and model initialization).
+    startup_timeout_sec: 90
+    # Per-phrase conversion budget, also used by the RVC warmup conversion.
+    request_timeout_sec: 15
 
 asr:
   # Provider choices:

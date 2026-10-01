@@ -211,6 +211,66 @@ def _make_assistant() -> Live2DAssistant:
     return assistant
 
 
+def test_desktop_preload_profiles_early_rvc_spawn(monkeypatch):
+    assistant = _make_assistant()
+    assistant._running = True
+    assistant.audio_service = None
+    events = []
+    marks = []
+    runtime = SimpleNamespace(
+        llm=object(), asr=object(), tts=object(), rvc=object(),
+        spawn_rvc_worker=lambda: events.append("rvc_spawn"),
+        preload_llm=lambda: events.append("llm"),
+        preload_asr=lambda: events.append("asr"),
+        preload_tts=lambda: events.append("tts"),
+        preload_rvc=lambda: events.append("rvc_ready_and_warmup"),
+        collect_degraded_reason=lambda **_kwargs: None,
+    )
+    assistant._pipeline_runtime = runtime
+    monkeypatch.setattr(assistant, "_mark_startup_step", marks.append)
+    monkeypatch.setattr(assistant, "_finish_startup_profile", lambda state: marks.append(state))
+    monkeypatch.setattr(assistant, "_turn_detection_active", lambda: False)
+    monkeypatch.setattr(assistant, "_set_backend_health", lambda **_kwargs: None)
+    monkeypatch.setattr(assistant, "get_runtime_state", lambda: {})
+
+    assistant._preload_models_and_start_audio()
+
+    assert events == ["rvc_spawn", "llm", "asr", "tts", "rvc_ready_and_warmup"]
+    assert "preload_rvc_spawn_start" in marks
+    assert marks.index("preload_rvc_spawn_done") < marks.index("preload_llm_start")
+    assert marks[-1] == "ready"
+
+
+@pytest.mark.parametrize("abort", ["error", "shutdown"])
+def test_desktop_preload_abort_closes_runtime_after_early_spawn(monkeypatch, abort):
+    assistant = _make_assistant()
+    assistant._running = True
+    assistant._loop = None
+    assistant.audio_service = None
+    events = []
+
+    def preload_llm():
+        events.append("llm")
+        if abort == "error":
+            raise RuntimeError("LLM unavailable")
+        assistant._shutdown_requested.set()
+
+    async def close():
+        events.append("close")
+
+    assistant._pipeline_runtime = SimpleNamespace(
+        spawn_rvc_worker=lambda: events.append("spawn"),
+        preload_llm=preload_llm, close=close,
+    )
+    monkeypatch.setattr(assistant, "_mark_startup_step", lambda _step: None)
+    monkeypatch.setattr(assistant, "_finish_startup_profile", events.append)
+    monkeypatch.setattr(assistant, "_set_backend_health", lambda **_kwargs: None)
+
+    assistant._preload_models_and_start_audio()
+
+    assert events == ["spawn", "llm", "close", abort]
+
+
 def test_request_shutdown_is_idempotent_and_closes_window():
     assistant = _make_assistant()
     assistant._running = True
@@ -778,6 +838,26 @@ def test_get_runtime_state_exposes_backend_health_fields():
     assert runtime["active_tts_provider"] == "qwen3"
     assert runtime["degraded_reason"] is None
     assert runtime["runtime_error"] is None
+
+
+def test_get_runtime_state_exposes_rvc_startup_degradation():
+    assistant = _make_assistant()
+    assistant.config["tts"] = {"rvc": {"enabled": True}}
+    owner = assistant_app.create_pipeline_runtime(assistant.config)
+    assistant._pipeline_runtime = owner
+
+    def fail_preload():
+        raise TimeoutError("startup timed out after 90s")
+
+    owner.rvc = SimpleNamespace(preload=fail_preload, close=lambda: None)
+    owner.preload_rvc()
+    runtime = assistant.get_runtime_state()
+
+    assert runtime["backend_state"] == "degraded"
+    assert runtime["degraded_reason"] == (
+        "RVC unavailable: voice conversion disabled (startup timed out after 90s)"
+    )
+    assert owner.rvc is None
 
 
 def test_listening_state_clears_microphone_degradation_after_capture_recovers():
