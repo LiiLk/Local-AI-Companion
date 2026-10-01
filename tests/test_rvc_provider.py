@@ -187,10 +187,63 @@ def test_worker_default_startup_timeout_is_separate(worker_converter):
     assert worker_converter.request_timeout_sec == 15
 
 
+@pytest.mark.parametrize("elapsed, remaining", [(80.0, 10.0), (120.0, 0.1)])
+def test_worker_startup_uses_budget_since_spawn(
+    worker_converter, monkeypatch, elapsed, remaining,
+):
+    now = [100.0]
+    monkeypatch.setattr(rvc_provider.time, "monotonic", lambda: now[0])
+    worker_converter.spawn_worker()
+    process = worker_converter._worker_process
+    now[0] += elapsed
+    # Reusing the early worker must not restart its startup budget.
+    worker_converter.spawn_worker()
+    timeouts = []
+    original_read = worker_converter._read_worker_response_line
+
+    def read_response(timeout_sec, *, operation="response"):
+        timeouts.append((operation, timeout_sec))
+        return original_read(timeout_sec, operation=operation)
+
+    monkeypatch.setattr(worker_converter, "_read_worker_response_line", read_response)
+    worker_converter.preload()
+
+    assert timeouts == [("startup", pytest.approx(remaining))]
+    assert worker_converter._worker_process is process
+    assert worker_converter._worker_ready is True
+    assert process.stdout.queue == []
+
+
+def test_worker_relaunch_resets_startup_budget(worker_converter, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(rvc_provider.time, "monotonic", lambda: now[0])
+    worker_converter.spawn_worker()
+    now[0] += 120.0
+    worker_converter._terminate_worker_process()
+    timeouts = []
+
+    def popen(*args, **kwargs):
+        # Time spent launching the replacement also counts toward its budget.
+        now[0] += 5.0
+        return FakePopen(*args, **kwargs)
+
+    def read_response(timeout_sec, *, operation="response"):
+        timeouts.append((operation, timeout_sec))
+        return worker_converter._worker_process.stdout.readline()
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", popen)
+    monkeypatch.setattr(worker_converter, "_read_worker_response_line", read_response)
+    worker_converter._relaunch_worker()
+
+    assert timeouts == [("startup", pytest.approx(85.0))]
+    assert worker_converter._worker_ready is True
+
+
 @pytest.mark.parametrize("startup_timeout", [0.5, 90.0])
 def test_worker_startup_and_conversion_use_distinct_timeouts(
     worker_converter, monkeypatch, tmp_path, startup_timeout,
 ):
+    monkeypatch.setattr(rvc_provider.time, "monotonic", lambda: 100.0)
     worker_converter.startup_timeout_sec = startup_timeout
     calls = []
 
@@ -262,6 +315,7 @@ def test_non_worker_spawn_does_not_load_backend(worker_converter, monkeypatch, b
 
 
 def test_worker_relaunch_uses_startup_timeout(worker_converter, monkeypatch):
+    monkeypatch.setattr(rvc_provider.time, "monotonic", lambda: 100.0)
     worker_converter.startup_timeout_sec = 75
     timeouts = []
 

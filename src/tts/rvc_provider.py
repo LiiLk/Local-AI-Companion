@@ -243,6 +243,7 @@ class RVCConverter:
         self._backend_name: str | None = None
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._worker_process: subprocess.Popen[str] | None = None
+        self._worker_started_at: float | None = None
         self._worker_lock = threading.Lock()
         self._worker_stderr: deque[str] = deque(maxlen=50)
         self._worker_stderr_thread: threading.Thread | None = None
@@ -681,6 +682,7 @@ class RVCConverter:
 
     def _reset_worker_state(self) -> None:
         self._worker_process = None
+        self._worker_started_at = None
         self._converter = None
         self._worker_ready = False
 
@@ -822,6 +824,7 @@ class RVCConverter:
                 f"RVC worker script not found: {self.worker_script}"
             )
 
+        self._worker_started_at = time.monotonic()
         self._worker_process = subprocess.Popen(
             self._worker_command(),
             cwd=str(PROJECT_ROOT),
@@ -845,9 +848,15 @@ class RVCConverter:
     def _wait_worker_ready(self) -> None:
         assert self._worker_process is not None
         assert self._worker_process.stdout is not None
+        assert self._worker_started_at is not None
+        # Early spawn and relaunch share a budget starting at process creation.
+        remaining_timeout = max(
+            0.1,
+            self.startup_timeout_sec - (time.monotonic() - self._worker_started_at),
+        )
         try:
             ready_line = self._read_worker_response_line(
-                self.startup_timeout_sec,
+                remaining_timeout,
                 operation="startup",
             ).strip()
             if not ready_line:
