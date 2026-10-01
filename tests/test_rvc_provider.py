@@ -8,6 +8,7 @@ import time
 import sys
 import types
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -250,6 +251,141 @@ def test_concurrent_worker_spawns_create_one_process(worker_converter, monkeypat
     assert all(not thread.is_alive() for thread in threads)
     assert errors == []
     assert len(spawned) == 1
+
+
+@pytest.mark.parametrize("contender_operation", ["spawn_worker", "_load"])
+def test_concurrent_startup_verifies_model_once(
+    worker_converter, monkeypatch, contender_operation,
+):
+    verifying = threading.Event()
+    contender_entered = threading.Event()
+    release_verification = threading.Event()
+    verifications = []
+    processes = []
+    errors = []
+    lock_name = "_startup_lock"
+    original_lock = getattr(worker_converter, lock_name)
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "RVCContender":
+                contender_entered.set()
+            original_lock.acquire()
+
+        def __exit__(self, *args):
+            original_lock.release()
+
+    def verify():
+        verifications.append(threading.current_thread().name)
+        if len(verifications) > 1:
+            contender_entered.set()
+        verifying.set()
+        assert release_verification.wait(5)
+
+    def popen(*args, **kwargs):
+        process = FakePopen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def start(operation):
+        try:
+            getattr(worker_converter, operation)()
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(worker_converter, lock_name, ObservedLock())
+    monkeypatch.setattr(worker_converter, "_ensure_model_files", verify)
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", popen)
+    threads = [
+        threading.Thread(target=start, args=("spawn_worker",), daemon=True),
+        threading.Thread(target=start, args=(contender_operation,), daemon=True, name="RVCContender"),
+    ]
+    threads[0].start()
+    try:
+        assert verifying.wait(5)
+        threads[1].start()
+        assert contender_entered.wait(5)
+    finally:
+        release_verification.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(verifications) == 1
+    assert len(processes) == 1
+    assert worker_converter._worker_process is processes[0]
+
+
+@pytest.mark.parametrize("backend", ["inferrvc", "rvc_inferpy"])
+def test_close_during_in_process_load_discards_model(worker_converter, monkeypatch, backend):
+    loading = threading.Event()
+    release_load = threading.Event()
+    closed = threading.Event()
+    models = []
+    errors = []
+    close_elapsed = []
+
+    class SlowRVC(FakeInferRVC):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.closed = False
+            models.append(self)
+            loading.set()
+            assert release_load.wait(5)
+
+        def load_model(self, path):
+            pass
+
+        def infer_file(self, *args):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    def load():
+        try:
+            worker_converter._load()
+        except Exception as exc:
+            errors.append(exc)
+
+    def close():
+        started = time.monotonic()
+        worker_converter.close()
+        close_elapsed.append(time.monotonic() - started)
+        closed.set()
+
+    worker_converter.backend = backend
+    monkeypatch.setattr(worker_converter, "_inferrvc_api", lambda: (SlowRVC, FakeConfig))
+    monkeypatch.setattr(worker_converter, "_legacy_torch_load_context", nullcontext)
+    monkeypatch.setattr(
+        worker_converter, "_create_legacy_backend",
+        lambda: SlowRVC(model=str(worker_converter.model_path)),
+    )
+    load_thread = threading.Thread(target=load, daemon=True)
+    close_thread = threading.Thread(target=close, daemon=True)
+    load_thread.start()
+    try:
+        assert loading.wait(5)
+        close_thread.start()
+        assert closed.wait(1), "close waited for in-process model loading"
+        assert close_elapsed[0] < 1
+        assert worker_converter._converter is None
+        assert worker_converter._backend_name is None
+    finally:
+        release_load.set()
+        load_thread.join(timeout=5)
+        if close_thread.ident is not None:
+            close_thread.join(timeout=5)
+
+    assert not load_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert worker_converter._converter is None
+    assert worker_converter._backend_name is None
+    assert models[0].closed is True
+    assert len(errors) == 1
+    assert str(errors[0]) == "RVC converter is closed"
 
 
 @pytest.mark.parametrize("operation", [
@@ -495,7 +631,7 @@ def test_concurrent_load_reads_worker_handshake_once(worker_converter, monkeypat
     first_read_started = threading.Event()
     second_load_entered = threading.Event()
     release_ready = threading.Event()
-    lock_name = "_handshake_lock" if hasattr(worker_converter, "_handshake_lock") else "_lifecycle_lock"
+    lock_name = "_startup_lock"
     original_lock = getattr(worker_converter, lock_name)
     original_read = worker_converter._read_worker_response_line
     reads = []
