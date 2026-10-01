@@ -84,6 +84,30 @@ def test_voice_style_prompt_is_omitted_when_empty():
     assert conversation_config.system_prompt == "You are March 7th."
 
 
+def test_build_pipeline_conversation_config_reads_adaptive_reasoning():
+    config = {
+        "llm": {
+            "adaptive_reasoning": {
+                "enabled": True,
+                "base_effort": "none",
+                "escalate_effort": "medium",
+            }
+        }
+    }
+
+    conversation_config = build_pipeline_conversation_config(config)
+
+    assert conversation_config.adaptive_reasoning is not None
+    assert conversation_config.adaptive_reasoning.enabled is True
+    assert conversation_config.adaptive_reasoning.base_effort == "none"
+
+
+def test_build_pipeline_conversation_config_without_adaptive_reasoning():
+    conversation_config = build_pipeline_conversation_config({})
+
+    assert conversation_config.adaptive_reasoning is None
+
+
 def test_transcription_hint_prompt_is_not_in_permanent_system_prompt():
     config = {
         "character": {"name": "March 7th", "system_prompt": "You are March 7th."},

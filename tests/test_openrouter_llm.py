@@ -93,6 +93,69 @@ def test_openrouter_error_text_falls_back_to_exception_type():
     assert OpenRouterLLM._error_text(httpx.ReadTimeout("")) == "ReadTimeout"
 
 
+def test_openrouter_deep_merge_preserves_key_order():
+    base = {
+        "model": "m",
+        "messages": [],
+        "stream": True,
+        "temperature": 0.6,
+        "provider": {"order": ["a", "b"]},
+        "reasoning": {"effort": "high"},
+    }
+    override = {"reasoning": {"effort": "none"}, "max_completion_tokens": 2048}
+
+    merged = OpenRouterLLM._deep_merge(base, override)
+
+    assert list(merged.keys()) == [
+        "model",
+        "messages",
+        "stream",
+        "temperature",
+        "provider",
+        "reasoning",
+        "max_completion_tokens",
+    ]
+    assert merged["provider"] == {"order": ["a", "b"]}
+    assert merged["reasoning"] == {"effort": "none"}
+    assert merged["temperature"] == 0.6
+
+
+@pytest.mark.asyncio
+async def test_openrouter_stream_applies_deep_merged_options_override():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content=(
+                b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+
+    llm = await _make_llm(handler)
+    try:
+        chunks = [
+            chunk
+            async for chunk in llm.chat_stream(
+                [Message(role="user", content="Hi")],
+                options_override={
+                    "reasoning": {"effort": "none"},
+                    "max_completion_tokens": 2048,
+                },
+            )
+        ]
+    finally:
+        await llm.close()
+
+    assert chunks == ["ok"]
+    payload = seen_payloads[0]
+    assert payload["reasoning"] == {"effort": "none"}
+    assert payload["max_completion_tokens"] == 2048
+    assert payload["temperature"] == 0.6
+
+
 def test_openrouter_requires_api_key():
     with pytest.raises(RuntimeError, match="OpenRouter API key is missing"):
         OpenRouterLLM(

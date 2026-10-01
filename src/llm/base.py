@@ -76,12 +76,22 @@ class BaseLLM(ABC):
         pass
     
     @abstractmethod
-    async def chat_stream(self, messages: list[Message]) -> AsyncGenerator[str, None]:
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        options_override: dict | None = None,
+    ) -> AsyncGenerator[str, None]:
         """
         Like chat(), but sends the response word by word (streaming).
         
         More responsive: the user sees the response being typed
         instead of waiting for everything to be generated.
+        
+        Args:
+            messages: List of messages (conversation history)
+            options_override: Optional per-request overrides merged into the
+                provider payload (e.g. reasoning effort). Providers that do not
+                support it may ignore it.
         
         Yields:
             Text chunks progressively

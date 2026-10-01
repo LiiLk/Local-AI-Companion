@@ -13,6 +13,7 @@ from src.assistant.conversation_memory import (
     create_conversation_memory,
 )
 from src.assistant.conversation_pipeline import ConversationConfig
+from src.assistant.reasoning_router import AdaptiveReasoningConfig
 from src.utils.rvc_config import build_rvc_runtime_config
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,9 @@ def build_pipeline_conversation_config(config: dict) -> ConversationConfig:
         auto_detect_language=tts_config.get("auto_detect_language", True),
         asr_language=asr_config.get("language", "auto"),
         reply_language=config.get("pipeline", {}).get("reply_language"),
+        adaptive_reasoning=AdaptiveReasoningConfig.from_dict(
+            config.get("llm", {}).get("adaptive_reasoning")
+        ),
         transcription_hint_prompt=resolve_transcription_hint_prompt(config),
     )
 

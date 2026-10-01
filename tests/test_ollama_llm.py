@@ -126,6 +126,83 @@ def test_ollama_error_text_falls_back_to_exception_type():
 
 
 @pytest.mark.asyncio
+async def test_ollama_stream_maps_reasoning_effort_onto_think():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, content=b'{"message":{"content":"ok"}}\n')
+
+    llm = await _make_llm(handler, think=False)
+    try:
+        chunks = [
+            chunk
+            async for chunk in llm.chat_stream(
+                [Message(role="user", content="Hi")],
+                options_override={"reasoning": {"effort": "medium"}},
+            )
+        ]
+    finally:
+        await llm.close()
+
+    assert chunks == ["ok"]
+    assert seen_payloads[0]["think"] is True
+    assert "reasoning" not in seen_payloads[0]
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_maps_max_completion_tokens_to_num_predict():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, content=b'{"message":{"content":"ok"}}\n')
+
+    llm = await _make_llm(handler, options={"temperature": 0.6})
+    try:
+        chunks = [
+            chunk
+            async for chunk in llm.chat_stream(
+                [Message(role="user", content="Hi")],
+                options_override={
+                    "reasoning": {"effort": "medium"},
+                    "max_completion_tokens": 2048,
+                },
+            )
+        ]
+    finally:
+        await llm.close()
+
+    assert chunks == ["ok"]
+    assert seen_payloads[0]["options"] == {"temperature": 0.6, "num_predict": 2048}
+    assert llm.options == {"temperature": 0.6}
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_maps_none_effort_onto_think_false():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, content=b'{"message":{"content":"ok"}}\n')
+
+    llm = await _make_llm(handler, think=True)
+    try:
+        chunks = [
+            chunk
+            async for chunk in llm.chat_stream(
+                [Message(role="user", content="Hi")],
+                options_override={"reasoning": {"effort": "none"}},
+            )
+        ]
+    finally:
+        await llm.close()
+
+    assert chunks == ["ok"]
+    assert seen_payloads[0]["think"] is False
+
+
+@pytest.mark.asyncio
 async def test_ollama_stream_retries_without_think_when_daemon_rejects_it():
     seen_payloads = []
 
