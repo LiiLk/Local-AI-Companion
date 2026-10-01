@@ -273,6 +273,11 @@ asr:
   # Shorter turns are ignored before the model runs, so no LLM response is
   # produced. Distinct from vad_min_speech_ms, which tunes VAD segmentation.
   min_audio_ms: 700
+  # Desktop only: start transcription as soon as VAD reports speech end and the
+  # assistant is idle, overlapping the end-of-turn commit window (never runs ASR
+  # alongside TTS/RVC on the single GPU). false restores the pre-speculation
+  # behaviour of transcribing only at commit.
+  speculative_on_speech_end: true
   compute_type: "float16"
   device: "cuda"
 

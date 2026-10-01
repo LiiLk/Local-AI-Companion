@@ -277,6 +277,16 @@ def resolve_min_asr_audio_ms(config: dict) -> int:
         return DEFAULT_MIN_ASR_AUDIO_MS
 
 
+def resolve_speculative_asr_enabled(config: dict) -> bool:
+    """Return whether desktop end-of-speech speculative ASR is enabled.
+
+    Defaults to True: the commit window already delays ASR, so transcribing as
+    soon as VAD reports speech end is a pure latency win on the single GPU.
+    """
+    asr_config = (config or {}).get("asr", {}) or {}
+    return bool(asr_config.get("speculative_on_speech_end", True))
+
+
 def build_pipeline_conversation_config(config: dict) -> ConversationConfig:
     character_config = config.get("character", {})
     tts_config = config.get("tts", {})
