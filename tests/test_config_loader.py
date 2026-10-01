@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from src.utils.config_loader import load_yaml_config
 from src.utils.character_loader import (
     resolve_live2d_desktop_model,
@@ -87,3 +89,19 @@ def test_live2d_model_paths_reject_absolute_and_parent_paths():
     assert resolve_live2d_web_model(unserved) == (None, None)
     assert resolve_live2d_web_model(absolute_settings) == (None, None)
     assert resolve_live2d_desktop_model(remote_settings) == (None, None)
+
+
+@pytest.mark.parametrize("absolute_path", [
+    "C:/models/avatar.model3.json",
+    r"C:\models\avatar.model3.json",
+    r"\\server\share\avatar.model3.json",
+    r"\models\avatar.model3.json",
+])
+@pytest.mark.parametrize("field", ["path", "settings_file"])
+def test_live2d_rejects_windows_absolute_paths(absolute_path, field):
+    model = {"path": "assets/models/local", "settings_file": "avatar.model3.json"}
+    model[field] = absolute_path
+    config = {"live2d": {"model": model}}
+
+    assert resolve_live2d_web_model(config) == (None, None)
+    assert resolve_live2d_desktop_model(config) == (None, None)
