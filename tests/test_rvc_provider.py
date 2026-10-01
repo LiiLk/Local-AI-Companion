@@ -1677,3 +1677,29 @@ def test_close_is_not_blocked_by_model_file_verification(worker_converter, monke
     # The spawn rechecks the terminal close after verification: no process.
     assert spawned == []
     assert any("closed" in str(exc) for exc in errors)
+
+
+def test_close_is_not_blocked_by_a_slow_worker_kill(worker_converter, monkeypatch):
+    """kill_process_tree may wait seconds: close() must not wait behind it."""
+    entered_kill = threading.Event()
+    release_kill = threading.Event()
+
+    def slow_kill(process):
+        entered_kill.set()
+        assert release_kill.wait(5)
+        process.terminate()
+
+    monkeypatch.setattr("src.utils.platform_compat.kill_process_tree", slow_kill)
+    worker_converter._worker_process = FakePopen()
+    killer = threading.Thread(target=worker_converter._terminate_worker_process, daemon=True)
+    killer.start()
+    try:
+        assert entered_kill.wait(5)
+        started = time.monotonic()
+        worker_converter.close()
+        assert time.monotonic() - started < 1.0
+        assert worker_converter._closed is True
+        assert worker_converter._worker_process is None
+    finally:
+        release_kill.set()
+        killer.join(timeout=5)

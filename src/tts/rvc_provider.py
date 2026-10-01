@@ -706,23 +706,31 @@ class RVCConverter:
         self._converter = None
         self._worker_ready = False
 
+    def _detach_worker_process(self):
+        """Clear worker state and return the old process. Caller holds lifecycle."""
+        process = self._worker_process
+        self._reset_worker_state()
+        return process
+
+    @staticmethod
+    def _kill_detached_process(process) -> None:
+        """Kill a detached worker. Never call it with the lifecycle lock held:
+        kill_process_tree can wait several seconds."""
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                from src.utils.platform_compat import kill_process_tree
+
+                kill_process_tree(process)
+        except Exception:
+            pass
+
     def _terminate_worker_process(self) -> None:
         """Stop the current worker without closing the converter permanently."""
         with self._lifecycle_lock:
-            process = self._worker_process
-            if process is None:
-                self._reset_worker_state()
-                return
-
-            try:
-                if process.poll() is None:
-                    from src.utils.platform_compat import kill_process_tree
-
-                    kill_process_tree(process)
-            except Exception:
-                pass
-            finally:
-                self._reset_worker_state()
+            process = self._detach_worker_process()
+        self._kill_detached_process(process)
 
     def _raise_if_closed(self) -> None:
         if self._closed:
@@ -819,14 +827,16 @@ class RVCConverter:
         try:
             status, payload = result_queue.get(timeout=max(timeout_sec, 0.1))
         except queue.Empty as exc:
+            dead_process = None
             with self._lifecycle_lock:
                 self._raise_if_closed()
                 # Startup cleanup belongs to the handshake owner, which must
                 # check process identity before clearing or publishing state.
                 if operation != "startup" and self._worker_process is process:
-                    self._terminate_worker_process()
+                    dead_process = self._detach_worker_process()
                     if operation == "response":
                         self._schedule_worker_relaunch()
+            self._kill_detached_process(dead_process)
             raise TimeoutError(
                 f"RVC worker {operation} timed out after {timeout_sec:.1f}s.\n"
                 f"{self._worker_error_summary()}"
@@ -896,20 +906,21 @@ class RVCConverter:
         )
 
         with self._lifecycle_lock:
-            if self._closed:
-                from src.utils.platform_compat import kill_process_tree
-
-                kill_process_tree(process)
-                return
-            self._worker_process = process
-            self._worker_started_at = started_at
-            assert process.stderr is not None
-            stderr_thread = threading.Thread(
-                target=self._drain_worker_stderr,
-                args=(process.stderr,),
-                daemon=True,
-            )
-            self._worker_stderr_thread = stderr_thread
+            closed = self._closed
+            if not closed:
+                self._worker_process = process
+                self._worker_started_at = started_at
+                assert process.stderr is not None
+                stderr_thread = threading.Thread(
+                    target=self._drain_worker_stderr,
+                    args=(process.stderr,),
+                    daemon=True,
+                )
+                self._worker_stderr_thread = stderr_thread
+        if closed:
+            # close() ran during Popen: kill the new process outside the lock.
+            self._kill_detached_process(process)
+            return
         stderr_thread.start()
 
     def _wait_worker_ready(self) -> None:
@@ -959,7 +970,8 @@ class RVCConverter:
             with self._lifecycle_lock:
                 if self._closed or self._worker_process is not process:
                     raise RuntimeError("RVC converter is closed") from exc
-                self._terminate_worker_process()
+                dead_process = self._detach_worker_process()
+            self._kill_detached_process(dead_process)
             raise
 
         with self._lifecycle_lock:
@@ -1293,7 +1305,8 @@ class RVCConverter:
             self._warmed_up = False
             # Do not wait on the request lock or send shutdown via stdin: a
             # conversion may be waiting for the worker or filling its pipe.
-            self._terminate_worker_process()
+            process = self._detach_worker_process()
+        self._kill_detached_process(process)
 
     def __del__(self):
         try:
