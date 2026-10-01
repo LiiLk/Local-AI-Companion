@@ -849,11 +849,17 @@ class RVCConverter:
     def _spawn_worker(self) -> None:
         with self._lifecycle_lock:
             self._raise_if_closed()
+            if self._worker_process is not None and self._worker_process.poll() is None:
+                return
+        # Model verification can hash a multi-GB file when SHA-256 pins are
+        # set: keep it outside the lifecycle lock so close() never waits on it.
+        self._ensure_model_files()
+        with self._lifecycle_lock:
+            self._raise_if_closed()
             if self._worker_process is not None and self._worker_process.poll() is not None:
                 self._reset_worker_state()
             if self._worker_process is not None:
                 return
-            self._ensure_model_files()
             if not self.python_path.exists():
                 raise FileNotFoundError(f"Worker python not found: {self.python_path}")
             if not self.worker_script.exists():

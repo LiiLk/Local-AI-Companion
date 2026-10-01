@@ -1501,3 +1501,43 @@ def test_worker_is_fast_fail_while_relaunching(tmp_path, monkeypatch):
     assert _wait_until(lambda: converter._worker_ready) is True
     assert converter.convert_file(input_path, output_path) == output_path
     converter.close()
+
+
+def test_close_is_not_blocked_by_model_file_verification(worker_converter, monkeypatch):
+    """SHA-256 pins can read a multi-GB model: that must not hold the lifecycle lock."""
+    entered_verify = threading.Event()
+    release_verify = threading.Event()
+    spawned = []
+
+    def slow_ensure_model_files():
+        entered_verify.set()
+        assert release_verify.wait(5)
+
+    def popen(*args, **kwargs):
+        process = FakePopen()
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(worker_converter, "_ensure_model_files", slow_ensure_model_files)
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", popen)
+    errors = []
+
+    def spawn():
+        try:
+            worker_converter.spawn_worker()
+        except Exception as exc:
+            errors.append(exc)
+
+    spawn_thread = threading.Thread(target=spawn, daemon=True)
+    spawn_thread.start()
+    try:
+        assert entered_verify.wait(5)
+        started = time.monotonic()
+        worker_converter.close()
+        assert time.monotonic() - started < 1.0
+    finally:
+        release_verify.set()
+        spawn_thread.join(timeout=5)
+    # The spawn rechecks the terminal close after verification: no process.
+    assert spawned == []
+    assert any("closed" in str(exc) for exc in errors)
