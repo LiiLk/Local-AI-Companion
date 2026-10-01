@@ -3,6 +3,7 @@ from concurrent.futures import Future
 import json
 import logging
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -267,6 +268,49 @@ def test_shutdown_cancels_active_turn_and_clears_pending_audio():
     assert assistant._playback_deadline == 0.0
     assert assistant._pending_speech_audio == bytearray()
     assert any("window.onPlaybackStop?.(9)" in call for call in assistant._window.calls)
+
+
+def test_shutdown_awaits_inflight_speculative_asr_before_returning():
+    assistant = _make_assistant()
+    events = []
+    speculation = Future()
+    assistant._speculative_asr = (b"audio", speculation)
+    assistant._speculative_asr_finished_at = 1.0
+    assistant._speculative_asr_started_at = 0.5
+    assistant._speculative_asr_skip_reason = None
+
+    def _complete():
+        time.sleep(0.05)
+        events.append("speculation_done")
+        speculation.set_result(None)
+
+    worker = threading.Thread(target=_complete)
+    worker.start()
+
+    asyncio.run(
+        assistant._cancel_active_turn_for_shutdown("test-shutdown", timeout_sec=0.1)
+    )
+    worker.join(timeout=1.0)
+    events.append("shutdown_returned")
+
+    assert speculation.done()
+    assert assistant._speculative_asr is None
+    # The speculation finished (and was awaited) before shutdown moved on to
+    # close the runtime.
+    assert events == ["speculation_done", "shutdown_returned"]
+
+
+def test_shutdown_swallows_speculative_asr_errors():
+    assistant = _make_assistant()
+    speculation = Future()
+    speculation.set_exception(RuntimeError("speculation exploded"))
+    assistant._speculative_asr = (b"audio", speculation)
+
+    asyncio.run(
+        assistant._cancel_active_turn_for_shutdown("test-shutdown", timeout_sec=0.1)
+    )
+
+    assert assistant._speculative_asr is None
 
 
 def test_on_speech_start_interrupts_when_busy():

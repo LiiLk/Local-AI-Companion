@@ -8,12 +8,13 @@ The WebSocket path is out of scope for this PR.
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
 import time
 from concurrent.futures import Future as ConcurrentFuture
 
-from src.assistant.app import Live2DAssistant
+from src.assistant.app import Live2DAssistant, _speculative_saved_ms
 from src.assistant.conversation_pipeline import ConversationConfig, ConversationPipeline
 from src.asr.base import ASRResult
 from src.vad.smart_turn import SmartTurnConfig
@@ -224,6 +225,122 @@ def test_concurrent_transcribe_once_is_serialized():
     assert asr.max_active == 1
 
 
+class _GatedASR:
+    """ASR stub that blocks inside ``transcribe`` until it is released."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.active = 0
+        self.max_active = 0
+        self.calls = 0
+
+    def transcribe(self, audio, language=None):
+        with self._lock:
+            self.active += 1
+            self.calls += 1
+            self.max_active = max(self.max_active, self.active)
+        self.entered.set()
+        self.release.wait(timeout=5.0)
+        with self._lock:
+            self.active -= 1
+        return ASRResult(
+            text="hello",
+            language="en",
+            confidence=0.9,
+            duration=2.0,
+            segments=[{"text": "hello", "start": 0.0, "end": 1.0, "confidence": 0.9}],
+        )
+
+
+def test_cancelled_transcribe_keeps_asr_lock_until_executor_finishes():
+    """A barge-in cancelling the awaited speculation must not let the next
+    pass enter the GPU while the first executor thread is still running."""
+    asr = _GatedASR()
+    pipeline = _pipeline(asr)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        first = asyncio.create_task(pipeline._transcribe_once(_audio_bytes(), "en"))
+        assert await loop.run_in_executor(None, asr.entered.wait, 2.0)
+
+        first.cancel()
+        second = asyncio.create_task(pipeline._transcribe_once(_audio_bytes(), "en"))
+        await asyncio.sleep(0.1)
+
+        # The cancelled pass still holds the lock while its executor thread
+        # runs, so the second pass must not have reached ``transcribe``.
+        assert asr.calls == 1
+
+        asr.release.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await first
+        await second
+
+    asyncio.run(scenario())
+
+    assert asr.calls == 2
+    assert asr.max_active == 1
+
+
+# ---------------------------------------------------------------------------
+# Language-state pollution from rejected speculation
+# ---------------------------------------------------------------------------
+
+
+def test_transcribe_speech_does_not_update_language_state():
+    asr = _CountingASR(language="fr")
+    pipeline = _pipeline(asr)
+    assert pipeline._last_user_language_code == "en"
+
+    result = asyncio.run(pipeline.transcribe_speech(_audio_bytes()))
+
+    assert result.text == "hello"
+    assert result.language == "fr"
+    assert pipeline._last_user_language_code == "en"
+
+
+def test_resolve_transcription_updates_language_state_when_consumed():
+    asr = _CountingASR(language="en")
+    pipeline = _pipeline(asr)
+
+    async def scenario():
+        speculative = asyncio.get_running_loop().create_future()
+        speculative.set_result(
+            ASRResult(
+                text="hello",
+                language="fr",
+                confidence=0.9,
+                duration=2.0,
+                segments=[
+                    {"text": "hello", "start": 0.0, "end": 1.0, "confidence": 0.9}
+                ],
+            )
+        )
+        return await pipeline._resolve_transcription(_audio_bytes(), speculative)
+
+    result = asyncio.run(scenario())
+
+    assert result.language == "fr"
+    assert pipeline._last_user_language_code == "fr"
+
+
+def test_resolve_transcription_fallback_still_updates_language_state():
+    asr = _CountingASR(language="fr")
+    pipeline = _pipeline(asr)
+
+    async def scenario():
+        speculative = asyncio.get_running_loop().create_future()
+        speculative.set_exception(RuntimeError("speculation exploded"))
+        return await pipeline._resolve_transcription(_audio_bytes(), speculative)
+
+    result = asyncio.run(scenario())
+
+    assert result.text == "hello"
+    assert pipeline._last_user_language_code == "fr"
+
+
 # ---------------------------------------------------------------------------
 # Desktop Live2DAssistant
 # ---------------------------------------------------------------------------
@@ -276,6 +393,7 @@ def _make_assistant(pipeline):
     assistant._pending_speech_detection_thread = None
     assistant._speculative_asr = None
     assistant._speculative_asr_finished_at = None
+    assistant._speculative_asr_started_at = None
     assistant._speculative_asr_skip_reason = None
     assistant._turn_detection_config = SmartTurnConfig(enabled=False)
     assistant._smart_turn = None
@@ -453,3 +571,43 @@ def test_speech_end_skips_speculation_below_min_audio_ms(monkeypatch):
     assert started == []
     assert assistant._speculative_asr is None
     assert asr.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# saved_ms overlaps
+# ---------------------------------------------------------------------------
+
+
+def test_speculative_saved_ms_is_the_real_overlap():
+    # Finishes before the commit: gain is launch -> finish.
+    assert _speculative_saved_ms(1.0, 1.2, 1.5) == 200
+    # Still running at commit: gain is launch -> commit.
+    assert _speculative_saved_ms(1.0, None, 1.4) == 400
+    # Closed after the commit instant (clock oddity): clamp to commit.
+    assert _speculative_saved_ms(1.0, 2.0, 1.5) == 500
+    # No speculation data.
+    assert _speculative_saved_ms(None, 1.2, 1.5) == 0
+
+
+def test_commit_reports_overlap_not_finish_to_commit(monkeypatch, caplog):
+    asr = _CountingASR()
+    pipeline = _pipeline(asr)
+    assistant = _make_assistant(pipeline)
+    _install_inline_speculation(monkeypatch)
+    assistant._start_turn = lambda *args, **kwargs: None
+    completed = ConcurrentFuture()
+    completed.set_result(None)
+    assistant._pending_speech_audio.extend(b"A" * 3200)
+    assistant._speculative_asr = (b"A" * 3200, completed)
+    assistant._speculative_asr_started_at = 10.0
+    assistant._speculative_asr_finished_at = 10.2
+    monkeypatch.setattr(time, "perf_counter", lambda: 10.5)
+
+    with caplog.at_level(logging.INFO):
+        assistant._commit_pending_speech()
+
+    assert any(
+        "speculative_asr hit saved_ms=200" in record.getMessage()
+        for record in caplog.records
+    )
+    assert assistant._speculative_asr_started_at is None

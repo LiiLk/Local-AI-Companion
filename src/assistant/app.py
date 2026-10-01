@@ -110,8 +110,30 @@ _ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC = 10.0
 _BRIDGE_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PRELOAD_LOCK_WAIT_TIMEOUT_SEC = 2.0
+# Bounded wait for an in-flight speculative ASR before the runtime is closed.
+# Kept below the stop() budget (_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC + 1 s) so a
+# drained speculation can never outlive the shutdown deadline.
+_SPECULATIVE_ASR_SHUTDOWN_TIMEOUT_SEC = 2.0
 # Cap on audio re-merged from a turn interrupted before it produced any reply.
 _MAX_REQUEUED_SPEECH_BYTES = 30 * 16000 * 2  # 30 s of 16 kHz mono PCM16
+
+
+def _speculative_saved_ms(
+    started_at: Optional[float],
+    finished_at: Optional[float],
+    commit_at: float,
+) -> int:
+    """Real latency overlap gained by speculating, in milliseconds.
+
+    The overlap runs from the speculation launch to whichever comes first,
+    the transcription finishing or the commit consuming it. Measuring from
+    the finish to the commit (as before) reported the remaining grace window
+    instead of the work that was actually hidden.
+    """
+    if started_at is None:
+        return 0
+    end = commit_at if finished_at is None else min(finished_at, commit_at)
+    return max(0, round((end - started_at) * 1000))
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -435,6 +457,7 @@ class Live2DAssistant:
         # _pending_speech_lock because the audio thread writes it and the loop
         # thread consumes it at commit.
         self._speculative_asr: Optional[tuple[bytes, Any]] = None
+        self._speculative_asr_started_at: Optional[float] = None
         self._speculative_asr_finished_at: Optional[float] = None
         self._speculative_asr_skip_reason: Optional[str] = None
         self._speech_commit_delay_ms = int(self.config.get("audio", {}).get("speech_commit_delay_ms", 700))
@@ -966,6 +989,7 @@ class Live2DAssistant:
         with self._pending_speech_lock:
             # A newer speculation replaces the previous one.
             self._speculative_asr = (audio_bytes, future)
+            self._speculative_asr_started_at = time.perf_counter()
             self._speculative_asr_finished_at = None
             self._speculative_asr_skip_reason = None
 
@@ -998,9 +1022,11 @@ class Live2DAssistant:
             speech_end_monotonic = self._pending_speech_end_monotonic
             self._pending_speech_end_monotonic = None
             speculation = getattr(self, "_speculative_asr", None)
+            speculation_started_at = getattr(self, "_speculative_asr_started_at", None)
             speculation_finished_at = getattr(self, "_speculative_asr_finished_at", None)
             speculation_skip_reason = getattr(self, "_speculative_asr_skip_reason", None)
             self._speculative_asr = None
+            self._speculative_asr_started_at = None
             self._speculative_asr_finished_at = None
             self._speculative_asr_skip_reason = None
 
@@ -1022,14 +1048,11 @@ class Live2DAssistant:
         if speculation is not None:
             snapshot_bytes, speculative_transcription = speculation
             if audio_bytes == snapshot_bytes:
-                saved_ms = 0
-                if (
-                    speculative_transcription.done()
-                    and speculation_finished_at is not None
-                ):
-                    saved_ms = max(
-                        0, int((time.perf_counter() - speculation_finished_at) * 1000)
-                    )
+                saved_ms = _speculative_saved_ms(
+                    speculation_started_at,
+                    speculation_finished_at,
+                    time.perf_counter(),
+                )
                 logger.info("speculative_asr hit saved_ms=%s", saved_ms)
             else:
                 speculative_transcription = None
@@ -1254,6 +1277,16 @@ class Live2DAssistant:
         self._cancel_pending_speech_commit()
         with self._pending_speech_lock:
             self._pending_speech_audio.clear()
+            speculation = getattr(self, "_speculative_asr", None)
+            self._speculative_asr = None
+            self._speculative_asr_started_at = None
+            self._speculative_asr_finished_at = None
+            self._speculative_asr_skip_reason = None
+        # An executor thread may still be inside ASR while we close the
+        # runtime below; drain the speculation first so the ASR backend is
+        # never torn down under a running transcription.
+        if speculation is not None:
+            await self._drain_speculative_asr(speculation[1])
         self._inflight_turn_audio = None
         self._inflight_turn_audio_turn_id = None
         self._playback_deadline = 0.0
@@ -1284,6 +1317,30 @@ class Live2DAssistant:
             self._active_response_future = None
         self._active_turn_id = None
         self._sync_audio_capture_mode()
+
+    async def _drain_speculative_asr(self, speculation_future: Any) -> None:
+        """Wait for an in-flight speculative ASR, bounded, swallowing errors.
+
+        The speculative transcription runs in an executor thread that cannot
+        be cancelled; we wait a short fixed time so closing the pipeline
+        runtime does not race a thread still reading from the ASR backend.
+        """
+        if speculation_future is None or speculation_future.done():
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.wrap_future(speculation_future),
+                timeout=_SPECULATIVE_ASR_SHUTDOWN_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Speculative ASR did not finish within %.1fs during shutdown",
+                _SPECULATIVE_ASR_SHUTDOWN_TIMEOUT_SEC,
+            )
+        except (asyncio.CancelledError, FutureCancelledError):
+            pass
+        except Exception as exc:
+            logger.debug("Speculative ASR shutdown cleanup error: %s", exc, exc_info=True)
 
     async def _cancel_pending_loop_tasks_for_shutdown(self, timeout_sec: float = 2.0) -> None:
         """Best-effort drain for loop tasks left after services have been stopped."""
