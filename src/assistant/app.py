@@ -110,10 +110,6 @@ _ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC = 10.0
 _BRIDGE_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PRELOAD_LOCK_WAIT_TIMEOUT_SEC = 2.0
-# Bounded wait for an in-flight speculative ASR before the runtime is closed.
-# Kept below the stop() budget (_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC + 1 s) so a
-# drained speculation can never outlive the shutdown deadline.
-_SPECULATIVE_ASR_SHUTDOWN_TIMEOUT_SEC = 2.0
 # Cap on audio re-merged from a turn interrupted before it produced any reply.
 _MAX_REQUEUED_SPEECH_BYTES = 30 * 16000 * 2  # 30 s of 16 kHz mono PCM16
 
@@ -1053,7 +1049,14 @@ class Live2DAssistant:
                     speculation_finished_at,
                     time.perf_counter(),
                 )
-                logger.info("speculative_asr hit saved_ms=%s", saved_ms)
+
+                def _log_speculative_result(future) -> None:
+                    if future.cancelled() or future.exception() is not None:
+                        logger.info("speculative_asr miss reason=error")
+                    else:
+                        logger.info("speculative_asr hit saved_ms=%s", saved_ms)
+
+                speculative_transcription.add_done_callback(_log_speculative_result)
             else:
                 speculative_transcription = None
                 logger.info("speculative_asr miss reason=audio_changed")
@@ -1277,16 +1280,10 @@ class Live2DAssistant:
         self._cancel_pending_speech_commit()
         with self._pending_speech_lock:
             self._pending_speech_audio.clear()
-            speculation = getattr(self, "_speculative_asr", None)
             self._speculative_asr = None
             self._speculative_asr_started_at = None
             self._speculative_asr_finished_at = None
             self._speculative_asr_skip_reason = None
-        # An executor thread may still be inside ASR while we close the
-        # runtime below; drain the speculation first so the ASR backend is
-        # never torn down under a running transcription.
-        if speculation is not None:
-            await self._drain_speculative_asr(speculation[1])
         self._inflight_turn_audio = None
         self._inflight_turn_audio_turn_id = None
         self._playback_deadline = 0.0
@@ -1313,34 +1310,25 @@ class Live2DAssistant:
             except Exception as exc:
                 logger.debug("Active turn shutdown cleanup error: %s", exc, exc_info=True)
 
+        if isinstance(active_pipeline, ConversationPipeline):
+            try:
+                await asyncio.wait_for(
+                    active_pipeline.wait_for_asr_idle(),
+                    timeout=_PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                # Whisper exceeding 10 s is already a fault; bound shutdown.
+                # Cancelling the lock wait leaves the executor running, so
+                # runtime cleanup may race it in this failure case.
+                logger.error(
+                    "ASR still running after %ss, closing runtime anyway",
+                    _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC,
+                )
+
         if self._active_response_future is future:
             self._active_response_future = None
         self._active_turn_id = None
         self._sync_audio_capture_mode()
-
-    async def _drain_speculative_asr(self, speculation_future: Any) -> None:
-        """Wait for an in-flight speculative ASR, bounded, swallowing errors.
-
-        The speculative transcription runs in an executor thread that cannot
-        be cancelled; we wait a short fixed time so closing the pipeline
-        runtime does not race a thread still reading from the ASR backend.
-        """
-        if speculation_future is None or speculation_future.done():
-            return
-        try:
-            await asyncio.wait_for(
-                asyncio.wrap_future(speculation_future),
-                timeout=_SPECULATIVE_ASR_SHUTDOWN_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Speculative ASR did not finish within %.1fs during shutdown",
-                _SPECULATIVE_ASR_SHUTDOWN_TIMEOUT_SEC,
-            )
-        except (asyncio.CancelledError, FutureCancelledError):
-            pass
-        except Exception as exc:
-            logger.debug("Speculative ASR shutdown cleanup error: %s", exc, exc_info=True)
 
     async def _cancel_pending_loop_tasks_for_shutdown(self, timeout_sec: float = 2.0) -> None:
         """Best-effort drain for loop tasks left after services have been stopped."""
@@ -2152,7 +2140,11 @@ class Live2DAssistant:
                 asyncio.run_coroutine_threadsafe(
                     self._cancel_active_turn_for_shutdown("shutdown"),
                     self._loop,
-                ).result(timeout=_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC + 1.0)
+                ).result(
+                    timeout=_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC
+                    + _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC
+                    + 1.0
+                )
             except Exception as exc:
                 logger.debug("Active turn shutdown error: %s", exc, exc_info=True)
         

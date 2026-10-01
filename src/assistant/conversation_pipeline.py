@@ -447,6 +447,11 @@ class ConversationPipeline:
             self._asr_lock_loop = loop
         return self._asr_lock
 
+    async def wait_for_asr_idle(self) -> None:
+        """Wait until the in-flight ASR executor has released the GPU."""
+        async with self._get_asr_lock():
+            pass
+
     async def _transcribe_once(self, audio_bytes: bytes, language: Optional[str]) -> ASRResult:
         audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
         audio_float = audio_int16.astype(np.float32) / 32767.0
@@ -808,6 +813,8 @@ class ConversationPipeline:
         latency.start(turn_id=run_id)
 
         try:
+            # Let speculative ASR finish before text TTS/RVC uses the GPU.
+            await self.wait_for_asr_idle()
             trace = {
                 "turn_start_epoch_ms": int(time.time() * 1000),
                 "text_submit_epoch_ms": int(time.time() * 1000),

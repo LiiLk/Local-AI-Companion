@@ -14,6 +14,8 @@ import threading
 import time
 from concurrent.futures import Future as ConcurrentFuture
 
+import pytest
+
 from src.assistant.app import Live2DAssistant, _speculative_saved_ms
 from src.assistant.conversation_pipeline import ConversationConfig, ConversationPipeline
 from src.asr.base import ASRResult
@@ -284,6 +286,75 @@ def test_cancelled_transcribe_keeps_asr_lock_until_executor_finishes():
     assert asr.max_active == 1
 
 
+@pytest.mark.parametrize("cancel_transcription", [False, True])
+def test_wait_for_asr_idle_waits_for_executor(cancel_transcription):
+    asr = _GatedASR()
+    pipeline = _pipeline(asr)
+
+    async def scenario():
+        transcription = asyncio.create_task(pipeline._transcribe_once(_audio_bytes(), "en"))
+        try:
+            assert await asyncio.to_thread(asr.entered.wait, 2.0)
+            if cancel_transcription:
+                transcription.cancel()
+            idle = asyncio.create_task(pipeline.wait_for_asr_idle())
+            await asyncio.sleep(0.05)
+            assert not idle.done()
+            assert asr.active == 1
+        finally:
+            asr.release.set()
+            with contextlib.suppress(asyncio.CancelledError):
+                await transcription
+        await idle
+        assert asr.active == 0
+
+    asyncio.run(scenario())
+
+
+def test_wait_for_asr_idle_timeout_leaves_transcription_running():
+    asr = _GatedASR()
+    pipeline = _pipeline(asr)
+
+    async def scenario():
+        transcription = asyncio.create_task(pipeline._transcribe_once(_audio_bytes(), "en"))
+        try:
+            assert await asyncio.to_thread(asr.entered.wait, 2.0)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(pipeline.wait_for_asr_idle(), timeout=0.01)
+            assert not transcription.done()
+            assert asr.active == 1
+            assert pipeline._get_asr_lock().locked()
+        finally:
+            asr.release.set()
+            await transcription
+        await pipeline.wait_for_asr_idle()
+
+    asyncio.run(scenario())
+
+
+def test_process_text_waits_for_speculative_asr_before_llm():
+    asr = _GatedASR()
+    pipeline = _pipeline(asr)
+
+    async def scenario():
+        transcription = asyncio.create_task(pipeline.transcribe_speech(_audio_bytes()))
+        text_turn = None
+        try:
+            assert await asyncio.to_thread(asr.entered.wait, 2.0)
+            text_turn = asyncio.create_task(pipeline.process_text("hello"))
+            await asyncio.sleep(0.05)
+            assert not text_turn.done()
+            assert pipeline.llm.calls == []
+        finally:
+            asr.release.set()
+            await transcription
+            if text_turn is not None:
+                assert await text_turn == "ok"
+        assert pipeline.llm.calls
+
+    asyncio.run(scenario())
+
+
 # ---------------------------------------------------------------------------
 # Language-state pollution from rejected speculation
 # ---------------------------------------------------------------------------
@@ -428,6 +499,42 @@ def _install_inline_speculation(monkeypatch):
 
     monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
     return started
+
+
+def test_shutdown_waits_for_asr_started_after_commit():
+    asr = _GatedASR()
+    pipeline = _pipeline(asr)
+    assistant = _make_assistant(pipeline)
+    assistant.audio_service = None
+
+    async def scenario():
+        assistant._loop = asyncio.get_running_loop()
+
+        def start_turn(turn_id, runner, source):
+            assistant._active_turn_id = turn_id
+            assistant._active_response_future = asyncio.run_coroutine_threadsafe(
+                runner(), assistant._loop
+            )
+
+        assistant._start_turn = start_turn
+        assistant._pending_speech_audio.extend(_audio_bytes())
+        assistant._commit_pending_speech()
+        shutdown = None
+        try:
+            assert await asyncio.to_thread(asr.entered.wait, 2.0)
+            assert assistant._speculative_asr is None
+            shutdown = asyncio.create_task(assistant._cancel_active_turn_for_shutdown())
+            await asyncio.sleep(0.05)
+            assert assistant._active_response_future.cancelled()
+            assert not shutdown.done()
+            assert asr.active == 1
+        finally:
+            asr.release.set()
+            if shutdown is not None:
+                await shutdown
+        assert asr.active == 0
+
+    asyncio.run(scenario())
 
 
 def test_speech_end_starts_speculation_when_assistant_idle(monkeypatch):
@@ -611,3 +718,39 @@ def test_commit_reports_overlap_not_finish_to_commit(monkeypatch, caplog):
         for record in caplog.records
     )
     assert assistant._speculative_asr_started_at is None
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "cancelled"])
+@pytest.mark.parametrize("done_before_commit", [False, True])
+def test_commit_logs_speculation_outcome_when_done(monkeypatch, caplog, outcome, done_before_commit):
+    assistant = _make_assistant(_pipeline(_CountingASR()))
+    speculation = ConcurrentFuture()
+    assistant._pending_speech_audio.extend(b"A" * 3200)
+    assistant._speculative_asr = (b"A" * 3200, speculation)
+    assistant._speculative_asr_started_at = 10.0
+    monkeypatch.setattr(time, "perf_counter", lambda: 10.4)
+
+    def complete():
+        if outcome == "success":
+            speculation.set_result(ASRResult(text="hello", language="en"))
+        elif outcome == "error":
+            speculation.set_exception(RuntimeError("speculation exploded"))
+        else:
+            speculation.cancel()
+
+    with caplog.at_level(logging.INFO):
+        if done_before_commit:
+            complete()
+        assistant._commit_pending_speech()
+        if not done_before_commit:
+            assert not any("speculative_asr hit" in record.getMessage() for record in caplog.records)
+            monkeypatch.setattr(time, "perf_counter", lambda: 11.0)
+            complete()
+
+    messages = [record.getMessage() for record in caplog.records]
+    if outcome == "success":
+        assert messages.count("speculative_asr hit saved_ms=400") == 1
+        assert "speculative_asr miss reason=error" not in messages
+    else:
+        assert messages.count("speculative_asr miss reason=error") == 1
+        assert not any("speculative_asr hit" in message for message in messages)
