@@ -893,20 +893,21 @@ class RVCConverter:
 
     def _load(self) -> None:
         """Lazy-load the selected RVC backend."""
-        if self._converter is not None:
-            return
+        with self._worker_lock:
+            if self._converter is not None:
+                return
 
-        selected_backend = self._resolve_backend()
-        if selected_backend == "worker":
-            self._start_worker()
-            return
-        if selected_backend == "inferrvc":
-            self._load_inferrvc()
-            return
-        if selected_backend == "rvc_inferpy":
-            self._load_legacy_backend()
-            return
-        raise RuntimeError(f"Unsupported backend selection: {selected_backend}")
+            selected_backend = self._resolve_backend()
+            if selected_backend == "worker":
+                self._start_worker()
+                return
+            if selected_backend == "inferrvc":
+                self._load_inferrvc()
+                return
+            if selected_backend == "rvc_inferpy":
+                self._load_legacy_backend()
+                return
+            raise RuntimeError(f"Unsupported backend selection: {selected_backend}")
 
     def _write_inferrvc_output(
         self,

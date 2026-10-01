@@ -31,6 +31,7 @@ from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.vad.smart_turn import resolve_commit_delay_for_turn, resolve_turn_tier
 from src.assistant.pipeline_runtime import (
+    _close_pipeline_rvc,
     close_pipeline_runtime_services,
     create_pipeline_runtime,
     resolve_min_asr_audio_ms,
@@ -2399,6 +2400,7 @@ class WebSocketManager:
             "message": "Loading voice models..."
         })
 
+        early_rvc = None
         try:
             loop = asyncio.get_event_loop()
 
@@ -2416,7 +2418,7 @@ class WebSocketManager:
 
             else:
                 if state.config.get("tts", {}).get("rvc", {}).get("enabled", False):
-                    await loop.run_in_executor(None, state.spawn_rvc_worker)
+                    early_rvc = await loop.run_in_executor(None, state.spawn_rvc_worker)
                 if not state.vad:
                     await loop.run_in_executor(None, state.get_vad)
                 if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
@@ -2435,6 +2437,7 @@ class WebSocketManager:
             await self._send_pipeline_degraded_status(client_id, state)
 
         except Exception as e:
+            _close_pipeline_rvc(early_rvc)
             logger.exception("Model preloading error for %s", client_id)
             await self.send_json(client_id, {
                 "type": "error",

@@ -5,6 +5,7 @@ import json
 import time
 import sys
 import types
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -185,6 +186,67 @@ def worker_converter(tmp_path, monkeypatch):
 def test_worker_default_startup_timeout_is_separate(worker_converter):
     assert worker_converter.startup_timeout_sec == 90
     assert worker_converter.request_timeout_sec == 15
+
+
+def test_concurrent_load_reads_worker_handshake_once(worker_converter, monkeypatch):
+    worker_converter.spawn_worker()
+    process = worker_converter._worker_process
+    first_read_started = threading.Event()
+    second_load_entered = threading.Event()
+    release_ready = threading.Event()
+    original_lock = worker_converter._worker_lock
+    original_read = worker_converter._read_worker_response_line
+    reads = []
+    errors = []
+    ready_states = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if first_read_started.is_set():
+                second_load_entered.set()
+            original_lock.acquire()
+
+        def __exit__(self, *args):
+            original_lock.release()
+
+    def read_ready(timeout_sec, *, operation):
+        reads.append(operation)
+        if len(reads) == 1:
+            first_read_started.set()
+            assert release_ready.wait(5)
+        else:
+            second_load_entered.set()
+        return original_read(timeout_sec, operation=operation)
+
+    def load():
+        try:
+            worker_converter._load()
+            ready_states.append(worker_converter._worker_ready)
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(worker_converter, "_worker_lock", ObservedLock())
+    monkeypatch.setattr(worker_converter, "_read_worker_response_line", read_ready)
+    threads = [threading.Thread(target=load, daemon=True) for _ in range(2)]
+    threads[0].start()
+    try:
+        assert first_read_started.wait(5)
+        threads[1].start()
+        # The contender reaches either the lock or a second handshake read.
+        assert second_load_entered.wait(5)
+    finally:
+        release_ready.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert reads == ["startup"]
+    assert ready_states == [True, True]
+    assert worker_converter._converter is process
+    assert worker_converter._worker_process is process
+    assert process.poll() is None
 
 
 @pytest.mark.parametrize("elapsed, remaining", [(80.0, 10.0), (120.0, 0.1)])

@@ -1,6 +1,7 @@
 """RVC startup failures stay visible while base TTS remains usable."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -67,3 +68,42 @@ async def test_rvc_startup_status_reaches_client(monkeypatch, progressive, failu
         assert errors == []
         assert len(rvc_ready) == int(progressive)
         assert state.rvc is runtime.rvc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["get_vad", "preload_llm", "preload_tts", "preload_asr"])
+async def test_manual_preload_failure_closes_early_rvc_worker(monkeypatch, failure_stage):
+    config = {
+        "mode": "pipeline",
+        "llm": {"provider": "gemma"},
+        "tts": {"rvc": {"enabled": True}},
+    }
+    monkeypatch.setattr(websocket_module, "load_config", lambda: config)
+    state = ConversationState()
+    runtime = PipelineRuntime(config)
+    state.pipeline_runtime = runtime
+    rvc = Mock()
+    runtime.rvc = rvc
+    state.get_vad = lambda: setattr(state, "vad", object())
+    for stage in ("preload_llm", "preload_tts", "preload_asr", "preload_rvc"):
+        setattr(state, stage, Mock())
+    setattr(state, failure_stage, Mock(side_effect=RuntimeError("simulated preload failure")))
+    sent = []
+
+    async def send_json(data):
+        sent.append(data)
+
+    manager = WebSocketManager()
+    client_id = "manual-preload-failure"
+    manager.states[client_id] = state
+    manager.active_connections[client_id] = SimpleNamespace(send_json=send_json)
+
+    await manager.preload_models(client_id)
+
+    rvc.spawn_worker.assert_called_once_with()
+    rvc.close.assert_called_once_with()
+    state.preload_rvc.assert_not_called()
+    assert sent[-1] == {
+        "type": "error", "message": "Failed to load models: simulated preload failure",
+    }
+    assert client_id not in manager._preloading
