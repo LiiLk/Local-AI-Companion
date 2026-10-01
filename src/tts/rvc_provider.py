@@ -844,7 +844,10 @@ class RVCConverter:
                 and self.python_path.exists()
             ):
                 return
-            self._spawn_worker()
+        # _spawn_worker takes the lifecycle lock itself, around short
+        # transitions only; calling it under the lock would hold it during
+        # model verification.
+        self._spawn_worker()
 
     def _spawn_worker(self) -> None:
         with self._lifecycle_lock:
