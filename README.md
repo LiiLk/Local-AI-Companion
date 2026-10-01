@@ -227,8 +227,21 @@ cd Local-AI-Companion
 python -m venv venv
 venv\Scripts\activate
 python -m pip install --upgrade pip
+# NVIDIA GPU (recommended): install the CUDA build of PyTorch first, from the
+# PyTorch index as the primary index. PyPI only ships the CPU-only build on
+# Windows, and an --extra-index-url would let pip pick it when it is newer.
+python -m pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
 ```
+
+Keep this `venv` dedicated to the default path. Optional providers (MiniCPM-o,
+Gemma, Qwen3, Chatterbox) pull large extra stacks such as `torchvision`,
+`accelerate` or another Transformers line. Installed here, they slow down every
+startup, because Transformers imports the integrations it finds installed.
+Measured on 2026-10-01: a venv holding every optional stack (271 packages)
+needed 61 s to preload the models, against 43 s for this default `venv`
+(138 packages). Install optional stacks in their own environment, as described
+in [Optional Advanced Providers](#optional-advanced-providers).
 
 Optional RVC voice conversion:
 
@@ -427,6 +440,11 @@ Relevant assets already wired in the repo:
 
 These are intentionally not part of the primary README quick path, but they still exist in the codebase.
 
+Unless stated otherwise, create a separate virtual environment for each optional
+stack (for example `python -m venv .venv-omni`) instead of installing it into the
+default `venv`. Parakeet is the exception: `onnx-asr` is small and does not pull
+extra Transformers integrations.
+
 ### Parakeet ASR
 
 Parakeet TDT 0.6B v3 is an optional local ASR candidate. Whisper remains the
@@ -470,9 +488,25 @@ This path is useful for experimentation and premium local voice cloning, but it 
 
 Both multimodal paths are available in the codebase, but they are secondary modes and should be treated as such. Keep them in separate experiment environments because MiniCPM-o uses the Transformers 4.51-4.52 line while Gemma uses Transformers 5.x+:
 
+Gemma (`mode: "gemma-omni"`), in its own environment. `requirements-optional-gemma-omni.txt`
+already includes `requirements.txt`:
+
 ```powershell
-python -m pip install -r requirements-optional-omni.txt        # MiniCPM-o / mode: "omni"
-python -m pip install -r requirements-optional-gemma-omni.txt  # Gemma / mode: "gemma-omni"
+python -m venv .venv-gemma
+.venv-gemma\Scripts\activate
+python -m pip install torch==2.11.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install -r requirements-optional-gemma-omni.txt
+python run_assistant.py
+```
+
+MiniCPM-o (`mode: "omni"`) also needs the base `requirements.txt`, but it cannot
+currently be installed on top of it without breaking the audited baseline:
+`minicpmo-utils` pins `pillow==10.4.0` while `constraints-security.txt` requires
+`pillow>=12.2.0` (see the header of `requirements-optional-omni.txt`). Only use it
+in a throwaway experiment environment until upstream ships a compatible release:
+
+```powershell
+python -m pip install -r requirements-optional-omni.txt  # MiniCPM-o only, not a runnable app environment on its own
 ```
 
 ```yaml
