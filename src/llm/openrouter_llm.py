@@ -4,13 +4,19 @@ LLM implementation using OpenRouter's OpenAI-compatible chat API.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
+import time
 from typing import Any, AsyncGenerator
 
 import httpx
 
 from .base import BaseLLM, LLMResponse, Message
+
+
+logger = logging.getLogger(__name__)
 
 
 class OpenRouterLLM(BaseLLM):
@@ -184,28 +190,66 @@ class OpenRouterLLM(BaseLLM):
         options_override: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
         payload = self._build_payload(messages, stream=True, options_override=options_override)
-        async with self._client.stream("POST", "/chat/completions", json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith(":"):
-                    continue
-                if not line.startswith("data:"):
-                    continue
+        provider = "unknown"
+        usage: dict[str, Any] = {}
+        ttft_ms: float | None = None
+        status = "ok"
+        started = time.perf_counter()
+        try:
+            async with self._client.stream("POST", "/chat/completions", json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if not line.startswith("data:"):
+                        continue
 
-                data = line[5:].strip()
-                if not data or data == "[DONE]":
-                    continue
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
+                        continue
 
-                event = json.loads(data)
-                choices = event.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                chunk = delta.get("content")
-                if chunk:
-                    yield chunk
+                    event = json.loads(data)
+                    if isinstance(event.get("provider"), str) and event["provider"]:
+                        provider = event["provider"]
+                    if isinstance(event.get("usage"), dict):
+                        usage = event["usage"]
+                    if event.get("error"):
+                        status = "error"
+                    choices = event.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    chunk = delta.get("content")
+                    if chunk:
+                        if ttft_ms is None:
+                            ttft_ms = (time.perf_counter() - started) * 1000.0
+                        yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            status = "cancelled"
+            raise
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            total_ms = (time.perf_counter() - started) * 1000.0
+            prompt_details = usage.get("prompt_tokens_details")
+            cached_tokens = (
+                prompt_details.get("cached_tokens") if isinstance(prompt_details, dict) else None
+            )
+            logger.info(
+                "llm_call provider=%s model=%s ttft_ms=%s total_ms=%.1f "
+                "prompt_tokens=%s cached_tokens=%s completion_tokens=%s status=%s",
+                provider,
+                payload["model"],
+                f"{ttft_ms:.1f}" if ttft_ms is not None else "na",
+                total_ms,
+                usage.get("prompt_tokens") if usage.get("prompt_tokens") is not None else "na",
+                cached_tokens if cached_tokens is not None else "na",
+                usage.get("completion_tokens") if usage.get("completion_tokens") is not None else "na",
+                status,
+            )
 
     async def close(self):
         await self._client.aclose()
