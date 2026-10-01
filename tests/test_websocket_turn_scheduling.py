@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.server import websocket as websocket_module
-from src.server.websocket import WebSocketManager
+from src.server.websocket import ConversationState, WebSocketManager
+from src.assistant.pipeline_runtime import create_pipeline_runtime
 from src.asr.base import ASRResult
 
 
@@ -235,6 +236,9 @@ async def test_manual_pipeline_preload_runs_gpu_steps_sequentially():
             self._load("llm")
             return self.llm
 
+        def spawn_rvc_worker(self):
+            self.events.append("rvc:spawn")
+
         def preload_tts(self):
             self._load("tts")
             return self.tts
@@ -255,6 +259,7 @@ async def test_manual_pipeline_preload_runs_gpu_steps_sequentially():
 
     assert state.max_active_loads == 1
     assert state.events == [
+        "rvc:spawn",
         "vad:start",
         "vad:end",
         "llm:start",
@@ -271,6 +276,65 @@ async def test_manual_pipeline_preload_runs_gpu_steps_sequentially():
         "models_ready",
     ]
     assert client_id not in manager._preloading
+
+
+@pytest.mark.asyncio
+async def test_progressive_pipeline_preload_spawns_rvc_before_gpu_steps():
+    manager = WebSocketManager()
+    client_id = "client-early-rvc"
+    events = []
+    state = SimpleNamespace(
+        mode="pipeline", config={"tts": {"rvc": {"enabled": True}}},
+        vad=object(), tts=None, asr=None, rvc=None,
+        spawn_rvc_worker=lambda: events.append("spawn"),
+        get_smart_turn=lambda: SimpleNamespace(config=SimpleNamespace(enabled=False)),
+        sync_vad_required_misses=lambda: None,
+        preload_tts=lambda: events.append("tts"),
+        preload_asr=lambda: events.append("asr"),
+        preload_rvc=lambda: events.append("rvc_ready_and_warmup"),
+    )
+
+    async def send_json(_data):
+        pass
+
+    manager.states[client_id] = state
+    manager.active_connections[client_id] = SimpleNamespace(send_json=send_json)
+
+    await manager._preload_models_progressive(client_id)
+
+    assert events == ["spawn", "tts", "asr", "rvc_ready_and_warmup"]
+    assert client_id not in manager._preloading
+
+
+@pytest.mark.asyncio
+async def test_manual_preload_waits_for_early_worker_using_shared_runtime():
+    manager = WebSocketManager()
+    client_id = "client-rvc-handshake"
+    events = []
+    state = ConversationState()
+    state.config = {"tts": {"rvc": {"enabled": True}}}
+    state.get_vad = lambda: setattr(state, "vad", object())
+    runtime = create_pipeline_runtime(state.config)
+    state.pipeline_runtime = runtime
+    runtime.llm = object()
+    runtime.tts = SimpleNamespace(preload=lambda: events.append("tts"))
+    runtime.asr = SimpleNamespace(preload=lambda: events.append("asr"))
+    runtime.rvc = SimpleNamespace(
+        spawn_worker=lambda: events.append("spawn"),
+        preload=lambda: events.append("ready"),
+        warmup=lambda: events.append("warmup"),
+    )
+
+    async def send_json(_data):
+        pass
+
+    manager.states[client_id] = state
+    manager.active_connections[client_id] = SimpleNamespace(send_json=send_json)
+
+    await manager.preload_models(client_id)
+
+    assert events == ["spawn", "tts", "asr", "ready", "warmup"]
+    assert state.rvc is runtime.rvc
 
 
 @pytest.mark.asyncio

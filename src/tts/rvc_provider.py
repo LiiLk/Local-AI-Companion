@@ -183,6 +183,8 @@ class RVCConverter:
         worker_script: Worker script path. Defaults to scripts/rvc_worker.py.
         f0_up_key: Pitch shift in semitones.
         output_freq: Optional worker output sample rate override.
+        request_timeout_sec: Timeout for each worker conversion, including warmup.
+        startup_timeout_sec: Timeout for the worker ready handshake, including relaunch.
     """
 
     def __init__(
@@ -202,6 +204,7 @@ class RVCConverter:
         request_timeout_sec: float = 15.0,
         model_sha256: str | None = None,
         index_sha256: str | None = None,
+        startup_timeout_sec: float = 90.0,
     ):
         self.model_path = Path(model_path).resolve()
         requested_index_path = Path(index_path).resolve() if index_path else None
@@ -232,6 +235,7 @@ class RVCConverter:
         self.f0_up_key = f0_up_key
         self.output_freq = output_freq
         self.request_timeout_sec = float(request_timeout_sec)
+        self.startup_timeout_sec = float(startup_timeout_sec)
         self.voice_model = self.model_path.stem
         self.models_root = PROJECT_ROOT / "models"
         self.voice_model_dir = self.models_root / self.voice_model
@@ -760,12 +764,13 @@ class RVCConverter:
     ) -> str:
         if self._worker_process is None or self._worker_process.stdout is None:
             raise RuntimeError("RVC worker stdout is not available")
+        stdout = self._worker_process.stdout
 
         result_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=1)
 
         def _reader() -> None:
             try:
-                line = self._worker_process.stdout.readline()
+                line = stdout.readline()
             except Exception as exc:
                 result_queue.put(("error", str(exc)))
             else:
@@ -777,7 +782,8 @@ class RVCConverter:
             status, payload = result_queue.get(timeout=max(timeout_sec, 0.1))
         except queue.Empty as exc:
             self._terminate_worker_process()
-            self._schedule_worker_relaunch()
+            if operation == "response":
+                self._schedule_worker_relaunch()
             raise TimeoutError(
                 f"RVC worker {operation} timed out after {timeout_sec:.1f}s.\n"
                 f"{self._worker_error_summary()}"
@@ -788,7 +794,26 @@ class RVCConverter:
 
         return payload
 
-    def _start_worker(self) -> None:
+    def spawn_worker(self) -> None:
+        """Start the worker early; leave ready/warmup to the RVC preload stage.
+
+        In-process backends keep their existing sequential initialization.
+        """
+        if self._converter is not None:
+            return
+        if self.backend != "worker" and not (
+            self.backend == "auto"
+            and self.site_packages_dir.exists()
+            and self.worker_script.exists()
+            and self.python_path.exists()
+        ):
+            return
+        self._raise_if_relaunching()
+        self._spawn_worker()
+
+    def _spawn_worker(self) -> None:
+        if self._worker_process is not None:
+            return
         self._ensure_model_files()
         if not self.python_path.exists():
             raise FileNotFoundError(f"Worker python not found: {self.python_path}")
@@ -817,10 +842,12 @@ class RVCConverter:
         )
         self._worker_stderr_thread.start()
 
+    def _wait_worker_ready(self) -> None:
+        assert self._worker_process is not None
         assert self._worker_process.stdout is not None
         try:
             ready_line = self._read_worker_response_line(
-                self.request_timeout_sec,
+                self.startup_timeout_sec,
                 operation="startup",
             ).strip()
             if not ready_line:
@@ -850,6 +877,10 @@ class RVCConverter:
         self._backend_name = "worker"
         self._worker_ready = True
         logger.info("Loaded RVC backend: %s", self._backend_name)
+
+    def _start_worker(self) -> None:
+        self._spawn_worker()
+        self._wait_worker_ready()
 
     def _load(self) -> None:
         """Lazy-load the selected RVC backend."""
@@ -938,7 +969,9 @@ class RVCConverter:
         sf.write(temp_path, padded_audio, sample_rate)
         return temp_path, temp_path, (pad_left, pad_right, int(sample_rate))
 
-    def _convert_file_with_worker(self, input_path: Path, output_path: Path) -> Path:
+    def _convert_file_with_worker(
+        self, input_path: Path, output_path: Path, *, operation: str = "response",
+    ) -> Path:
         if self._worker_process is None or self._worker_process.poll() is not None:
             raise RuntimeError(
                 f"RVC worker is not running.\n{self._worker_error_summary()}"
@@ -955,7 +988,9 @@ class RVCConverter:
             self._worker_process.stdin.write(json.dumps(payload) + "\n")
             self._worker_process.stdin.flush()
 
-            response_line = self._read_worker_response_line(self.request_timeout_sec).strip()
+            response_line = self._read_worker_response_line(
+                self.request_timeout_sec, operation=operation,
+            ).strip()
             if not response_line:
                 raise RuntimeError(
                     f"RVC worker returned no response.\n{self._worker_error_summary()}"
@@ -1009,7 +1044,9 @@ class RVCConverter:
             )
         return self._convert_file(input_path, output_path)
 
-    def _convert_file(self, input_path: str | Path, output_path: str | Path) -> Path:
+    def _convert_file(
+        self, input_path: str | Path, output_path: str | Path, *, operation: str = "response",
+    ) -> Path:
         """Run a conversion, bypassing the fast-fail guard (used by warmup)."""
         self._load()
 
@@ -1018,7 +1055,7 @@ class RVCConverter:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self._backend_name == "worker":
-            converted_path = self._convert_file_with_worker(input_path, output_path)
+            converted_path = self._convert_file_with_worker(input_path, output_path, operation=operation)
             if converted_path != output_path:
                 shutil.move(str(converted_path), str(output_path))
             return output_path
@@ -1099,7 +1136,7 @@ class RVCConverter:
         try:
             warmup_audio = np.zeros(16000, dtype=np.float32)
             sf.write(input_path, warmup_audio, 16000)
-            self._convert_file(input_path, output_path)
+            self._convert_file(input_path, output_path, operation="warmup")
             self._warmed_up = True
         finally:
             input_path.unlink(missing_ok=True)

@@ -1874,6 +1874,11 @@ class Live2DAssistant:
                 if self._pipeline_runtime is not None:
                     runtime = self._pipeline_runtime
 
+                    if not preload_step("RVC spawn", runtime.spawn_rvc_worker):
+                        close_partial_pipeline_runtime()
+                        self._finish_startup_profile("shutdown")
+                        return
+
                     if not preload_step("LLM", runtime.preload_llm):
                         close_partial_pipeline_runtime()
                         self._finish_startup_profile("shutdown")
@@ -1942,6 +1947,7 @@ class Live2DAssistant:
             self._finish_startup_profile("degraded" if self._collect_degraded_reason() else "ready")
 
         except Exception as e:
+            close_partial_pipeline_runtime()
             self._set_backend_health(state="error", runtime_error=str(e))
             self._mark_startup_step("background_preload_error")
             self._finish_startup_profile("error")

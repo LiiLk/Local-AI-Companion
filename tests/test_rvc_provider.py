@@ -161,6 +161,173 @@ class FakeNeverReadyPopen(FakePopen):
         self.stdout = _NeverReadyStdout()
 
 
+@pytest.fixture
+def worker_converter(tmp_path, monkeypatch):
+    python_path = tmp_path / "python.exe"
+    worker_script = tmp_path / "rvc_worker.py"
+    model_path = tmp_path / "voice.pth"
+    for path in (python_path, worker_script, model_path):
+        path.write_bytes(b"fake")
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr("src.utils.platform_compat.kill_process_tree", lambda process: process.terminate())
+    converter = RVCConverter(
+        model_path=model_path,
+        backend="worker",
+        python_path=python_path,
+        worker_script=worker_script,
+        site_packages_dir=tmp_path / "overlay",
+        request_timeout_sec=15,
+    )
+    yield converter
+    converter.close()
+
+
+def test_worker_default_startup_timeout_is_separate(worker_converter):
+    assert worker_converter.startup_timeout_sec == 90
+    assert worker_converter.request_timeout_sec == 15
+
+
+@pytest.mark.parametrize("startup_timeout", [0.5, 90.0])
+def test_worker_startup_and_conversion_use_distinct_timeouts(
+    worker_converter, monkeypatch, tmp_path, startup_timeout,
+):
+    worker_converter.startup_timeout_sec = startup_timeout
+    calls = []
+
+    def read_response(timeout_sec, *, operation="response"):
+        calls.append((operation, timeout_sec))
+        # Simulate ready arriving within its budget, even beyond the phrase budget.
+        if operation == "startup":
+            ready_after_sec = startup_timeout / 2
+            if timeout_sec < ready_after_sec:
+                raise TimeoutError("worker is still starting")
+        return worker_converter._worker_process.stdout.readline()
+
+    monkeypatch.setattr(worker_converter, "_read_worker_response_line", read_response)
+    worker_converter.convert_file(tmp_path / "input.wav", tmp_path / "output.wav")
+
+    assert calls == [("startup", startup_timeout), ("response", 15)]
+    assert worker_converter._worker_ready is True
+
+
+def test_worker_spawn_defers_ready_and_reuses_process(worker_converter, monkeypatch):
+    processes = []
+    reads = []
+
+    def popen(*args, **kwargs):
+        process = FakePopen(*args, **kwargs)
+        original_readline = process.stdout.readline
+
+        def readline():
+            reads.append("ready")
+            return original_readline()
+
+        process.stdout.readline = readline
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", popen)
+    worker_converter.spawn_worker()
+    worker_converter.spawn_worker()
+    assert len(processes) == 1
+    assert reads == []
+    assert worker_converter._converter is None
+    assert worker_converter._worker_ready is False
+    assert worker_converter._warmed_up is False
+
+    worker_converter.preload()
+    worker_converter.preload()
+    assert len(processes) == 1
+    assert reads == ["ready"]
+    assert worker_converter._worker_ready is True
+    assert worker_converter._warmed_up is False
+
+
+@pytest.mark.parametrize("backend", ["inferrvc", "rvc_inferpy"])
+def test_non_worker_spawn_does_not_load_backend(worker_converter, monkeypatch, backend):
+    worker_converter.backend = backend
+    loads = []
+    monkeypatch.setattr(
+        worker_converter, "_resolve_backend",
+        lambda: pytest.fail("Spawn must not resolve in-process backends"),
+    )
+    worker_converter.spawn_worker()
+    assert worker_converter._worker_process is None
+
+    monkeypatch.setattr(worker_converter, "_resolve_backend", lambda: backend)
+    loader = "_load_inferrvc" if backend == "inferrvc" else "_load_legacy_backend"
+    monkeypatch.setattr(worker_converter, loader, lambda: loads.append(backend))
+    worker_converter.preload()
+    assert loads == [backend]
+
+
+def test_worker_relaunch_uses_startup_timeout(worker_converter, monkeypatch):
+    worker_converter.startup_timeout_sec = 75
+    timeouts = []
+
+    def read_response(timeout_sec, *, operation="response"):
+        timeouts.append((operation, timeout_sec))
+        return worker_converter._worker_process.stdout.readline()
+
+    monkeypatch.setattr(worker_converter, "_read_worker_response_line", read_response)
+    worker_converter.preload()
+    worker_converter._terminate_worker_process()
+    worker_converter._relaunch_worker()
+
+    assert timeouts == [("startup", 75), ("startup", 75)]
+    assert worker_converter._worker_ready is True
+
+
+def test_worker_reads_delayed_ready_beyond_phrase_budget(worker_converter, monkeypatch):
+    monkeypatch.setattr(
+        rvc_provider.subprocess, "Popen",
+        _make_scripted_popen(["slow_start"], startup_delay=0.15),
+    )
+    worker_converter.request_timeout_sec = 0.01
+    worker_converter.startup_timeout_sec = 1.0
+    worker_converter.preload()
+    assert worker_converter._worker_ready is True
+    assert worker_converter._worker_relaunch_count == 0
+
+
+@pytest.mark.parametrize("response", ["", "invalid json", '{"status": "error"}'])
+def test_early_worker_handshake_failure_closes_process(worker_converter, response):
+    worker_converter.spawn_worker()
+    process = worker_converter._worker_process
+    process.stdout.queue = [response]
+
+    with pytest.raises(RuntimeError):
+        worker_converter.preload()
+
+    assert process.poll() is not None
+    assert worker_converter._worker_process is None
+    assert worker_converter._worker_ready is False
+    assert worker_converter._worker_relaunch_count == 0
+
+
+def test_worker_close_after_spawn_does_not_wait_for_ready(worker_converter):
+    worker_converter.spawn_worker()
+    process = worker_converter._worker_process
+    worker_converter.close()
+    assert process.poll() is not None
+    assert worker_converter._worker_process is None
+
+
+def test_worker_warmup_timeout_does_not_relaunch_disabled_voice(worker_converter, monkeypatch):
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", FakeBlockingPopen)
+    relaunches = []
+    monkeypatch.setattr(worker_converter, "_schedule_worker_relaunch", lambda: relaunches.append("retry"))
+    worker_converter.request_timeout_sec = 0.01
+    worker_converter.preload()
+
+    with pytest.raises(TimeoutError):
+        worker_converter.warmup()
+
+    assert relaunches == []
+    assert worker_converter._worker_process is None
+    assert worker_converter._warmed_up is False
+
+
 def test_convert_file_with_modern_rvc_backend(tmp_path, monkeypatch):
     fake_module = types.ModuleType("rvc_inferpy")
     fake_module.RVCConverter = FakeModernRVC
@@ -404,15 +571,21 @@ def test_worker_startup_times_out_and_resets_worker(tmp_path, monkeypatch):
         python_path=python_path,
         worker_script=worker_script,
         site_packages_dir=tmp_path / ".rvc-site-packages",
-        request_timeout_sec=0.01,
+        request_timeout_sec=15.0,
+        startup_timeout_sec=0.01,
+    )
+    monkeypatch.setattr(
+        converter, "_schedule_worker_relaunch",
+        lambda: pytest.fail("A failed startup must not relaunch a disabled worker"),
     )
 
     with pytest.raises(TimeoutError, match="startup timed out"):
         converter.convert_file(input_path, output_path)
 
-    _wait_until(lambda: not converter._relaunching)
     assert converter._worker_process is None
     assert converter._worker_ready is False
+    assert converter._worker_relaunch_count == 0
+    converter.close()
 
 
 def test_convert_file_fast_fails_while_relaunching_without_backend(tmp_path, monkeypatch):

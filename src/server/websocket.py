@@ -242,6 +242,10 @@ class ConversationState:
         self.rvc = self._get_pipeline_runtime().preload_rvc()
         return self.rvc
 
+    def spawn_rvc_worker(self):
+        """Start RVC early through the shared runtime; defer ready and warmup."""
+        return self._get_pipeline_runtime().spawn_rvc_worker()
+
     def get_vad(self):
         """Get or create VAD engine (lazy loading)."""
         if self.vad is None:
@@ -2203,6 +2207,8 @@ class WebSocketManager:
 
             else:
                 # Pipeline mode: load VAD, brain, TTS, ASR
+                if state.config.get("tts", {}).get("rvc", {}).get("enabled", False):
+                    await loop.run_in_executor(None, state.spawn_rvc_worker)
                 if not state.vad and is_connected():
                     await safe_send({
                         "type": "model_loading",
@@ -2398,6 +2404,8 @@ class WebSocketManager:
                     await loop.run_in_executor(None, state.get_vad)
 
             else:
+                if state.config.get("tts", {}).get("rvc", {}).get("enabled", False):
+                    await loop.run_in_executor(None, state.spawn_rvc_worker)
                 if not state.vad:
                     await loop.run_in_executor(None, state.get_vad)
                 if state.config.get("llm", {}).get("provider", "ollama") == "gemma":

@@ -60,6 +60,7 @@ class PipelineRuntime:
         self.tts_summary: str | None = None
         self.asr_summary: str | None = None
         self.rvc_summary: str | None = None
+        self._rvc_degraded_reason: str | None = None
 
     def build_conversation_config(self) -> ConversationConfig:
         return build_pipeline_conversation_config(self.config)
@@ -87,8 +88,20 @@ class PipelineRuntime:
         return self.asr
 
     def ensure_rvc(self) -> Any | None:
+        if self._rvc_degraded_reason:
+            return None
         if self.rvc is None:
-            self.rvc, self.rvc_summary = create_pipeline_rvc(self.config)
+            try:
+                self.rvc, self.rvc_summary = create_pipeline_rvc(self.config)
+            except Exception as exc:
+                self._record_rvc_failure(exc)
+                logger.warning("%s", self._rvc_degraded_reason)
+            if (
+                self.rvc is None
+                and not self._rvc_degraded_reason
+                and self.config.get("tts", {}).get("rvc", {}).get("enabled", False)
+            ):
+                self._record_rvc_failure(RuntimeError("backend or model initialization failed"))
         return self.rvc
 
     def ensure_memory(self) -> ConversationMemoryStore | None:
@@ -141,18 +154,34 @@ class PipelineRuntime:
         self.rvc = preload_pipeline_rvc(
             self.ensure_rvc(),
             warmup=bool(self.config.get("tts", {}).get("rvc", {}).get("enabled", False)),
+            on_error=self._record_rvc_failure,
         )
         return self.rvc
+
+    def spawn_rvc_worker(self) -> Any | None:
+        self.rvc = spawn_pipeline_rvc_worker(
+            self.ensure_rvc(), on_error=self._record_rvc_failure,
+        )
+        return self.rvc
+
+    def _record_rvc_failure(self, exc: Exception) -> None:
+        # Keep the reason after dropping the provider; no retry within this session.
+        self._rvc_degraded_reason = f"RVC unavailable: voice conversion disabled ({exc})"
 
     def preload_all(
         self,
         *,
         tts_on_load_error: Callable[[Any, Exception], Any] | None = None,
     ) -> tuple[Any, Any | None]:
-        self.preload_llm()
-        self.preload_asr()
-        self.preload_tts(on_load_error=tts_on_load_error)
-        self.preload_rvc()
+        self.spawn_rvc_worker()
+        try:
+            self.preload_llm()
+            self.preload_asr()
+            self.preload_tts(on_load_error=tts_on_load_error)
+            self.preload_rvc()
+        except Exception:
+            _close_pipeline_rvc(self.rvc)
+            raise
         return self.tts, self.rvc
 
     async def close(self) -> None:
@@ -172,6 +201,9 @@ class PipelineRuntime:
         tts_reason = getattr(self.tts, "degraded_reason", None)
         if tts_reason:
             parts.append(str(tts_reason))
+
+        if self._rvc_degraded_reason:
+            parts.append(self._rvc_degraded_reason)
 
         if extra_reason:
             parts.append(str(extra_reason))
@@ -218,7 +250,7 @@ class PipelineRuntime:
 
     def _rvc_is_ready(self) -> bool:
         rvc_enabled = bool(self.config.get("tts", {}).get("rvc", {}).get("enabled", False))
-        return self.rvc is not None or not rvc_enabled
+        return self.rvc is not None or not rvc_enabled or bool(self._rvc_degraded_reason)
 
 
 def resolve_initial_tts_language(
@@ -599,6 +631,7 @@ def create_pipeline_rvc(config: dict) -> tuple[Any | None, str | None]:
             f0_up_key=rvc_config.get("f0_up_key", 0.0),
             output_freq=rvc_config.get("output_freq"),
             request_timeout_sec=rvc_config.get("request_timeout_sec", 15.0),
+            startup_timeout_sec=rvc_config.get("startup_timeout_sec", 90.0),
             model_sha256=rvc_config.get("model_sha256"),
             index_sha256=rvc_config.get("index_sha256"),
         )
@@ -677,10 +710,49 @@ def preload_pipeline_tts(
     return tts
 
 
+def _disable_pipeline_rvc(
+    rvc: Any,
+    exc: Exception,
+    on_error: Callable[[Exception], None] | None,
+) -> None:
+    logger.warning("RVC preload/warmup failed, disabling RVC: %s", exc)
+    if on_error is not None:
+        on_error(exc)
+    _close_pipeline_rvc(rvc)
+
+
+def _close_pipeline_rvc(rvc: Any | None) -> None:
+    close = getattr(rvc, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def spawn_pipeline_rvc_worker(
+    rvc: Any | None,
+    *,
+    on_error: Callable[[Exception], None] | None = None,
+) -> Any | None:
+    """Overlap subprocess startup with other preloads, without warming up RVC."""
+    if rvc is None:
+        return None
+    try:
+        spawn = getattr(rvc, "spawn_worker", None)
+        if callable(spawn):
+            spawn()
+        return rvc
+    except Exception as exc:
+        _disable_pipeline_rvc(rvc, exc, on_error)
+        return None
+
+
 def preload_pipeline_rvc(
     rvc: Any | None,
     *,
     warmup: bool = True,
+    on_error: Callable[[Exception], None] | None = None,
 ) -> Any | None:
     """Preload and optionally warm up RVC when enabled."""
     if rvc is None:
@@ -694,13 +766,7 @@ def preload_pipeline_rvc(
             rvc.warmup()
         return rvc
     except Exception as exc:
-        logger.warning("RVC preload/warmup failed, disabling RVC: %s", exc)
-        close = getattr(rvc, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
+        _disable_pipeline_rvc(rvc, exc, on_error)
         return None
 
 
@@ -715,14 +781,19 @@ def preload_pipeline_runtime_services(
     rvc_warmup_on_start: bool = True,
 ) -> tuple[Any, Any | None]:
     """Preload pipeline services in the same order across entry points."""
-    preload_pipeline_llm(llm)
-    preload_pipeline_asr(asr)
-    tts = preload_pipeline_tts(
-        tts,
-        warmup=tts_warmup_on_start,
-        on_load_error=tts_on_load_error,
-    )
-    rvc = preload_pipeline_rvc(rvc, warmup=rvc_warmup_on_start)
+    rvc = spawn_pipeline_rvc_worker(rvc)
+    try:
+        preload_pipeline_llm(llm)
+        preload_pipeline_asr(asr)
+        tts = preload_pipeline_tts(
+            tts,
+            warmup=tts_warmup_on_start,
+            on_load_error=tts_on_load_error,
+        )
+        rvc = preload_pipeline_rvc(rvc, warmup=rvc_warmup_on_start)
+    except Exception:
+        _close_pipeline_rvc(rvc)
+        raise
     return tts, rvc
 
 

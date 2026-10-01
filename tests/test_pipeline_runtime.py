@@ -1,14 +1,17 @@
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 from uuid import uuid4
 
 from src.assistant.pipeline_runtime import (
     build_pipeline_conversation_config,
     close_pipeline_runtime_services,
     create_pipeline_runtime,
+    create_pipeline_rvc,
     create_pipeline_tts,
     preload_pipeline_asr,
     preload_pipeline_rvc,
+    preload_pipeline_runtime_services,
     preload_pipeline_tts,
     resolve_initial_tts_language,
     resolve_pipeline_system_prompt,
@@ -254,6 +257,178 @@ def test_preload_pipeline_rvc_fails_open_when_warmup_errors():
 
     assert preload_pipeline_rvc(rvc, warmup=True) is None
     assert rvc.calls == ["preload", "warmup", "close"]
+
+
+@pytest.mark.parametrize("entrypoint", ["runtime", "services"])
+@pytest.mark.parametrize("rvc_enabled", [True, False])
+def test_preload_spawns_rvc_before_other_services_and_waits_after_tts(
+    entrypoint, rvc_enabled,
+):
+    events = []
+    llm = SimpleNamespace(preload=lambda: events.append("llm"))
+    asr = SimpleNamespace(preload=lambda: events.append("asr"))
+    tts = SimpleNamespace(
+        preload=lambda: events.append("tts"),
+        warmup=lambda: events.append("tts_warmup"),
+    )
+    rvc = SimpleNamespace(
+        spawn_worker=lambda: events.append("rvc_spawn"),
+        preload=lambda: events.append("rvc_ready"),
+        warmup=lambda: events.append("rvc_warmup"),
+    ) if rvc_enabled else None
+    if entrypoint == "runtime":
+        runtime = create_pipeline_runtime({
+            "tts": {"warmup_on_start": True, "rvc": {"enabled": rvc_enabled}},
+        })
+        runtime.llm, runtime.asr, runtime.tts, runtime.rvc = llm, asr, tts, rvc
+        result = runtime.preload_all()
+        assert runtime.collect_degraded_reason() is None
+    else:
+        result = preload_pipeline_runtime_services(
+            llm=llm, asr=asr, tts=tts, rvc=rvc, tts_warmup_on_start=True,
+        )
+
+    assert result == (tts, rvc)
+    assert events == (
+        ["rvc_spawn", "llm", "asr", "tts", "tts_warmup", "rvc_ready", "rvc_warmup"]
+        if rvc_enabled else ["llm", "asr", "tts", "tts_warmup"]
+    )
+
+
+@pytest.mark.parametrize("entrypoint", ["runtime", "services"])
+def test_preload_non_worker_rvc_keeps_existing_order(entrypoint):
+    events = []
+    llm = SimpleNamespace(preload=lambda: events.append("llm"))
+    asr = SimpleNamespace(preload=lambda: events.append("asr"))
+    tts = SimpleNamespace(preload=lambda: events.append("tts"))
+    rvc = SimpleNamespace(
+        preload=lambda: events.append("rvc_preload"),
+        warmup=lambda: events.append("rvc_warmup"),
+    )
+    if entrypoint == "runtime":
+        runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+        runtime.llm, runtime.asr, runtime.tts, runtime.rvc = llm, asr, tts, rvc
+        result = runtime.preload_all()
+    else:
+        result = preload_pipeline_runtime_services(llm=llm, asr=asr, tts=tts, rvc=rvc)
+    assert result == (tts, rvc)
+    assert events == ["llm", "asr", "tts", "rvc_preload", "rvc_warmup"]
+
+
+@pytest.mark.parametrize("entrypoint", ["runtime", "services"])
+@pytest.mark.parametrize("failed_service", ["llm", "asr", "tts"])
+def test_preload_closes_early_worker_when_required_service_fails(entrypoint, failed_service):
+    events = []
+
+    def preload(name):
+        events.append(name)
+        if name == failed_service:
+            raise RuntimeError(f"{name} unavailable")
+
+    llm = SimpleNamespace(preload=lambda: preload("llm"))
+    asr = SimpleNamespace(preload=lambda: preload("asr"))
+    tts = SimpleNamespace(preload=lambda: preload("tts"))
+    rvc = SimpleNamespace(
+        spawn_worker=lambda: events.append("spawn"),
+        preload=lambda: pytest.fail("RVC must not preload after a required service fails"),
+        close=lambda: events.append("close"),
+    )
+    with pytest.raises(RuntimeError, match=f"{failed_service} unavailable"):
+        if entrypoint == "runtime":
+            runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+            runtime.llm, runtime.asr, runtime.tts, runtime.rvc = llm, asr, tts, rvc
+            runtime.preload_all()
+        else:
+            preload_pipeline_runtime_services(llm=llm, asr=asr, tts=tts, rvc=rvc)
+    assert events[0] == "spawn"
+    assert events[-2:] == [failed_service, "close"]
+
+
+@pytest.mark.parametrize("stage", ["spawn_worker", "preload", "warmup"])
+@pytest.mark.parametrize("error", [
+    TimeoutError("startup timed out after 90s"), RuntimeError("worker crashed"),
+])
+def test_runtime_rvc_failure_is_degraded_and_stays_disabled(monkeypatch, stage, error):
+    events = []
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    runtime.llm = SimpleNamespace(preload=lambda: events.append("llm"))
+    runtime.asr = SimpleNamespace(preload=lambda: events.append("asr"))
+    runtime.tts = SimpleNamespace(preload=lambda: events.append("tts"))
+    rvc = SimpleNamespace(
+        spawn_worker=lambda: events.append("spawn_worker"),
+        preload=lambda: events.append("preload"),
+        warmup=lambda: events.append("warmup"),
+        close=lambda: events.append("close"),
+    )
+
+    def fail():
+        events.append(stage)
+        raise error
+
+    setattr(rvc, stage, fail)
+
+    def create_rvc(_config):
+        events.append("create")
+        return rvc, "test voice"
+
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", create_rvc)
+    runtime.preload_all()
+    status = runtime.resolve_backend_status()
+
+    assert runtime.rvc is None
+    assert status.state == "degraded"
+    assert status.degraded_reason == f"RVC unavailable: voice conversion disabled ({error})"
+    assert runtime.is_ready() is True  # Base TTS remains usable in degraded mode.
+    assert events.count("close") == 1
+    assert [event for event in events if event in {"llm", "asr", "tts"}] == ["llm", "asr", "tts"]
+    assert runtime.ensure_rvc() is None
+    assert runtime.preload_rvc() is None
+    assert runtime.spawn_rvc_worker() is None
+    assert events.count("create") == 1
+
+
+@pytest.mark.parametrize("error", [None, RuntimeError("worker unavailable")])
+def test_runtime_rvc_factory_failure_is_degraded_without_retry(monkeypatch, error):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    attempts = []
+
+    def create_rvc(_config):
+        attempts.append("create")
+        if error:
+            raise error
+        return None, None
+
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", create_rvc)
+    assert runtime.ensure_rvc() is None
+    assert runtime.resolve_backend_status().state == "degraded"
+    assert "RVC unavailable: voice conversion disabled" in runtime.collect_degraded_reason()
+    assert runtime.ensure_rvc() is None
+    assert attempts == ["create"]
+
+
+@pytest.mark.parametrize("configured_timeout", [None, 120])
+def test_rvc_factory_passes_startup_timeout(monkeypatch, configured_timeout):
+    rvc_config = {"model_path": "voice.pth", "request_timeout_sec": 7}
+    if configured_timeout is not None:
+        rvc_config["startup_timeout_sec"] = configured_timeout
+    monkeypatch.setattr(
+        "src.assistant.pipeline_runtime.build_rvc_runtime_config", lambda _: rvc_config,
+    )
+    kwargs_seen = {}
+
+    class FakeConverter:
+        @staticmethod
+        def is_available(**_kwargs):
+            return True
+
+        def __init__(self, **kwargs):
+            kwargs_seen.update(kwargs)
+
+    monkeypatch.setattr("src.tts.rvc_provider.RVCConverter", FakeConverter)
+    converter, _summary = create_pipeline_rvc({})
+    assert converter is not None
+    assert kwargs_seen["startup_timeout_sec"] == (configured_timeout or 90)
+    assert kwargs_seen["request_timeout_sec"] == 7
 
 
 @pytest.mark.asyncio
