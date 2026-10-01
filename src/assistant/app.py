@@ -444,6 +444,8 @@ class Live2DAssistant:
         self._pending_speech_audio = bytearray()
         self._pending_speech_end_monotonic: Optional[float] = None
         self._pending_speech_commit_handle: Optional[asyncio.Handle] = None
+        self._pending_speech_commit_tier: Optional[str] = None
+        self._pending_speech_commit_deadline: Optional[float] = None
         self._pending_speech_lock = threading.Lock()
         # Audio of the turn currently being processed, kept until its first
         # response audio is sent so a barge-in right after commit can re-merge it.
@@ -823,7 +825,14 @@ class Live2DAssistant:
             return
         setter(self._effective_vad_required_misses())
 
-    def _arm_pending_speech_commit(self, delay_ms: Optional[int] = None) -> None:
+    def _arm_pending_speech_commit(
+        self,
+        delay_ms: Optional[int] = None,
+        *,
+        question_future=None,
+        commit_tier: Optional[str] = None,
+        commit_generation: Optional[int] = None,
+    ) -> None:
         if delay_ms is None:
             delay_ms = self._speech_commit_delay_ms
         delay_ms = max(0, int(delay_ms))
@@ -832,15 +841,64 @@ class Live2DAssistant:
             return
 
         def _arm() -> None:
+            nonlocal delay_ms
+            if question_future is not None:
+                # Validate on the loop, immediately before replacing the timer:
+                # speech can resume while the future callback is queued.
+                delay_ms = self._question_mark_commit_delay(question_future)
+                if delay_ms is None:
+                    return
+            if commit_tier is not None:
+                with self._pending_speech_lock:
+                    if (
+                        commit_generation != self._pending_speech_generation
+                        or not self._pending_speech_audio
+                        or self._speech_active
+                    ):
+                        return
+                    self._pending_speech_commit_tier = commit_tier
             handle = self._pending_speech_commit_handle
             if handle is not None:
                 handle.cancel()
             self._pending_speech_commit_delay_ms = delay_ms
+            self._pending_speech_commit_deadline = time.perf_counter() + delay_ms / 1000.0
             self._pending_speech_commit_handle = loop.call_later(
                 delay_ms / 1000.0, self._commit_pending_speech
             )
 
         loop.call_soon_threadsafe(_arm)
+
+    def _question_mark_commit_delay(self, future) -> Optional[int]:
+        """Shorten an unchanged uncertain turn after successful speculative ASR."""
+        config = getattr(self, "_turn_detection_config", None)
+        if config is None or not config.enabled or not config.question_mark_commit:
+            return None
+        if not future.done() or future.cancelled() or future.exception() is not None:
+            return None
+        result = future.result()
+        if result is None or not result.text.strip().endswith(("?", "？")):
+            return None
+        with self._pending_speech_lock:
+            speculation = getattr(self, "_speculative_asr", None)
+            if (
+                speculation is None
+                or speculation[1] is not future
+                or getattr(self, "_pending_speech_commit_tier", None) != "uncertain"
+                or self._speech_active
+                or bytes(self._pending_speech_audio) != speculation[0]
+            ):
+                return None
+            speech_end = self._pending_speech_end_monotonic
+            deadline = getattr(self, "_pending_speech_commit_deadline", None)
+            if speech_end is None or deadline is None:
+                return None
+            now = time.perf_counter()
+            elapsed_ms = max(0.0, (now - speech_end) * 1000.0)
+            delay_ms = resolve_commit_delay_for_turn(config, True, elapsed_ms=elapsed_ms)
+            saved_ms = max(0, round((deadline - now) * 1000.0 - delay_ms))
+            self._pending_speech_commit_tier = "complete"
+        logger.info("turn_detection question_mark_commit tier=uncertain saved_ms=%s", saved_ms)
+        return delay_ms
 
     def _start_turn_detection(
         self,
@@ -889,11 +947,15 @@ class Live2DAssistant:
         config = self._turn_detection_config
         if not config.enabled:
             return
+        tier = resolve_turn_tier(config, verdict[1]) if verdict is not None else None
         with self._pending_speech_lock:
             if generation != self._pending_speech_generation:
                 return
             if not self._pending_speech_audio:
                 return
+            # An uncertain turn becomes eligible only when its timer is armed,
+            # so an ASR callback already queued cannot shorten the old window.
+            self._pending_speech_commit_tier = None if tier == "uncertain" else tier
 
         elapsed_ms = 0.0
         if speech_end_monotonic is not None:
@@ -913,12 +975,19 @@ class Live2DAssistant:
             return
 
         _is_complete, probability = verdict
-        tier = resolve_turn_tier(config, probability)
         delay_ms = resolve_commit_delay_for_turn(config, probability, elapsed_ms=elapsed_ms)
         if tier != "incomplete":
             # Complete shortens the long window armed at speech end; uncertain
             # moves it to the middle tier. Incomplete keeps the armed window.
-            self._arm_pending_speech_commit(delay_ms)
+            self._arm_pending_speech_commit(
+                delay_ms, commit_tier=tier, commit_generation=generation
+            )
+        if tier == "uncertain" and config.question_mark_commit:
+            with self._pending_speech_lock:
+                speculation = getattr(self, "_speculative_asr", None)
+            # ASR may finish before Smart Turn; use the same loop-side check.
+            if speculation is not None and speculation[1].done():
+                self._arm_pending_speech_commit(question_future=speculation[1])
         logger.info(
             "turn_detection tier=%s p=%.2f delay=%sms infer=%sms",
             tier,
@@ -994,6 +1063,14 @@ class Live2DAssistant:
                 current = self._speculative_asr
                 if current is not None and current[1] is future:
                     self._speculative_asr_finished_at = time.perf_counter()
+            config = getattr(self, "_turn_detection_config", None)
+            if (
+                config is not None
+                and config.question_mark_commit
+                and not future.cancelled()
+                and future.exception() is None
+            ):
+                self._arm_pending_speech_commit(question_future=future)
 
         future.add_done_callback(_record_done)
 
@@ -1015,6 +1092,8 @@ class Live2DAssistant:
             self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
             audio_bytes = bytes(self._pending_speech_audio)
             self._pending_speech_audio.clear()
+            self._pending_speech_commit_tier = None
+            self._pending_speech_commit_deadline = None
             speech_end_monotonic = self._pending_speech_end_monotonic
             self._pending_speech_end_monotonic = None
             speculation = getattr(self, "_speculative_asr", None)
@@ -1051,7 +1130,9 @@ class Live2DAssistant:
                 )
 
                 def _log_speculative_result(future) -> None:
-                    if future.cancelled() or future.exception() is not None:
+                    if future.cancelled():
+                        logger.info("speculative_asr miss reason=cancelled")
+                    elif future.exception() is not None:
                         logger.info("speculative_asr miss reason=error")
                     else:
                         logger.info("speculative_asr hit saved_ms=%s", saved_ms)
@@ -1280,6 +1361,8 @@ class Live2DAssistant:
         self._cancel_pending_speech_commit()
         with self._pending_speech_lock:
             self._pending_speech_audio.clear()
+            self._pending_speech_commit_tier = None
+            self._pending_speech_commit_deadline = None
             self._speculative_asr = None
             self._speculative_asr_started_at = None
             self._speculative_asr_finished_at = None
@@ -1530,6 +1613,8 @@ class Live2DAssistant:
         self._drop_current_speech = False
         with self._pending_speech_lock:
             self._speech_active = True
+            self._pending_speech_commit_tier = None
+            self._pending_speech_commit_deadline = None
             self._pending_speech_generation = getattr(self, "_pending_speech_generation", 0) + 1
         self._cancel_pending_speech_commit()
         self._dispatch_frontend_event("onSpeechStart", interrupted_turn_id)
