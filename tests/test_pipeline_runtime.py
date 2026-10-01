@@ -1,6 +1,9 @@
 from pathlib import Path
+import asyncio
 import shutil
+import threading
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 from src.assistant.pipeline_runtime import (
@@ -404,6 +407,263 @@ def test_runtime_rvc_factory_failure_is_degraded_without_retry(monkeypatch, erro
     assert "RVC unavailable: voice conversion disabled" in runtime.collect_degraded_reason()
     assert runtime.ensure_rvc() is None
     assert attempts == ["create"]
+
+
+def test_concurrent_runtime_ensure_rvc_creates_one_converter(monkeypatch):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    factory_entered = threading.Event()
+    release_factory = threading.Event()
+    contender_attempted = threading.Event()
+    created = []
+    results = []
+    errors = []
+    creation_lock = getattr(runtime, "_rvc_creation_lock", None)
+    if creation_lock is not None:
+        class ObservedLock:
+            def __enter__(self):
+                if threading.current_thread().name == "RuntimeContender":
+                    contender_attempted.set()
+                creation_lock.acquire()
+
+            def __exit__(self, *args):
+                creation_lock.release()
+
+        monkeypatch.setattr(runtime, "_rvc_creation_lock", ObservedLock())
+
+    def factory(_config):
+        converter = Mock()
+        created.append(converter)
+        if threading.current_thread().name == "RuntimeContender":
+            contender_attempted.set()
+        factory_entered.set()
+        assert release_factory.wait(5)
+        return converter, "voice"
+
+    def ensure():
+        try:
+            results.append(runtime.ensure_rvc())
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", factory)
+    threads = [threading.Thread(target=ensure, daemon=True, name=name)
+               for name in ("RuntimeCreator", "RuntimeContender")]
+    threads[0].start()
+    try:
+        assert factory_entered.wait(5)
+        threads[1].start()
+        assert contender_attempted.wait(5)
+    finally:
+        release_factory.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=5)
+        asyncio.run(runtime.close())
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(created) == 1
+    assert results == [created[0], created[0]]
+
+
+@pytest.mark.parametrize("operation", ["ensure_rvc", "spawn_rvc_worker", "preload_rvc"])
+def test_runtime_close_during_rvc_factory_does_not_publish_or_spawn(monkeypatch, operation):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    factory_entered = threading.Event()
+    release_factory = threading.Event()
+    closed = threading.Event()
+    converter = Mock()
+    results = []
+    errors = []
+
+    def factory(_config):
+        factory_entered.set()
+        assert release_factory.wait(5)
+        return converter, "voice"
+
+    def run_operation():
+        try:
+            results.append(getattr(runtime, operation)())
+        except Exception as exc:
+            errors.append(exc)
+
+    def close():
+        try:
+            asyncio.run(runtime.close())
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            closed.set()
+
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", factory)
+    creator = threading.Thread(target=run_operation, daemon=True)
+    closer = threading.Thread(target=close, daemon=True)
+    creator.start()
+    try:
+        assert factory_entered.wait(5)
+        closer.start()
+        assert closed.wait(5), "Runtime close must not wait for the RVC factory"
+        assert runtime.ensure_rvc() is None
+    finally:
+        release_factory.set()
+        creator.join(timeout=5)
+        if closer.ident is not None:
+            closer.join(timeout=5)
+
+    assert not creator.is_alive() and not closer.is_alive()
+    assert errors == []
+    assert results == [None]
+    assert runtime.rvc is None
+    assert runtime.rvc_summary is None
+    converter.close.assert_called_once_with()
+    converter.spawn_worker.assert_not_called()
+    converter.preload.assert_not_called()
+    converter.warmup.assert_not_called()
+
+
+def test_runtime_ensure_rvc_after_close_never_calls_factory(monkeypatch):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    factory = Mock(return_value=(Mock(), "voice"))
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", factory)
+    asyncio.run(runtime.close())
+    assert runtime.ensure_rvc() is None
+    factory.assert_not_called()
+
+
+def test_runtime_discard_rvc_allows_a_new_converter(monkeypatch):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    first, second = Mock(), Mock()
+    factory = Mock(side_effect=[(first, "first"), (second, "second")])
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", factory)
+    assert runtime.ensure_rvc() is first
+
+    runtime.discard_rvc()
+
+    first.close.assert_called_once_with()
+    assert runtime.rvc is None
+    assert runtime.rvc_summary is None
+    assert runtime.collect_degraded_reason() is None
+    assert runtime.ensure_rvc() is second
+    second.close.assert_not_called()
+    assert factory.call_count == 2
+
+
+@pytest.mark.parametrize("operation,stage", [
+    ("spawn_rvc_worker", "spawn_worker"), ("preload_rvc", "preload"),
+    ("preload_rvc", "warmup"),
+])
+@pytest.mark.parametrize("cleanup", ["close", "discard"])
+@pytest.mark.parametrize("failure", [False, True])
+def test_runtime_inflight_rvc_cannot_republish_after_removal(
+    monkeypatch, operation, stage, cleanup, failure,
+):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    original, replacement = Mock(), Mock()
+    runtime.rvc = original
+    runtime.rvc_summary = "original"
+    entered = threading.Event()
+    release = threading.Event()
+    cleanup_done = threading.Event()
+    results = []
+    errors = []
+
+    def blocked_operation():
+        entered.set()
+        assert release.wait(5)
+        if failure:
+            raise RuntimeError("removed converter failed")
+
+    setattr(original, stage, blocked_operation)
+
+    def run_operation():
+        try:
+            results.append(getattr(runtime, operation)())
+        except Exception as exc:
+            errors.append(exc)
+
+    def remove():
+        try:
+            if cleanup == "close":
+                asyncio.run(runtime.close())
+            else:
+                runtime.discard_rvc()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            cleanup_done.set()
+
+    monkeypatch.setattr(
+        "src.assistant.pipeline_runtime.create_pipeline_rvc", lambda _: (replacement, "replacement"),
+    )
+    worker = threading.Thread(target=run_operation, daemon=True)
+    remover = threading.Thread(target=remove, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        remover.start()
+        assert cleanup_done.wait(5), "RVC lifecycle lock must not cover spawn/handshake/warmup"
+        assert runtime.rvc is None
+        if cleanup == "discard":
+            assert runtime.ensure_rvc() is replacement
+    finally:
+        release.set()
+        worker.join(timeout=5)
+        if remover.ident is not None:
+            remover.join(timeout=5)
+
+    assert not worker.is_alive() and not remover.is_alive()
+    assert errors == []
+    assert results == [None]
+    assert runtime.rvc is (replacement if cleanup == "discard" else None)
+    assert runtime.collect_degraded_reason() is None
+    replacement.close.assert_not_called()
+
+
+def test_runtime_preload_retry_recreates_early_rvc_after_required_failure(monkeypatch):
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    first, second = Mock(), Mock()
+    factory = Mock(side_effect=[(first, "first"), (second, "second")])
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", factory)
+    runtime.llm = SimpleNamespace(preload=Mock(side_effect=[RuntimeError("LLM failed"), None]))
+    runtime.asr = SimpleNamespace(preload=lambda: None)
+    runtime.tts = SimpleNamespace(preload=lambda: None)
+    with pytest.raises(RuntimeError, match="LLM failed"):
+        runtime.preload_all()
+
+    assert runtime.rvc is None
+    assert runtime.is_ready() is False
+    first.close.assert_called_once_with()
+    runtime.preload_all()
+    assert runtime.rvc is second
+    assert runtime.is_ready() is True
+    second.spawn_worker.assert_called_once_with()
+    second.preload.assert_called_once_with()
+    assert factory.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_closes_rvc_before_waiting_for_llm():
+    runtime = create_pipeline_runtime({"tts": {"rvc": {"enabled": True}}})
+    converter = Mock()
+    runtime.rvc = converter
+    llm_closing = asyncio.Event()
+    release_llm = asyncio.Event()
+
+    async def close_llm():
+        llm_closing.set()
+        await release_llm.wait()
+
+    runtime.llm = SimpleNamespace(close=close_llm)
+    task = asyncio.create_task(runtime.close())
+    try:
+        await asyncio.wait_for(llm_closing.wait(), timeout=5)
+        converter.close.assert_called_once_with()
+        assert runtime.rvc is None
+        assert runtime.ensure_rvc() is None
+        assert runtime.is_ready() is False
+    finally:
+        release_llm.set()
+        await task
 
 
 @pytest.mark.parametrize("configured_timeout", [None, 120])

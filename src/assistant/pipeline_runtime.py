@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import inspect
 import logging
+import threading
 from typing import Any
 
 from src.assistant.conversation_memory import (
@@ -61,6 +62,11 @@ class PipelineRuntime:
         self.asr_summary: str | None = None
         self.rvc_summary: str | None = None
         self._rvc_degraded_reason: str | None = None
+        self._closed = False
+        self._rvc_lock = threading.Lock()
+        # Serialize the factory separately: its subprocess availability probe
+        # must not delay close(). Lock order: creation -> lifecycle, never reverse.
+        self._rvc_creation_lock = threading.Lock()
 
     def build_conversation_config(self) -> ConversationConfig:
         return build_pipeline_conversation_config(self.config)
@@ -88,21 +94,34 @@ class PipelineRuntime:
         return self.asr
 
     def ensure_rvc(self) -> Any | None:
-        if self._rvc_degraded_reason:
-            return None
-        if self.rvc is None:
+        with self._rvc_lock:
+            if self._closed or self._rvc_degraded_reason:
+                return None
+            if self.rvc is not None:
+                return self.rvc
+
+        with self._rvc_creation_lock:
+            with self._rvc_lock:
+                if self._closed or self._rvc_degraded_reason:
+                    return None
+                if self.rvc is not None:
+                    return self.rvc
             try:
-                self.rvc, self.rvc_summary = create_pipeline_rvc(self.config)
+                rvc, summary = create_pipeline_rvc(self.config)
             except Exception as exc:
                 self._record_rvc_failure(exc)
                 logger.warning("%s", self._rvc_degraded_reason)
-            if (
-                self.rvc is None
-                and not self._rvc_degraded_reason
-                and self.config.get("tts", {}).get("rvc", {}).get("enabled", False)
-            ):
+                return None
+
+            if rvc is None and self.config.get("tts", {}).get("rvc", {}).get("enabled", False):
                 self._record_rvc_failure(RuntimeError("backend or model initialization failed"))
-        return self.rvc
+            with self._rvc_lock:
+                if not self._closed:
+                    self.rvc, self.rvc_summary = rvc, summary
+                    return self.rvc
+            # close() may have finished while the factory was running.
+            _close_pipeline_rvc(rvc)
+            return None
 
     def ensure_memory(self) -> ConversationMemoryStore | None:
         if self.memory is None:
@@ -151,22 +170,44 @@ class PipelineRuntime:
         return self.tts
 
     def preload_rvc(self) -> Any | None:
-        self.rvc = preload_pipeline_rvc(
-            self.ensure_rvc(),
+        rvc = self.ensure_rvc()
+        result = preload_pipeline_rvc(
+            rvc,
             warmup=bool(self.config.get("tts", {}).get("rvc", {}).get("enabled", False)),
-            on_error=self._record_rvc_failure,
+            on_error=lambda exc: self._record_rvc_failure(exc, rvc=rvc),
         )
-        return self.rvc
+        return self._finish_rvc_operation(rvc, result)
 
     def spawn_rvc_worker(self) -> Any | None:
-        self.rvc = spawn_pipeline_rvc_worker(
-            self.ensure_rvc(), on_error=self._record_rvc_failure,
+        rvc = self.ensure_rvc()
+        result = spawn_pipeline_rvc_worker(
+            rvc, on_error=lambda exc: self._record_rvc_failure(exc, rvc=rvc),
         )
-        return self.rvc
+        return self._finish_rvc_operation(rvc, result)
 
-    def _record_rvc_failure(self, exc: Exception) -> None:
-        # Keep the reason after dropping the provider; no retry within this session.
-        self._rvc_degraded_reason = f"RVC unavailable: voice conversion disabled ({exc})"
+    def _finish_rvc_operation(self, rvc: Any | None, result: Any | None) -> Any | None:
+        with self._rvc_lock:
+            if self._closed or self.rvc is not rvc:
+                return None
+            if result is None:
+                self.rvc = None
+                self.rvc_summary = None
+            return self.rvc
+
+    def _record_rvc_failure(self, exc: Exception, *, rvc: Any | None = None) -> None:
+        with self._rvc_lock:
+            if self._closed or (rvc is not None and self.rvc is not rvc):
+                return
+            # Keep the reason after dropping the provider; no retry within this session.
+            self._rvc_degraded_reason = f"RVC unavailable: voice conversion disabled ({exc})"
+
+    def discard_rvc(self) -> None:
+        """Remove and close RVC after an aborted preload, allowing a fresh retry."""
+        with self._rvc_lock:
+            rvc = self.rvc
+            self.rvc = None
+            self.rvc_summary = None
+        _close_pipeline_rvc(rvc)
 
     def preload_all(
         self,
@@ -180,16 +221,18 @@ class PipelineRuntime:
             self.preload_tts(on_load_error=tts_on_load_error)
             self.preload_rvc()
         except Exception:
-            _close_pipeline_rvc(self.rvc)
+            self.discard_rvc()
             raise
         return self.tts, self.rvc
 
     async def close(self) -> None:
+        with self._rvc_lock:
+            self._closed = True
+        self.discard_rvc()
         await close_pipeline_runtime_services(
             llm=self.llm,
             tts=self.tts,
             asr=self.asr,
-            rvc=self.rvc,
         )
 
     def collect_degraded_reason(self, extra_reason: str | None = None) -> str | None:
@@ -235,7 +278,8 @@ class PipelineRuntime:
 
     def is_ready(self) -> bool:
         return (
-            self._llm_is_ready()
+            not self._closed
+            and self._llm_is_ready()
             and self.asr is not None
             and self.tts is not None
             and self._rvc_is_ready()
@@ -250,7 +294,10 @@ class PipelineRuntime:
 
     def _rvc_is_ready(self) -> bool:
         rvc_enabled = bool(self.config.get("tts", {}).get("rvc", {}).get("enabled", False))
-        return self.rvc is not None or not rvc_enabled or bool(self._rvc_degraded_reason)
+        with self._rvc_lock:
+            return not self._closed and (
+                self.rvc is not None or not rvc_enabled or bool(self._rvc_degraded_reason)
+            )
 
 
 def resolve_initial_tts_language(

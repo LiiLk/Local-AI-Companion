@@ -720,6 +720,46 @@ def test_worker_relaunch_resets_startup_budget(worker_converter, monkeypatch):
     assert worker_converter._worker_ready is True
 
 
+def test_ready_worker_dying_between_conversions_is_replaced(worker_converter, monkeypatch):
+    worker_converter.preload()
+    dead_process = worker_converter._worker_process
+    # A spontaneous exit leaves the old process and readiness in the cache.
+    dead_process._terminated = True
+    spawned = []
+    handshakes = []
+    original_read = worker_converter._read_worker_response_line
+
+    def popen(*args, **kwargs):
+        assert worker_converter._worker_ready is False
+        assert worker_converter._converter is None
+        process = FakePopen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def read_response(timeout_sec, *, operation="response"):
+        handshakes.append(operation)
+        return original_read(timeout_sec, operation=operation)
+
+    monkeypatch.setattr(rvc_provider.subprocess, "Popen", popen)
+    monkeypatch.setattr(worker_converter, "_read_worker_response_line", read_response)
+    monkeypatch.setattr(
+        "src.utils.platform_compat.kill_process_tree",
+        lambda process: pytest.fail("A dead worker must not be killed again"),
+    )
+    worker_converter._schedule_worker_relaunch()
+    worker_converter._relaunch_thread.join(timeout=5)
+
+    assert not worker_converter._relaunch_thread.is_alive()
+    assert len(spawned) == 1
+    assert worker_converter._worker_process is spawned[0]
+    assert worker_converter._converter is spawned[0]
+    assert spawned[0].stdout.queue == []
+    assert handshakes == ["startup"]
+    assert worker_converter._worker_is_ready() is True
+    # Restore the fixture's ordinary cleanup for the live replacement.
+    monkeypatch.setattr("src.utils.platform_compat.kill_process_tree", lambda p: p.terminate())
+
+
 @pytest.mark.parametrize("startup_timeout", [0.5, 90.0])
 def test_worker_startup_and_conversion_use_distinct_timeouts(
     worker_converter, monkeypatch, tmp_path, startup_timeout,

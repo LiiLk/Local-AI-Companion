@@ -849,6 +849,8 @@ class RVCConverter:
     def _spawn_worker(self) -> None:
         with self._lifecycle_lock:
             self._raise_if_closed()
+            if self._worker_process is not None and self._worker_process.poll() is not None:
+                self._reset_worker_state()
             if self._worker_process is not None:
                 return
             self._ensure_model_files()

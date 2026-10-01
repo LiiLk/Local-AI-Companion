@@ -107,3 +107,58 @@ async def test_manual_preload_failure_closes_early_rvc_worker(monkeypatch, failu
         "type": "error", "message": "Failed to load models: simulated preload failure",
     }
     assert client_id not in manager._preloading
+
+
+@pytest.mark.asyncio
+async def test_manual_preload_retry_recreates_discarded_rvc(monkeypatch):
+    config = {"mode": "pipeline", "tts": {"rvc": {"enabled": True}}}
+    monkeypatch.setattr(websocket_module, "load_config", lambda: config)
+    state = ConversationState()
+    runtime = PipelineRuntime(config)
+    state.pipeline_runtime = runtime
+    runtime.llm = object()
+    first, second = Mock(), Mock()
+    factory = Mock(side_effect=[(first, "first"), (second, "second")])
+    monkeypatch.setattr("src.assistant.pipeline_runtime.create_pipeline_rvc", factory)
+    # A user turn may already hold a reference before manual preload starts.
+    assert state.get_rvc() is first
+    state.get_vad = lambda: setattr(state, "vad", object())
+
+    def preload_tts():
+        runtime.tts = state.tts = SimpleNamespace(preload=lambda: None)
+
+    def preload_asr():
+        runtime.asr = state.asr = SimpleNamespace(preload=lambda: None)
+        raise RuntimeError("simulated failure after ASR load")
+
+    state.preload_tts = preload_tts
+    state.preload_asr = preload_asr
+    sent = []
+
+    async def send_json(data):
+        sent.append(data)
+
+    manager = WebSocketManager()
+    client_id = "manual-preload-retry"
+    manager.states[client_id] = state
+    manager.active_connections[client_id] = SimpleNamespace(send_json=send_json)
+
+    await manager.preload_models(client_id)
+
+    first.spawn_worker.assert_called_once_with()
+    first.close.assert_called_once_with()
+    assert runtime.rvc is None
+    assert state.rvc is None
+    assert state.pipeline_ready() is False
+    assert runtime.collect_degraded_reason() is None
+    assert sent[-1]["type"] == "error"
+
+    await manager.preload_models(client_id)
+
+    assert factory.call_count == 2
+    assert runtime.rvc is state.rvc is second
+    second.spawn_worker.assert_called_once_with()
+    second.preload.assert_called_once_with()
+    second.warmup.assert_called_once_with()
+    assert state.pipeline_ready() is True
+    assert sent[-1]["type"] == "models_ready"

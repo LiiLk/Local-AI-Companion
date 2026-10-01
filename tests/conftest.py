@@ -13,6 +13,8 @@ import logging
 import tempfile
 from pathlib import Path
 
+import pytest
+
 import src.utils.logging_setup as _logging_setup
 
 _REAL_PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -43,3 +45,16 @@ def _redirected_get_conversation_logger(project_root):
 
 _logging_setup.configure_root_logging = _redirected_configure_root_logging
 _logging_setup.get_conversation_logger = _redirected_get_conversation_logger
+
+
+@pytest.fixture(autouse=True)
+def _isolate_legacy_test_directories(request, monkeypatch):
+    """Keep legacy _test_dir helpers out of the real workspace."""
+    if not callable(getattr(request.module, "_test_dir", None)):
+        return
+    test_root = request.getfixturevalue("tmp_path")
+
+    def test_dir(name):
+        return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=test_root))
+
+    monkeypatch.setattr(request.module, "_test_dir", test_dir)

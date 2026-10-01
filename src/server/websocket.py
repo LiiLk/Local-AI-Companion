@@ -31,7 +31,6 @@ from src.asr import WhisperProvider
 from src.vad import SileroVAD
 from src.vad.smart_turn import resolve_commit_delay_for_turn, resolve_turn_tier
 from src.assistant.pipeline_runtime import (
-    _close_pipeline_rvc,
     close_pipeline_runtime_services,
     create_pipeline_runtime,
     resolve_min_asr_audio_ms,
@@ -246,6 +245,11 @@ class ConversationState:
     def spawn_rvc_worker(self):
         """Start RVC early through the shared runtime; defer ready and warmup."""
         return self._get_pipeline_runtime().spawn_rvc_worker()
+
+    def discard_rvc(self):
+        """Discard the converter owned by an aborted pipeline preload."""
+        self._get_pipeline_runtime().discard_rvc()
+        self.rvc = None
 
     def get_vad(self):
         """Get or create VAD engine (lazy loading)."""
@@ -2400,7 +2404,6 @@ class WebSocketManager:
             "message": "Loading voice models..."
         })
 
-        early_rvc = None
         try:
             loop = asyncio.get_event_loop()
 
@@ -2418,7 +2421,7 @@ class WebSocketManager:
 
             else:
                 if state.config.get("tts", {}).get("rvc", {}).get("enabled", False):
-                    early_rvc = await loop.run_in_executor(None, state.spawn_rvc_worker)
+                    await loop.run_in_executor(None, state.spawn_rvc_worker)
                 if not state.vad:
                     await loop.run_in_executor(None, state.get_vad)
                 if state.config.get("llm", {}).get("provider", "ollama") == "gemma":
@@ -2437,7 +2440,8 @@ class WebSocketManager:
             await self._send_pipeline_degraded_status(client_id, state)
 
         except Exception as e:
-            _close_pipeline_rvc(early_rvc)
+            if state.mode == "pipeline":
+                state.discard_rvc()
             logger.exception("Model preloading error for %s", client_id)
             await self.send_json(client_id, {
                 "type": "error",
