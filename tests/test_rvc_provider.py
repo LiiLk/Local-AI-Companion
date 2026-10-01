@@ -1703,3 +1703,46 @@ def test_close_is_not_blocked_by_a_slow_worker_kill(worker_converter, monkeypatc
     finally:
         release_kill.set()
         killer.join(timeout=5)
+
+
+def test_response_timeout_kills_old_worker_before_scheduling_relaunch(worker_converter, monkeypatch):
+    """Never let a replacement load the GPU while the hung worker is still alive."""
+    events = []
+    monkeypatch.setattr(
+        "src.utils.platform_compat.kill_process_tree",
+        lambda process: (events.append("kill"), process.terminate()),
+    )
+    monkeypatch.setattr(worker_converter, "_schedule_worker_relaunch", lambda: events.append("relaunch"))
+    worker_converter._worker_process = FakeNeverReadyPopen()
+
+    with pytest.raises(TimeoutError):
+        worker_converter._read_worker_response_line(0.05, operation="response")
+
+    assert events == ["kill", "relaunch"]
+
+
+def test_failed_rewarmup_does_not_publish_a_dead_replacement_as_ready(worker_converter, monkeypatch):
+    replacement = FakePopen()
+
+    def start_worker():
+        with worker_converter._lifecycle_lock:
+            worker_converter._worker_process = replacement
+            worker_converter._converter = replacement
+            worker_converter._worker_ready = True
+
+    def failing_warmup():
+        # The warmup timeout path detaches and kills the replacement.
+        replacement.terminate()
+        with worker_converter._lifecycle_lock:
+            worker_converter._detach_worker_process()
+        raise TimeoutError("RVC worker warmup timed out")
+
+    monkeypatch.setattr(worker_converter, "_start_worker", start_worker)
+    monkeypatch.setattr(worker_converter, "warmup", failing_warmup)
+    worker_converter._warmed_up = True
+    worker_converter._relaunching = True
+
+    worker_converter._relaunch_worker()
+
+    assert worker_converter._worker_ready is False
+    assert worker_converter._relaunching is False

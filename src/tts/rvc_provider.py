@@ -790,6 +790,11 @@ class RVCConverter:
                     logger.warning("RVC worker re-warmup failed: %s", exc)
             with self._lifecycle_lock:
                 self._raise_if_closed()
+                process = self._worker_process
+                if process is None or process.poll() is not None:
+                    # A failed re-warmup killed the replacement: never
+                    # advertise a dead worker as ready.
+                    raise RuntimeError("replacement worker died during re-warmup")
                 self._worker_ready = True
         except Exception as exc:
             logger.error("RVC worker auto-relaunch failed: %s", exc)
@@ -834,9 +839,11 @@ class RVCConverter:
                 # check process identity before clearing or publishing state.
                 if operation != "startup" and self._worker_process is process:
                     dead_process = self._detach_worker_process()
-                    if operation == "response":
-                        self._schedule_worker_relaunch()
+            # Kill the hung worker first, outside the lock, and only then
+            # schedule its replacement: never two RVC workers on the GPU.
             self._kill_detached_process(dead_process)
+            if dead_process is not None and operation == "response":
+                self._schedule_worker_relaunch()
             raise TimeoutError(
                 f"RVC worker {operation} timed out after {timeout_sec:.1f}s.\n"
                 f"{self._worker_error_summary()}"
