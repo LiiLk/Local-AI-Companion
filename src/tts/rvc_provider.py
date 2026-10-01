@@ -244,6 +244,13 @@ class RVCConverter:
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._worker_process: subprocess.Popen[str] | None = None
         self._worker_started_at: float | None = None
+        # Lifecycle protects short state transitions only, never blocking I/O
+        # or warmup. Lock order: _handshake_lock -> _lifecycle_lock, or
+        # _worker_lock -> _lifecycle_lock, never the reverse. close takes only
+        # lifecycle so it can kill a worker during either kind of wait.
+        self._lifecycle_lock = threading.RLock()
+        self._handshake_lock = threading.Lock()
+        self._closed = False
         self._worker_lock = threading.Lock()
         self._worker_stderr: deque[str] = deque(maxlen=50)
         self._worker_stderr_thread: threading.Thread | None = None
@@ -252,7 +259,6 @@ class RVCConverter:
         self._worker_relaunch_count = 0
         self._relaunching = False
         self._relaunch_thread: threading.Thread | None = None
-        self._relaunch_lock = threading.Lock()
         self._relaunch_cooldown_sec = 60.0
         self._last_relaunch_at = float("-inf")
 
@@ -681,32 +687,40 @@ class RVCConverter:
         return "\n".join(list(self._worker_stderr)[-10:])
 
     def _reset_worker_state(self) -> None:
+        """Reset process state while holding the lifecycle lock."""
         self._worker_process = None
         self._worker_started_at = None
         self._converter = None
         self._worker_ready = False
 
     def _terminate_worker_process(self) -> None:
-        process = self._worker_process
-        if process is None:
-            self._reset_worker_state()
-            return
+        """Stop the current worker without closing the converter permanently."""
+        with self._lifecycle_lock:
+            process = self._worker_process
+            if process is None:
+                self._reset_worker_state()
+                return
 
-        try:
-            if process.poll() is None:
-                from src.utils.platform_compat import kill_process_tree
+            try:
+                if process.poll() is None:
+                    from src.utils.platform_compat import kill_process_tree
 
-                kill_process_tree(process)
-        except Exception:
-            pass
-        finally:
-            self._reset_worker_state()
+                    kill_process_tree(process)
+            except Exception:
+                pass
+            finally:
+                self._reset_worker_state()
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("RVC converter is closed")
 
     def _worker_is_ready(self) -> bool:
-        process = self._worker_process
-        return bool(
-            self._worker_ready and process is not None and process.poll() is None
-        )
+        with self._lifecycle_lock:
+            process = self._worker_process
+            return bool(
+                self._worker_ready and process is not None and process.poll() is None
+            )
 
     def _schedule_worker_relaunch(self) -> None:
         """Relaunch the worker in the background after a timeout.
@@ -714,8 +728,9 @@ class RVCConverter:
         At most one automatic relaunch per cooldown window is allowed, so a
         persistently broken worker cannot spawn processes in a loop.
         """
-        now = time.monotonic()
-        with self._relaunch_lock:
+        with self._lifecycle_lock:
+            self._raise_if_closed()
+            now = time.monotonic()
             if now - self._last_relaunch_at < self._relaunch_cooldown_sec:
                 logger.warning(
                     "RVC worker timed out but auto-relaunch is throttled "
@@ -738,24 +753,29 @@ class RVCConverter:
     def _relaunch_worker(self) -> None:
         try:
             self._start_worker()
-            # Keep the worker advertised as not ready during the re-warmup so
-            # concurrent conversions fail fast instead of blocking behind it.
-            self._worker_ready = False
-            logger.info("RVC worker auto-relaunched after timeout")
-            was_warmed = self._warmed_up
-            self._warmed_up = False
+            with self._lifecycle_lock:
+                self._raise_if_closed()
+                # Publish readiness only after re-warmup; public conversions
+                # fail fast while _relaunching, without waiting on lifecycle.
+                self._worker_ready = False
+                logger.info("RVC worker auto-relaunched after timeout")
+                was_warmed = self._warmed_up
+                self._warmed_up = False
             if was_warmed:
                 try:
                     self.warmup()
                     logger.info("RVC worker re-warmed after relaunch")
                 except Exception as exc:
                     logger.warning("RVC worker re-warmup failed: %s", exc)
-            self._worker_ready = True
+            with self._lifecycle_lock:
+                self._raise_if_closed()
+                self._worker_ready = True
         except Exception as exc:
             logger.error("RVC worker auto-relaunch failed: %s", exc)
-            self._terminate_worker_process()
+            # The handshake owner (or close) already cleaned up its process;
+            # an obsolete handshake must not terminate a replacement here.
         finally:
-            with self._relaunch_lock:
+            with self._lifecycle_lock:
                 self._relaunching = False
 
     def _read_worker_response_line(
@@ -764,9 +784,12 @@ class RVCConverter:
         *,
         operation: str = "response",
     ) -> str:
-        if self._worker_process is None or self._worker_process.stdout is None:
-            raise RuntimeError("RVC worker stdout is not available")
-        stdout = self._worker_process.stdout
+        with self._lifecycle_lock:
+            self._raise_if_closed()
+            process = self._worker_process
+            if process is None or process.stdout is None:
+                raise RuntimeError("RVC worker stdout is not available")
+            stdout = process.stdout
 
         result_queue: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=1)
 
@@ -783,13 +806,21 @@ class RVCConverter:
         try:
             status, payload = result_queue.get(timeout=max(timeout_sec, 0.1))
         except queue.Empty as exc:
-            self._terminate_worker_process()
-            if operation == "response":
-                self._schedule_worker_relaunch()
+            with self._lifecycle_lock:
+                self._raise_if_closed()
+                # Startup cleanup belongs to the handshake owner, which must
+                # check process identity before clearing or publishing state.
+                if operation != "startup" and self._worker_process is process:
+                    self._terminate_worker_process()
+                    if operation == "response":
+                        self._schedule_worker_relaunch()
             raise TimeoutError(
                 f"RVC worker {operation} timed out after {timeout_sec:.1f}s.\n"
                 f"{self._worker_error_summary()}"
             ) from exc
+
+        with self._lifecycle_lock:
+            self._raise_if_closed()
 
         if status == "error":
             raise RuntimeError(f"RVC worker stdout read failed: {payload}")
@@ -801,91 +832,107 @@ class RVCConverter:
 
         In-process backends keep their existing sequential initialization.
         """
-        if self._converter is not None:
-            return
-        if self.backend != "worker" and not (
-            self.backend == "auto"
-            and self.site_packages_dir.exists()
-            and self.worker_script.exists()
-            and self.python_path.exists()
-        ):
-            return
         self._raise_if_relaunching()
-        self._spawn_worker()
+        with self._lifecycle_lock:
+            self._raise_if_closed()
+            if self._converter is not None:
+                return
+            if self.backend != "worker" and not (
+                self.backend == "auto"
+                and self.site_packages_dir.exists()
+                and self.worker_script.exists()
+                and self.python_path.exists()
+            ):
+                return
+            self._spawn_worker()
 
     def _spawn_worker(self) -> None:
-        if self._worker_process is not None:
-            return
-        self._ensure_model_files()
-        if not self.python_path.exists():
-            raise FileNotFoundError(f"Worker python not found: {self.python_path}")
-        if not self.worker_script.exists():
-            raise FileNotFoundError(
-                f"RVC worker script not found: {self.worker_script}"
+        with self._lifecycle_lock:
+            self._raise_if_closed()
+            if self._worker_process is not None:
+                return
+            self._ensure_model_files()
+            if not self.python_path.exists():
+                raise FileNotFoundError(f"Worker python not found: {self.python_path}")
+            if not self.worker_script.exists():
+                raise FileNotFoundError(
+                    f"RVC worker script not found: {self.worker_script}"
+                )
+
+            self._worker_started_at = time.monotonic()
+            self._worker_process = subprocess.Popen(
+                self._worker_command(),
+                cwd=str(PROJECT_ROOT),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=os.name != "nt",
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
             )
 
-        self._worker_started_at = time.monotonic()
-        self._worker_process = subprocess.Popen(
-            self._worker_command(),
-            cwd=str(PROJECT_ROOT),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=os.name != "nt",
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-        )
-
-        assert self._worker_process.stderr is not None
-        self._worker_stderr_thread = threading.Thread(
-            target=self._drain_worker_stderr,
-            args=(self._worker_process.stderr,),
-            daemon=True,
-        )
-        self._worker_stderr_thread.start()
+            assert self._worker_process.stderr is not None
+            self._worker_stderr_thread = threading.Thread(
+                target=self._drain_worker_stderr,
+                args=(self._worker_process.stderr,),
+                daemon=True,
+            )
+            self._worker_stderr_thread.start()
 
     def _wait_worker_ready(self) -> None:
-        assert self._worker_process is not None
-        assert self._worker_process.stdout is not None
-        assert self._worker_started_at is not None
-        # Early spawn and relaunch share a budget starting at process creation.
-        remaining_timeout = max(
-            0.1,
-            self.startup_timeout_sec - (time.monotonic() - self._worker_started_at),
-        )
-        try:
-            ready_line = self._read_worker_response_line(
-                remaining_timeout,
-                operation="startup",
-            ).strip()
-            if not ready_line:
-                raise RuntimeError(
-                    "RVC worker exited before initialization.\n"
-                    f"{self._worker_error_summary()}\n{self.install_hint()}"
+        with self._handshake_lock:
+            with self._lifecycle_lock:
+                self._raise_if_closed()
+                if self._worker_ready:
+                    return
+                process = self._worker_process
+                assert process is not None
+                assert process.stdout is not None
+                assert self._worker_started_at is not None
+                # Early spawn and relaunch share a budget starting at process creation.
+                remaining_timeout = max(
+                    0.1,
+                    self.startup_timeout_sec - (time.monotonic() - self._worker_started_at),
                 )
-
             try:
-                ready_payload = json.loads(ready_line)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    "RVC worker returned an invalid startup response.\n"
-                    f"stdout: {ready_line}\n{self._worker_error_summary()}"
-                ) from exc
+                ready_line = self._read_worker_response_line(
+                    remaining_timeout,
+                    operation="startup",
+                ).strip()
+                if not ready_line:
+                    raise RuntimeError(
+                        "RVC worker exited before initialization.\n"
+                        f"{self._worker_error_summary()}\n{self.install_hint()}"
+                    )
 
-            if ready_payload.get("status") != "ready":
-                raise RuntimeError(
-                    "RVC worker failed to start.\n"
-                    f"{ready_payload}\n{self._worker_error_summary()}"
-                )
-        except Exception:
-            self._terminate_worker_process()
-            raise
+                try:
+                    ready_payload = json.loads(ready_line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        "RVC worker returned an invalid startup response.\n"
+                        f"stdout: {ready_line}\n{self._worker_error_summary()}"
+                    ) from exc
 
-        self._converter = self._worker_process
-        self._backend_name = "worker"
-        self._worker_ready = True
-        logger.info("Loaded RVC backend: %s", self._backend_name)
+                if ready_payload.get("status") != "ready":
+                    raise RuntimeError(
+                        "RVC worker failed to start.\n"
+                        f"{ready_payload}\n{self._worker_error_summary()}"
+                    )
+            except Exception as exc:
+                with self._lifecycle_lock:
+                    if self._closed or self._worker_process is not process:
+                        raise RuntimeError("RVC converter is closed") from exc
+                    self._terminate_worker_process()
+                raise
+
+            with self._lifecycle_lock:
+                if self._closed or self._worker_process is not process:
+                    raise RuntimeError("RVC converter is closed")
+                self._converter = process
+                self._backend_name = "worker"
+                self._worker_ready = True
+            logger.info("Loaded RVC backend: %s", self._backend_name)
 
     def _start_worker(self) -> None:
         self._spawn_worker()
@@ -893,21 +940,21 @@ class RVCConverter:
 
     def _load(self) -> None:
         """Lazy-load the selected RVC backend."""
-        with self._worker_lock:
+        with self._lifecycle_lock:
+            self._raise_if_closed()
             if self._converter is not None:
                 return
 
             selected_backend = self._resolve_backend()
-            if selected_backend == "worker":
-                self._start_worker()
-                return
             if selected_backend == "inferrvc":
                 self._load_inferrvc()
                 return
             if selected_backend == "rvc_inferpy":
                 self._load_legacy_backend()
                 return
-            raise RuntimeError(f"Unsupported backend selection: {selected_backend}")
+            if selected_backend != "worker":
+                raise RuntimeError(f"Unsupported backend selection: {selected_backend}")
+        self._start_worker()
 
     def _write_inferrvc_output(
         self,
@@ -982,11 +1029,6 @@ class RVCConverter:
     def _convert_file_with_worker(
         self, input_path: Path, output_path: Path, *, operation: str = "response",
     ) -> Path:
-        if self._worker_process is None or self._worker_process.poll() is not None:
-            raise RuntimeError(
-                f"RVC worker is not running.\n{self._worker_error_summary()}"
-            )
-
         payload = {
             "command": "convert",
             "input_path": str(input_path),
@@ -994,9 +1036,19 @@ class RVCConverter:
         }
 
         with self._worker_lock:
-            assert self._worker_process.stdin is not None
-            self._worker_process.stdin.write(json.dumps(payload) + "\n")
-            self._worker_process.stdin.flush()
+            with self._lifecycle_lock:
+                self._raise_if_closed()
+                process = self._worker_process
+                if process is None or process.poll() is not None:
+                    raise RuntimeError(
+                        f"RVC worker is not running.\n{self._worker_error_summary()}"
+                    )
+                assert process.stdin is not None
+
+            # Keep a local handle so close can kill this process even while its
+            # pipe is blocked, without waiting for request serialization.
+            process.stdin.write(json.dumps(payload) + "\n")
+            process.stdin.flush()
 
             response_line = self._read_worker_response_line(
                 self.request_timeout_sec, operation=operation,
@@ -1034,9 +1086,10 @@ class RVCConverter:
         a second worker when no backend is loaded yet, so public entry points
         check this before touching ``_load()``.
         """
-        with self._relaunch_lock:
-            relaunching = self._relaunching
-        if relaunching:
+        # Snapshot flags without waiting on a startup handshake. Lifecycle
+        # methods recheck closed under the lock before changing any state.
+        self._raise_if_closed()
+        if self._relaunching:
             raise RuntimeError(
                 "RVC worker is not ready (relaunching); skipping conversion.\n"
                 f"{self._worker_error_summary()}"
@@ -1135,8 +1188,10 @@ class RVCConverter:
         first real conversion. Doing it during preload makes the first spoken reply
         much less surprising.
         """
-        if self._warmed_up:
-            return
+        with self._lifecycle_lock:
+            self._raise_if_closed()
+            if self._warmed_up:
+                return
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_in:
             input_path = Path(tmp_in.name)
@@ -1147,7 +1202,9 @@ class RVCConverter:
             warmup_audio = np.zeros(16000, dtype=np.float32)
             sf.write(input_path, warmup_audio, 16000)
             self._convert_file(input_path, output_path, operation="warmup")
-            self._warmed_up = True
+            with self._lifecycle_lock:
+                self._raise_if_closed()
+                self._warmed_up = True
         finally:
             input_path.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
@@ -1191,19 +1248,12 @@ class RVCConverter:
         return await loop.run_in_executor(self._executor, self.convert_array, audio, sr)
 
     def close(self) -> None:
-        """Release worker resources if needed."""
-        if self._worker_process is None:
-            return
-
-        try:
-            if self._worker_process.poll() is None and self._worker_process.stdin:
-                self._worker_process.stdin.write(
-                    json.dumps({"command": "shutdown"}) + "\n"
-                )
-                self._worker_process.stdin.flush()
-        except Exception:
-            pass
-        finally:
+        """Permanently close the converter, including any spawn in progress."""
+        with self._lifecycle_lock:
+            self._closed = True
+            self._warmed_up = False
+            # Do not wait on the request lock or send shutdown via stdin: a
+            # conversion may be waiting for the worker or filling its pipe.
             self._terminate_worker_process()
 
     def __del__(self):
