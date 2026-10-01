@@ -194,6 +194,7 @@ class OpenRouterLLM(BaseLLM):
         usage: dict[str, Any] = {}
         ttft_ms: float | None = None
         status = "ok"
+        done_seen = False
         started = time.perf_counter()
         try:
             async with self._client.stream("POST", "/chat/completions", json=payload) as response:
@@ -207,7 +208,10 @@ class OpenRouterLLM(BaseLLM):
                         continue
 
                     data = line[5:].strip()
-                    if not data or data == "[DONE]":
+                    if data == "[DONE]":
+                        done_seen = True
+                        continue
+                    if not data:
                         continue
 
                     event = json.loads(data)
@@ -226,6 +230,10 @@ class OpenRouterLLM(BaseLLM):
                         if ttft_ms is None:
                             ttft_ms = (time.perf_counter() - started) * 1000.0
                         yield chunk
+            if status == "ok" and not done_seen:
+                # A clean EOF before [DONE]: the provider or a proxy cut the
+                # stream. This is the silent failure the trace must expose.
+                status = "truncated"
         except (asyncio.CancelledError, GeneratorExit):
             status = "cancelled"
             raise
@@ -233,18 +241,20 @@ class OpenRouterLLM(BaseLLM):
             status = "error"
             raise
         finally:
-            total_ms = (time.perf_counter() - started) * 1000.0
+            # Wall time seen by the consumer: it includes time spent by the
+            # caller between chunks (TTS submission, UI), not only the provider.
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
             prompt_details = usage.get("prompt_tokens_details")
             cached_tokens = (
                 prompt_details.get("cached_tokens") if isinstance(prompt_details, dict) else None
             )
             logger.info(
-                "llm_call provider=%s model=%s ttft_ms=%s total_ms=%.1f "
+                "llm_call provider=%s model=%s ttft_ms=%s elapsed_ms=%.1f "
                 "prompt_tokens=%s cached_tokens=%s completion_tokens=%s status=%s",
                 provider,
                 payload["model"],
                 f"{ttft_ms:.1f}" if ttft_ms is not None else "na",
-                total_ms,
+                elapsed_ms,
                 usage.get("prompt_tokens") if usage.get("prompt_tokens") is not None else "na",
                 cached_tokens if cached_tokens is not None else "na",
                 usage.get("completion_tokens") if usage.get("completion_tokens") is not None else "na",

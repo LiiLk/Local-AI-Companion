@@ -172,7 +172,7 @@ async def test_openrouter_call_trace_captures_metadata_and_first_content_time(
     }]
     assert _call_logs(caplog) == [
         "llm_call provider=Alibaba model=deepseek/deepseek-v4-flash "
-        f"ttft_ms=785.0 total_ms=1250.0 {expected_tokens} status=ok"
+        f"ttft_ms=785.0 elapsed_ms=1250.0 {expected_tokens} status=ok"
     ]
 
 
@@ -198,7 +198,7 @@ async def test_openrouter_call_trace_handles_missing_metadata(caplog, monkeypatc
     ttft = "0.0" if content else "na"
     assert _call_logs(caplog) == [
         "llm_call provider=unknown model=deepseek/deepseek-v4-flash "
-        f"ttft_ms={ttft} total_ms=0.0 "
+        f"ttft_ms={ttft} elapsed_ms=0.0 "
         "prompt_tokens=na cached_tokens=na completion_tokens=na status=ok"
     ]
 
@@ -479,3 +479,29 @@ def test_openrouter_validate_required_modalities_rejects_text_only_model():
         llm._validate_required_modalities(
             {"data": [{"architecture": {"input_modalities": ["text"]}}]}
         )
+
+
+@pytest.mark.asyncio
+async def test_openrouter_call_trace_marks_eof_without_done_as_truncated(caplog, monkeypatch):
+    monkeypatch.setattr(
+        openrouter_module, "time", SimpleNamespace(perf_counter=lambda: 10.0), raising=False,
+    )
+    caplog.set_level(logging.INFO, logger="src.llm.openrouter_llm")
+
+    def handler(request):
+        # A proxy or provider closed the 200 stream cleanly before [DONE].
+        event = {"choices": [{"delta": {"content": "Hel"}}]}
+        return httpx.Response(200, content="data: " + json.dumps(event) + "\n\n")
+
+    llm = await _make_llm(handler)
+    try:
+        chunks = [chunk async for chunk in llm.chat_stream([Message(role="user", content="Hi")])]
+    finally:
+        await llm.close()
+
+    assert chunks == ["Hel"]
+    assert _call_logs(caplog) == [
+        "llm_call provider=unknown model=deepseek/deepseek-v4-flash "
+        "ttft_ms=0.0 elapsed_ms=0.0 "
+        "prompt_tokens=na cached_tokens=na completion_tokens=na status=truncated"
+    ]
