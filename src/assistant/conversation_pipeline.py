@@ -13,6 +13,7 @@ Features:
 """
 
 import asyncio
+import contextlib
 import io
 import base64
 import logging
@@ -278,6 +279,11 @@ class ConversationPipeline:
         self._last_user_language_code: Optional[str] = self._normalize_supported_language(self.config.asr_language)
         self._active_run_id: int = 0
         self._run_counter: int = 0
+        # Serializes the (single-GPU) ASR call so a stale speculative pass can
+        # never overlap the real one. Created lazily and bound to the loop that
+        # first uses it, so repeated test loops do not share a stale lock.
+        self._asr_lock: Optional[asyncio.Lock] = None
+        self._asr_lock_loop: Optional[asyncio.AbstractEventLoop] = None
 
         initial_tts_language = self._configured_reply_language()
         if not initial_tts_language:
@@ -433,15 +439,38 @@ class ConversationPipeline:
 
         return False
 
+    def _get_asr_lock(self) -> asyncio.Lock:
+        """Return the ASR lock for the currently running event loop."""
+        loop = asyncio.get_event_loop()
+        if self._asr_lock is None or self._asr_lock_loop is not loop:
+            self._asr_lock = asyncio.Lock()
+            self._asr_lock_loop = loop
+        return self._asr_lock
+
+    async def wait_for_asr_idle(self) -> None:
+        """Wait until the in-flight ASR executor has released the GPU."""
+        async with self._get_asr_lock():
+            pass
+
     async def _transcribe_once(self, audio_bytes: bytes, language: Optional[str]) -> ASRResult:
         audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
         audio_float = audio_int16.astype(np.float32) / 32767.0
 
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.asr.transcribe(audio_float, language=language),
-        )
+        async with self._get_asr_lock():
+            future = loop.run_in_executor(
+                None,
+                lambda: self.asr.transcribe(audio_float, language=language),
+            )
+            try:
+                result = await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # The executor thread cannot be stopped; keep holding the ASR
+                # lock until it finishes so a replacement pass cannot run on
+                # the GPU concurrently with the in-flight transcription.
+                with contextlib.suppress(Exception):
+                    await future
+                raise
         return self._reject_segment_overrun(result, audio_bytes)
 
     @staticmethod
@@ -646,6 +675,8 @@ class ConversationPipeline:
         self,
         audio_bytes: bytes,
         speech_end_monotonic: Optional[float] = None,
+        *,
+        speculative_transcription: Any = None,
     ) -> Optional[str]:
         """
         Process speech audio through the full pipeline.
@@ -654,6 +685,10 @@ class ConversationPipeline:
             audio_bytes: Raw PCM audio from VAD (16-bit, 16kHz)
             speech_end_monotonic: perf_counter captured at VAD speech end, used
                 as t=0 for turn latency instrumentation.
+            speculative_transcription: Optional future (asyncio or concurrent)
+                holding the ASR result started at speech end. When present, its
+                result is reused instead of running ``_transcribe`` again; a
+                raised error falls back to a normal transcription.
             
         Returns:
             The full response text, or None on error
@@ -670,8 +705,10 @@ class ConversationPipeline:
                 "turn_start_epoch_ms": int(time.time() * 1000),
                 "speech_end_epoch_ms": int(time.time() * 1000),
             }
-            # 1. Transcribe audio
-            transcription_result = await self._transcribe(audio_bytes)
+            # 1. Transcribe audio (reusing a speculative pass when available)
+            transcription_result = await self._resolve_transcription(
+                audio_bytes, speculative_transcription
+            )
             trace["asr_done_epoch_ms"] = int(time.time() * 1000)
             latency.mark("asr_done")
             self._ensure_run_active(run_id)
@@ -776,6 +813,8 @@ class ConversationPipeline:
         latency.start(turn_id=run_id)
 
         try:
+            # Let speculative ASR finish before text TTS/RVC uses the GPU.
+            await self.wait_for_asr_idle()
             trace = {
                 "turn_start_epoch_ms": int(time.time() * 1000),
                 "text_submit_epoch_ms": int(time.time() * 1000),
@@ -846,8 +885,15 @@ class ConversationPipeline:
             latency.finish()
             self._finish_run(run_id)
     
-    async def _transcribe(self, audio_bytes: bytes) -> Optional[ASRResult]:
-        """Transcribe audio bytes with a retry guard for bad auto-detection."""
+    async def _transcribe(
+        self, audio_bytes: bytes, *, update_language_state: bool = True
+    ) -> Optional[ASRResult]:
+        """Transcribe audio bytes with a retry guard for bad auto-detection.
+
+        ``update_language_state=False`` runs the exact same pass without
+        touching conversation state, for speculative transcriptions whose
+        result may be discarded (audio changed) before it is consumed.
+        """
         result = await self._transcribe_once(audio_bytes, self.config.asr_language)
         if not result.text or not result.text.strip():
             return None
@@ -936,12 +982,60 @@ class ConversationPipeline:
             )
             return None
 
+        self._apply_transcription_language_state(
+            result, update_language_state=update_language_state
+        )
+        return result
+
+    def _apply_transcription_language_state(
+        self, result: Optional[ASRResult], *, update_language_state: bool
+    ) -> None:
+        """Normalize a transcript's language and remember it when consumed.
+
+        This is the only conversation-state write on the transcription path
+        (``_transcribe``). Speculative passes call it with
+        ``update_language_state=False`` and ``_resolve_transcription`` applies
+        it when it actually consumes the speculative result.
+        """
+        if result is None:
+            return
         normalized_lang = self._normalize_supported_language(getattr(result, "language", None))
         if normalized_lang:
             result.language = normalized_lang
-            self._last_user_language_code = normalized_lang
+            if update_language_state:
+                self._last_user_language_code = normalized_lang
+
+    async def transcribe_speech(self, audio_bytes: bytes) -> Optional[ASRResult]:
+        """Run just the transcription step, for speculative end-of-speech ASR.
+
+        Exposes the exact step ``process_speech`` uses (retries and guards
+        included) without running the LLM/TTS turn. Speculation must not
+        mutate conversation state: its result may be rejected (audio changed)
+        before ``_resolve_transcription`` consumes it.
+        """
+        return await self._transcribe(audio_bytes, update_language_state=False)
+
+    async def _resolve_transcription(
+        self,
+        audio_bytes: bytes,
+        speculative_transcription: Any,
+    ) -> Optional[ASRResult]:
+        """Await a speculative transcription, falling back to a fresh pass."""
+        if speculative_transcription is None:
+            return await self._transcribe(audio_bytes)
+        try:
+            if isinstance(speculative_transcription, asyncio.Future):
+                result = await speculative_transcription
+            else:
+                result = await asyncio.wrap_future(speculative_transcription)
+        except Exception as exc:
+            logger.warning(
+                "Speculative ASR failed (%s); transcribing again", _describe_exception(exc)
+            )
+            return await self._transcribe(audio_bytes)
+        self._apply_transcription_language_state(result, update_language_state=True)
         return result
-    
+
     async def _get_full_response(
         self,
         messages: list[Message],

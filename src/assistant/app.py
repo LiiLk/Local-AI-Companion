@@ -37,7 +37,7 @@ import time
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 import yaml
@@ -51,6 +51,7 @@ from src.assistant.conversation_pipeline import ConversationPipeline, Conversati
 from src.assistant.pipeline_runtime import (
     create_pipeline_runtime,
     resolve_min_asr_audio_ms,
+    resolve_speculative_asr_enabled,
 )
 from src.utils.audio_analysis import calculate_audio_duration_ms
 from src.utils.character_loader import (
@@ -111,6 +112,24 @@ _BRIDGE_SHUTDOWN_TIMEOUT_SEC = 5.0
 _PRELOAD_LOCK_WAIT_TIMEOUT_SEC = 2.0
 # Cap on audio re-merged from a turn interrupted before it produced any reply.
 _MAX_REQUEUED_SPEECH_BYTES = 30 * 16000 * 2  # 30 s of 16 kHz mono PCM16
+
+
+def _speculative_saved_ms(
+    started_at: Optional[float],
+    finished_at: Optional[float],
+    commit_at: float,
+) -> int:
+    """Real latency overlap gained by speculating, in milliseconds.
+
+    The overlap runs from the speculation launch to whichever comes first,
+    the transcription finishing or the commit consuming it. Measuring from
+    the finish to the commit (as before) reported the remaining grace window
+    instead of the work that was actually hidden.
+    """
+    if started_at is None:
+        return 0
+    end = commit_at if finished_at is None else min(finished_at, commit_at)
+    return max(0, round((end - started_at) * 1000))
 
 
 def _describe_exception(exc: BaseException) -> str:
@@ -430,6 +449,13 @@ class Live2DAssistant:
         # response audio is sent so a barge-in right after commit can re-merge it.
         self._inflight_turn_audio: Optional[bytes] = None
         self._inflight_turn_audio_turn_id: Optional[int] = None
+        # End-of-speech speculative ASR: (snapshot bytes, future). Guarded by
+        # _pending_speech_lock because the audio thread writes it and the loop
+        # thread consumes it at commit.
+        self._speculative_asr: Optional[tuple[bytes, Any]] = None
+        self._speculative_asr_started_at: Optional[float] = None
+        self._speculative_asr_finished_at: Optional[float] = None
+        self._speculative_asr_skip_reason: Optional[str] = None
         self._speech_commit_delay_ms = int(self.config.get("audio", {}).get("speech_commit_delay_ms", 700))
         audio_config = self.config.get("audio", {})
         self._turn_detection_config = SmartTurnConfig.from_config(
@@ -919,6 +945,58 @@ class Live2DAssistant:
         if should_arm_commit:
             self._arm_pending_speech_commit()
 
+    def _speculative_asr_enabled(self) -> bool:
+        return resolve_speculative_asr_enabled(getattr(self, "config", {}) or {})
+
+    def _maybe_start_speculative_asr(self, audio_bytes: bytes) -> None:
+        """Start ASR at speech end when the assistant is at rest.
+
+        The commit window delays the real ASR by 160-900 ms; running it now
+        overlaps that window. Skipped while a turn is active so the single GPU
+        never runs ASR alongside TTS/RVC, and never in omni modes.
+        """
+        if not self._speculative_asr_enabled():
+            self._speculative_asr_skip_reason = "disabled"
+            return
+        if self._assistant_busy():
+            self._speculative_asr_skip_reason = "turn_active"
+            return
+        min_audio_ms = resolve_min_asr_audio_ms(getattr(self, "config", {}) or {})
+        if min_audio_ms > 0 and calculate_audio_duration_ms(audio_bytes, 16000) < min_audio_ms:
+            # The commit drops clips this short; do not occupy the GPU for them.
+            self._speculative_asr_skip_reason = "too_short"
+            return
+        active_pipeline = self._get_active_pipeline()
+        if not isinstance(active_pipeline, ConversationPipeline):
+            self._speculative_asr_skip_reason = "none"
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            self._speculative_asr_skip_reason = "none"
+            return
+        coro = active_pipeline.transcribe_speech(audio_bytes)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception as exc:
+            coro.close()
+            logger.debug("Speculative ASR launch failed: %s", exc)
+            self._speculative_asr_skip_reason = "none"
+            return
+        with self._pending_speech_lock:
+            # A newer speculation replaces the previous one.
+            self._speculative_asr = (audio_bytes, future)
+            self._speculative_asr_started_at = time.perf_counter()
+            self._speculative_asr_finished_at = None
+            self._speculative_asr_skip_reason = None
+
+        def _record_done(_future) -> None:
+            with self._pending_speech_lock:
+                current = self._speculative_asr
+                if current is not None and current[1] is future:
+                    self._speculative_asr_finished_at = time.perf_counter()
+
+        future.add_done_callback(_record_done)
+
     def _commit_pending_speech(self) -> None:
         self._pending_speech_commit_handle = None
 
@@ -939,6 +1017,14 @@ class Live2DAssistant:
             self._pending_speech_audio.clear()
             speech_end_monotonic = self._pending_speech_end_monotonic
             self._pending_speech_end_monotonic = None
+            speculation = getattr(self, "_speculative_asr", None)
+            speculation_started_at = getattr(self, "_speculative_asr_started_at", None)
+            speculation_finished_at = getattr(self, "_speculative_asr_finished_at", None)
+            speculation_skip_reason = getattr(self, "_speculative_asr_skip_reason", None)
+            self._speculative_asr = None
+            self._speculative_asr_started_at = None
+            self._speculative_asr_finished_at = None
+            self._speculative_asr_skip_reason = None
 
         audio_ms = int(len(audio_bytes) / 32) if audio_bytes else 0
         min_audio_ms = resolve_min_asr_audio_ms(self.config)
@@ -953,6 +1039,30 @@ class Live2DAssistant:
                 min_audio_ms,
             )
             return
+
+        speculative_transcription = None
+        if speculation is not None:
+            snapshot_bytes, speculative_transcription = speculation
+            if audio_bytes == snapshot_bytes:
+                saved_ms = _speculative_saved_ms(
+                    speculation_started_at,
+                    speculation_finished_at,
+                    time.perf_counter(),
+                )
+
+                def _log_speculative_result(future) -> None:
+                    if future.cancelled() or future.exception() is not None:
+                        logger.info("speculative_asr miss reason=error")
+                    else:
+                        logger.info("speculative_asr hit saved_ms=%s", saved_ms)
+
+                speculative_transcription.add_done_callback(_log_speculative_result)
+            else:
+                speculative_transcription = None
+                logger.info("speculative_asr miss reason=audio_changed")
+        else:
+            logger.info("speculative_asr miss reason=%s", speculation_skip_reason or "none")
+
         logger.info(
             "Committing %s bytes of buffered speech (~%s ms) to ASR after %s ms grace window",
             len(audio_bytes),
@@ -974,7 +1084,9 @@ class Live2DAssistant:
             self._start_turn(
                 turn_id,
                 lambda: active_pipeline.process_speech(
-                    audio_bytes, speech_end_monotonic=speech_end_monotonic
+                    audio_bytes,
+                    speech_end_monotonic=speech_end_monotonic,
+                    speculative_transcription=speculative_transcription,
                 ),
                 source="speech",
             )
@@ -1168,6 +1280,10 @@ class Live2DAssistant:
         self._cancel_pending_speech_commit()
         with self._pending_speech_lock:
             self._pending_speech_audio.clear()
+            self._speculative_asr = None
+            self._speculative_asr_started_at = None
+            self._speculative_asr_finished_at = None
+            self._speculative_asr_skip_reason = None
         self._inflight_turn_audio = None
         self._inflight_turn_audio_turn_id = None
         self._playback_deadline = 0.0
@@ -1193,6 +1309,21 @@ class Live2DAssistant:
                 )
             except Exception as exc:
                 logger.debug("Active turn shutdown cleanup error: %s", exc, exc_info=True)
+
+        if isinstance(active_pipeline, ConversationPipeline):
+            try:
+                await asyncio.wait_for(
+                    active_pipeline.wait_for_asr_idle(),
+                    timeout=_PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                # Whisper exceeding 10 s is already a fault; bound shutdown.
+                # Cancelling the lock wait leaves the executor running, so
+                # runtime cleanup may race it in this failure case.
+                logger.error(
+                    "ASR still running after %ss, closing runtime anyway",
+                    _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC,
+                )
 
         if self._active_response_future is future:
             self._active_response_future = None
@@ -1282,7 +1413,7 @@ class Live2DAssistant:
         return (
             getattr(self, '_gemma_pipeline', None)
             or getattr(self, '_omni_pipeline', None)
-            or self.pipeline
+            or getattr(self, 'pipeline', None)
         )
 
     def _start_turn(self, turn_id: int, runner, source: str) -> None:
@@ -1460,6 +1591,8 @@ class Live2DAssistant:
                 "Speech ended; arming end-of-turn commit window for %s buffered bytes",
                 pending_audio_bytes,
             )
+            # Overlap Whisper with the commit window when the assistant is idle.
+            self._maybe_start_speculative_asr(audio_snapshot)
             if self._turn_detection_active(config):
                 # Long window first so the user is not cut off, then shorten
                 # once the verdict arrives.
@@ -2007,7 +2140,11 @@ class Live2DAssistant:
                 asyncio.run_coroutine_threadsafe(
                     self._cancel_active_turn_for_shutdown("shutdown"),
                     self._loop,
-                ).result(timeout=_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC + 1.0)
+                ).result(
+                    timeout=_ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC
+                    + _PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC
+                    + 1.0
+                )
             except Exception as exc:
                 logger.debug("Active turn shutdown error: %s", exc, exc_info=True)
         

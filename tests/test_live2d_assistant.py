@@ -3,11 +3,13 @@ from concurrent.futures import Future
 import json
 import logging
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+import src.assistant.app as assistant_app
 from src.assistant.app import (
     CURRENT_DESKTOP_TURN_ID,
     DesktopBridgeServer,
@@ -15,7 +17,7 @@ from src.assistant.app import (
     resolve_turn_timeout_sec,
 )
 from src.assistant.audio_service import MicState
-from src.assistant.conversation_pipeline import AudioPayload
+from src.assistant.conversation_pipeline import AudioPayload, ConversationPipeline
 
 
 class FakeWindow:
@@ -267,6 +269,91 @@ def test_shutdown_cancels_active_turn_and_clears_pending_audio():
     assert assistant._playback_deadline == 0.0
     assert assistant._pending_speech_audio == bytearray()
     assert any("window.onPlaybackStop?.(9)" in call for call in assistant._window.calls)
+
+
+@pytest.mark.parametrize("after_commit", [False, True])
+def test_stop_waits_for_asr_idle_after_cancel_before_runtime_close(monkeypatch, after_commit):
+    assistant = _make_assistant()
+    events = []
+    budgets = []
+    active_turn = Future()
+    speculation = Future()
+    speculation.set_result(None)
+    assistant._speculative_asr = None if after_commit else (b"audio", speculation)
+    assistant._speculative_asr_finished_at = 1.0
+    assistant._speculative_asr_started_at = 0.5
+    assistant._speculative_asr_skip_reason = None
+    assistant._active_response_future = active_turn
+    assistant.pipeline = ConversationPipeline.__new__(ConversationPipeline)
+    assistant.pipeline.cancel_active_run = lambda reason: events.append("cancel_turn")
+
+    async def wait_for_asr_idle():
+        assert active_turn.cancelled()
+        assert assistant._speculative_asr is None
+        await asyncio.sleep(0)
+        events.append("asr_idle")
+
+    async def close():
+        events.append("runtime_close")
+
+    assistant.pipeline.wait_for_asr_idle = wait_for_asr_idle
+    assistant._pipeline_runtime = SimpleNamespace(close=close)
+    assistant._running = True
+    assistant._window = None
+    assistant.audio_service = None
+    assistant._hotkey_listener = None
+    assistant._hybrid_ui_server = None
+    assistant._loop_thread = None
+    assistant._loop.is_running = lambda: True
+    assistant._loop.stop = lambda: None
+
+    class CompletedFuture(Future):
+        def result(self, timeout=None):
+            budgets.append(timeout)
+            return super().result(timeout)
+
+    def run_inline(coro, loop):
+        future = CompletedFuture()
+        future.set_result(asyncio.run(coro))
+        return future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", run_inline)
+    assistant.stop()
+
+    assert assistant._speculative_asr is None
+    assert assistant._speculative_asr_started_at is None
+    assert events == ["cancel_turn", "asr_idle", "runtime_close"]
+    assert budgets[0] == (
+        assistant_app._ACTIVE_TURN_SHUTDOWN_TIMEOUT_SEC
+        + assistant_app._PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC
+        + 1.0
+    )
+
+
+def test_shutdown_logs_asr_idle_timeout_and_returns(monkeypatch, caplog):
+    assistant = _make_assistant()
+    assistant.pipeline = ConversationPipeline.__new__(ConversationPipeline)
+    wait_cancelled = []
+
+    async def wait_for_asr_idle():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            wait_cancelled.append(True)
+
+    assistant.pipeline.wait_for_asr_idle = wait_for_asr_idle
+    monkeypatch.setattr(assistant_app, "_PIPELINE_RUNTIME_CLOSE_TIMEOUT_SEC", 0.01)
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(assistant._cancel_active_turn_for_shutdown("test-shutdown", timeout_sec=0.1))
+
+    assert wait_cancelled == [True]
+    assert assistant._speculative_asr is None
+    assert any(
+        record.levelno == logging.ERROR
+        and "ASR still running after 0.01s, closing runtime anyway" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_on_speech_start_interrupts_when_busy():
