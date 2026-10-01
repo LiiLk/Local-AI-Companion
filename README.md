@@ -227,8 +227,19 @@ cd Local-AI-Companion
 python -m venv venv
 venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+# NVIDIA GPU (recommended): the extra index provides the CUDA build of PyTorch.
+# Without it, pip installs the CPU-only PyTorch wheel on Windows.
+python -m pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
 ```
+
+Keep this `venv` dedicated to the default path. Optional providers (MiniCPM-o,
+Gemma, Qwen3, Chatterbox) pull large extra stacks such as `torchvision`,
+`accelerate` or another Transformers line. Installed here, they slow down every
+startup, because Transformers imports the integrations it finds installed.
+Measured on 2026-10-01: a venv holding every optional stack (271 packages)
+needed 61 s to preload the models, against 43 s for this default `venv`
+(138 packages). Install optional stacks in their own environment, as described
+in [Optional Advanced Providers](#optional-advanced-providers).
 
 Optional RVC voice conversion:
 
@@ -426,6 +437,11 @@ Relevant assets already wired in the repo:
 ## Optional Advanced Providers
 
 These are intentionally not part of the primary README quick path, but they still exist in the codebase.
+
+Unless stated otherwise, create a separate virtual environment for each optional
+stack (for example `python -m venv .venv-omni`) instead of installing it into the
+default `venv`. Parakeet is the exception: `onnx-asr` is small and does not pull
+extra Transformers integrations.
 
 ### Parakeet ASR
 
