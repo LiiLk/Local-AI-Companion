@@ -81,6 +81,10 @@ audio:
     complete_delay_ms: 250
     uncertain_delay_ms: 900
     incomplete_delay_ms: 2500
+    # Desktop: a successful speculative transcript ending in ? or ？ shortens
+    # only uncertain turns to the complete delay (minus time since speech end).
+    # false preserves the full uncertain window.
+    question_mark_commit: true
     # Shorter VAD end-of-speech silence threshold used only while Smart Turn is
     # enabled and available (8 frames * 32 ms = ~256 ms) instead of the global
     # vad_required_misses below.

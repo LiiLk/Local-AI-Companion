@@ -442,6 +442,22 @@ class FakeLoop:
         return False
 
 
+class QueuedLoop(FakeLoop):
+    """Defer thread-safe callbacks to expose races before timer re-arming."""
+
+    def __init__(self):
+        super().__init__()
+        self.ready = []
+
+    def call_soon_threadsafe(self, callback, *args):
+        self.ready.append((callback, args))
+
+    def drain(self):
+        while self.ready:
+            callback, args = self.ready.pop(0)
+            callback(*args)
+
+
 def _make_assistant(pipeline):
     assistant = Live2DAssistant.__new__(Live2DAssistant)
     assistant._window = None
@@ -499,6 +515,186 @@ def _install_inline_speculation(monkeypatch):
 
     monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
     return started
+
+
+def _pending_question(monkeypatch, probability=0.3, question_mark_commit=True):
+    assistant = _make_assistant(_pipeline(_CountingASR()))
+    del assistant._arm_pending_speech_commit
+    assistant._loop = QueuedLoop()
+    assistant._turn_detection_config = SmartTurnConfig.from_config(
+        {"turn_detection": {"question_mark_commit": question_mark_commit}}
+    )
+    assistant._pending_speech_audio.extend(b"A" * 3200)
+    assistant._pending_speech_end_monotonic = 10.0
+    assistant._pending_speech_generation = 1
+    now = [10.0]
+    monkeypatch.setattr(time, "perf_counter", lambda: now[0])
+    future = ConcurrentFuture()
+
+    def launch(coro, loop):
+        coro.close()
+        return future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", launch)
+    assistant._maybe_start_speculative_asr(bytes(assistant._pending_speech_audio))
+    assistant._arm_pending_speech_commit(2500)
+    assistant._loop.drain()
+    assistant._apply_turn_verdict(1, (probability >= 0.5, probability), 0.0, 10.0)
+    assistant._loop.drain()
+    return assistant, future, now
+
+
+@pytest.mark.parametrize("text", ["  Salut, comment ça va ?  ", "Tu me proposes quoi？\n"])
+@pytest.mark.parametrize("elapsed_ms, expected_delay_ms, saved_ms", [(125, 125, 650), (500, 0, 400)])
+def test_uncertain_question_rearms_complete_delay_on_loop(
+    monkeypatch, caplog, text, elapsed_ms, expected_delay_ms, saved_ms
+):
+    assistant, future, now = _pending_question(monkeypatch)
+    previous = assistant._pending_speech_commit_handle
+    now[0] += elapsed_ms / 1000.0
+
+    with caplog.at_level(logging.INFO):
+        worker = threading.Thread(target=future.set_result, args=(ASRResult(text=text),))
+        worker.start()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+        # The future callback runs off-loop; timers must only change on drain.
+        assert assistant._pending_speech_commit_handle is previous
+        assert not previous.cancelled
+        assistant._loop.drain()
+
+    assert previous.cancelled
+    assert assistant._loop.scheduled[-1][0] == pytest.approx(expected_delay_ms / 1000.0)
+    messages = [record.getMessage() for record in caplog.records]
+    assert messages.count(
+        f"turn_detection question_mark_commit tier=uncertain saved_ms={saved_ms}"
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "case", ["no_question", "internal_question", "incomplete", "complete", "audio_changed",
+             "disabled", "error", "cancelled", "empty"]
+)
+def test_question_commit_keeps_window_when_ineligible(monkeypatch, caplog, case):
+    probability = {"incomplete": 0.05, "complete": 0.9}.get(case, 0.3)
+    assistant, future, now = _pending_question(
+        monkeypatch, probability=probability, question_mark_commit=case != "disabled"
+    )
+    previous = assistant._pending_speech_commit_handle
+    scheduled = list(assistant._loop.scheduled)
+    now[0] = 10.5
+    if case == "audio_changed":
+        assistant._pending_speech_audio.extend(b"B" * 1600)
+
+    with caplog.at_level(logging.INFO):
+        if case == "error":
+            future.set_exception(RuntimeError("speculation exploded"))
+        elif case == "cancelled":
+            future.cancel()
+        else:
+            text = {"no_question": "Bonjour.", "internal_question": "Quoi ? Attends."}.get(case, "Ça va ?")
+            future.set_result(None if case == "empty" else ASRResult(text=text))
+        assistant._loop.drain()
+
+    assert assistant._loop.scheduled == scheduled
+    assert assistant._pending_speech_commit_handle is previous
+    assert not previous.cancelled
+    assert not any("question_mark_commit" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("change", ["resume", "commit", "replace"])
+def test_question_callback_rechecks_pending_turn_on_loop(monkeypatch, change):
+    assistant, future, now = _pending_question(monkeypatch)
+    now[0] = 10.5
+    future.set_result(ASRResult(text="Ça va ?"))
+    scheduled = list(assistant._loop.scheduled)
+    if change == "resume":
+        assistant._on_speech_start()
+    elif change == "commit":
+        assistant._commit_pending_speech()
+    else:
+        replacement = ConcurrentFuture()
+        replacement.set_result(ASRResult(text="Ça va ?"))
+        assistant._speculative_asr = (bytes(assistant._pending_speech_audio), replacement)
+
+    assistant._loop.drain()
+
+    assert assistant._loop.scheduled == scheduled
+
+
+@pytest.mark.parametrize("change", ["resume", "commit"])
+def test_pending_turn_tier_is_cleared(monkeypatch, change):
+    assistant, future, now = _pending_question(monkeypatch)
+    assert assistant._pending_speech_commit_tier == "uncertain"
+    if change == "resume":
+        assistant._on_speech_start()
+    else:
+        assistant._commit_pending_speech()
+    assert assistant._pending_speech_commit_tier is None
+
+
+@pytest.mark.parametrize("change", ["resume", "commit", "shutdown"])
+def test_queued_verdict_arm_cannot_restore_cleared_tier(monkeypatch, change):
+    assistant, future, now = _pending_question(monkeypatch)
+    assistant._apply_turn_verdict(1, (False, 0.3), 0.0, 10.0)
+    if change == "resume":
+        assistant._on_speech_start()
+    elif change == "commit":
+        assistant._commit_pending_speech()
+    else:
+        assistant.audio_service = None
+        asyncio.run(assistant._cancel_active_turn_for_shutdown())
+
+    assistant._loop.drain()
+
+    assert assistant._pending_speech_commit_tier is None
+
+
+def test_question_completed_before_verdict_can_shorten_uncertain_window(monkeypatch):
+    assistant, future, now = _pending_question(monkeypatch)
+    assistant._pending_speech_commit_tier = None
+    future.set_result(ASRResult(text="Ça va ?"))
+    assistant._loop.drain()
+    now[0] = 10.5
+
+    assistant._apply_turn_verdict(1, (False, 0.3), 500.0, 10.0)
+    assistant._loop.drain()
+
+    assert assistant._loop.scheduled[-1][0] == 0.0
+
+
+def test_question_and_verdict_queued_together_keep_short_delay(monkeypatch, caplog):
+    assistant, future, now = _pending_question(monkeypatch)
+    assistant._pending_speech_commit_tier = None
+    assistant._arm_pending_speech_commit(2500)
+    assistant._loop.drain()
+    now[0] = 10.5
+    assistant._loop.call_soon_threadsafe(
+        assistant._apply_turn_verdict, 1, (False, 0.3), 500.0, 10.0
+    )
+
+    with caplog.at_level(logging.INFO):
+        future.set_result(ASRResult(text="Ça va ?"))
+        assistant._loop.drain()
+
+    assert assistant._loop.scheduled[-1][0] == 0.0
+    assert caplog.messages.count(
+        "turn_detection question_mark_commit tier=uncertain saved_ms=900"
+    ) == 1
+
+
+def test_question_commit_reports_remaining_time_since_uncertain_arm(monkeypatch, caplog):
+    assistant, future, now = _pending_question(monkeypatch)
+    now[0] = 10.125
+    assistant._apply_turn_verdict(1, (False, 0.3), 125.0, 10.0)
+    assistant._loop.drain()
+    now[0] = 10.5
+
+    with caplog.at_level(logging.INFO):
+        future.set_result(ASRResult(text="Ça va ?"))
+        assistant._loop.drain()
+
+    assert "turn_detection question_mark_commit tier=uncertain saved_ms=525" in caplog.messages
 
 
 def test_shutdown_waits_for_asr_started_after_commit():
@@ -752,5 +948,7 @@ def test_commit_logs_speculation_outcome_when_done(monkeypatch, caplog, outcome,
         assert messages.count("speculative_asr hit saved_ms=400") == 1
         assert "speculative_asr miss reason=error" not in messages
     else:
-        assert messages.count("speculative_asr miss reason=error") == 1
+        assert messages.count(f"speculative_asr miss reason={outcome}") == 1
+        other = "error" if outcome == "cancelled" else "cancelled"
+        assert f"speculative_asr miss reason={other}" not in messages
         assert not any("speculative_asr hit" in message for message in messages)

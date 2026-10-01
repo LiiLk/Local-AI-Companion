@@ -115,6 +115,7 @@ class SmartTurnConfig:
     complete_delay_ms: int = 250
     uncertain_delay_ms: int = 900
     incomplete_delay_ms: int = 2500
+    question_mark_commit: bool = True
     fallback_delay_ms: int = 700
     # Shorter VAD end-of-speech silence threshold used only while turn detection
     # is active, so Smart Turn can decide instead of waiting for the long
@@ -163,6 +164,7 @@ class SmartTurnConfig:
             complete_delay_ms=_int("complete_delay_ms", 250),
             uncertain_delay_ms=_int("uncertain_delay_ms", 900),
             incomplete_delay_ms=_int("incomplete_delay_ms", 2500),
+            question_mark_commit=bool(section.get("question_mark_commit", True)),
             fallback_delay_ms=fallback,
             vad_required_misses=_int("vad_required_misses", 8),
             debug_save_dir=debug_save_dir,

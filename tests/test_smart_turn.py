@@ -25,6 +25,11 @@ SR = 16000
 MAX_SAMPLES = 8 * SR
 
 
+@pytest.mark.parametrize("section, expected", [({}, True), ({"question_mark_commit": True}, True), ({"question_mark_commit": False}, False)])
+def test_question_mark_commit_config_default_and_override(section, expected):
+    assert SmartTurnConfig.from_config({"turn_detection": section}).question_mark_commit is expected
+
+
 class FakeFeatureExtractor:
     def __init__(self):
         self.calls = []
